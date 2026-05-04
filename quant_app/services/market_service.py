@@ -71,34 +71,26 @@ def get_recent_trade_dates(n=5):
 
 
 def get_recent_trade_dates_fallback(n=5):
-    """Fallback: 获取最近n个交易日（循环API调用，兜底用）"""
+    """Fallback: 从MySQL获取最近n个交易日，避免循环API调用"""
     try:
-        pro = get_tushare_pro()
-        today_str = datetime.now().strftime("%Y%m%d")
-        df = pro.daily(trade_date=today_str)
-        if df is not None and len(df) > 0:
-            latest = today_str
-        else:
-            latest = None
-            for days in range(1, 10):
-                d = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
-                df2 = pro.daily(trade_date=d)
-                if df2 is not None and len(df2) > 0:
-                    latest = d
-                    break
-        if not latest:
-            return []
-        dates = []
-        for days in range(100):
-            d = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
-            df3 = pro.daily(trade_date=d)
-            if df3 is not None and len(df3) > 0:
-                dates.append(d)
-                if len(dates) >= n:
-                    break
-        return list(reversed(dates))
+        import pymysql
+        db_config = get_db_config(connect_timeout=3)
+        conn = pymysql.connect(**db_config)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT DISTINCT trade_date FROM daily_price "
+            "WHERE trade_date IS NOT NULL "
+            "ORDER BY trade_date DESC LIMIT %s", (n,)
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        if rows:
+            dates = [str(r[0]) for r in rows]
+            return list(reversed(dates))
+        return []
     except Exception as e:
-        logger.warning(f"获取交易日历失败: {e}")
+        logger.warning(f"从MySQL获取交易日失败: {e}")
         return []
 
 
@@ -219,9 +211,19 @@ def add_to_positions(signal):
             if not exists:
                 # 计算动态止损止盈（基于均线支撑/压力）
                 price = float(signal["price"])
-                # 止损：min(均线支撑*0.97, 成本*0.95)，默认-5%固定
-                stop_loss = round(price * 0.95, 2)  # 默认-5%，后续由 analyze_stock 动态调整
-                take_profit = round(price * 1.08, 2)  # 默认+8%固定目标
+                # 止损止盈优先使用市场状态参数
+                sl_pct = -5
+                tp_pct = 8
+                try:
+                    from market_state import get_market_state
+                    ms = get_market_state() or {}
+                    p = ms.get('params', {})
+                    sl_pct = p.get('stop_loss_pct', -5)
+                    tp_pct = p.get('take_profit_pct', 8)
+                except Exception:
+                    pass
+                stop_loss = round(price * (1 + sl_pct / 100), 2)
+                take_profit = round(price * (1 + tp_pct / 100), 2)
 
                 new_position = {
                     "代码": signal["code"],
