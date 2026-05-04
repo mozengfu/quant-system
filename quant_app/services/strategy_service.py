@@ -462,19 +462,19 @@ def analyze_stock(code, market="sz"):
         tech_parts.append("均线处于震荡格局，方向不明确")
 
     if macd_state == "金叉区域":
-        tech_parts.append(f"MACD处于金叉区域(DIF={macd_line}，DEA={signal_line})，多头动能偏强")
+        tech_parts.append(f"MACD处于金叉区域(DIF={macd_line:.2f}，DEA={signal_line:.2f})，多头动能偏强")
     elif macd_state == "死叉区域":
-        tech_parts.append(f"MACD处于死叉区域(DIF={macd_line}，DEA={signal_line})，空头动能占优")
+        tech_parts.append(f"MACD处于死叉区域(DIF={macd_line:.2f}，DEA={signal_line:.2f})，空头动能占优")
     else:
         tech_parts.append("MACD信号不明确")
 
     if k_val is not None:
         if kdj_state == "超买":
-            tech_parts.append(f"KDJ进入超买区域(K={k_val})，短期注意回调风险")
+            tech_parts.append(f"KDJ进入超买区域(K={k_val:.2f})，短期注意回调风险")
         elif kdj_state == "超卖":
-            tech_parts.append(f"KDJ处于超卖区域(K={k_val})，存在技术性反弹机会")
+            tech_parts.append(f"KDJ处于超卖区域(K={k_val:.2f})，存在技术性反弹机会")
         else:
-            tech_parts.append(f"KDJ指标运行正常(K={k_val}，D={d_val}，J={j_val})")
+            tech_parts.append(f"KDJ指标运行正常(K={k_val:.2f}，D={d_val:.2f}，J={j_val:.2f})")
 
     tech_parts.append(f"RPS评分为{rps:.0f}/100，" + ("处于市场前列，强势特征明显" if rps >= 80 else "处于市场中游" if rps >= 50 else "偏弱，关注趋势改善"))
     tech_parts.append(f"量价配合{vol_comment}")
@@ -598,7 +598,7 @@ def analyze_stock(code, market="sz"):
         action_text = f"综合评分一般（{score}分），建议持仓观察或等待更明确信号。"
     else:
         action_text = f"综合评分偏低（{score}分），建议暂时观望，等待趋势改善。"
-    action_text += f"若入场，参考止损价{stop_loss}元(-{(price-stop_loss)/price*100:.1f}%)，目标价{target_price}元(+{(target_price-price)/price*100:.1f}%)。"
+    action_text += f"若入场，参考止损价{stop_loss:.2f}元(-{(price-stop_loss)/price*100:.1f}%)，目标价{target_price:.2f}元(+{(target_price-price)/price*100:.1f}%)。"
     summary_parts.append(("操作参考", action_text))
 
     summary = {
@@ -616,13 +616,13 @@ def analyze_stock(code, market="sz"):
     # ========== 技术面返回字段补充 ==========
     tech_extra = {}
     if k_val is not None:
-        tech_extra["KDJ"] = f"K={k_val} D={d_val} J={j_val}（{kdj_state}）"
+        tech_extra["KDJ"] = f"K={k_val:.2f} D={d_val:.2f} J={j_val:.2f}（{kdj_state}）"
     if macd_line is not None:
-        tech_extra["MACD"] = f"DIF={macd_line} DEA={signal_line} 柱={macd_hist}（{macd_state}）"
+        tech_extra["MACD"] = f"DIF={macd_line:.2f} DEA={signal_line:.2f} 柱={macd_hist:.2f}（{macd_state}）"
     if atr_val is not None:
-        tech_extra["ATR"] = f"{atr_val}"
+        tech_extra["ATR"] = f"{atr_val:.2f}"
     if bb_middle is not None and bb_upper is not None and bb_lower is not None:
-        tech_extra["布林带"] = f"上轨={bb_upper} 中轨={bb_middle} 下轨={bb_lower}"
+        tech_extra["布林带"] = f"上轨={bb_upper:.2f} 中轨={bb_middle:.2f} 下轨={bb_lower:.2f}"
         bb_pos = f"{(price-bb_lower)/(bb_upper-bb_lower)*100:.0f}%" if bb_upper != bb_lower else "50%"
         tech_extra["布林带位置"] = bb_pos
     # 板块趋势数据
@@ -634,8 +634,8 @@ def analyze_stock(code, market="sz"):
         "股票代码": f"{market.upper()}{code}",
         "更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "一、基础数据": {
-            "现价": f"{price}元", "昨收": f"{yc}元", "今开": f"{o}元",
-            "最高": f"{h}元", "最低": f"{l}元",
+            "现价": f"{price:.2f}元", "昨收": f"{yc:.2f}元", "今开": f"{o:.2f}元",
+            "最高": f"{h:.2f}元", "最低": f"{l:.2f}元",
             "涨跌幅": f"{change_pct:+.2f}%",
             "涨停价": f"{zt}元", "跌停价": f"{dt}元",
             "成交量": f"{vol/10000:.1f}万手",
@@ -656,8 +656,8 @@ def analyze_stock(code, market="sz"):
         "五、综合评分": {
             "总分": f"{score:.2f}/100",
             "操作建议": suggestion,
-            "止损价": f"{stop_loss}元",
-            "目标价": f"{target_price}元",
+            "止损价": f"{stop_loss:.2f}元",
+            "目标价": f"{target_price:.2f}元",
             "风险等级": "高" if score < 40 else ("中" if score < 60 else "低"),
             "建议理由": " | ".join(reasons) if reasons else "数据不足",
         },
