@@ -1222,12 +1222,12 @@ def ml_enhanced_score(stocks_list, db_conn=None):
     for s in stocks_list:
         raw = s.get('代码', ''); ts_code = s.get('_ts_code', '')
         if not ts_code or '.' not in ts_code:
-            if len(raw) >= 8: ts_code = f"{raw[2:]}.{'SH' if raw[:2]=='SH' else 'SZ'}"
+            if len(raw) >= 8: ts_code = f"{raw[2:]}.{'SH' if raw[:2].upper()=='SH' else 'SZ'}"
             elif '.' in raw: ts_code = raw
             elif len(raw) == 6: ts_code = f"{raw}.{'SH' if raw.startswith('6') else 'SZ'}"
             else: continue
         if '.' not in ts_code or len(ts_code.split('.')[0]) != 6:
-            if len(raw) >= 8: ts_code = f"{raw[2:]}.{'SH' if raw[:2]=='SH' else 'SZ'}"
+            if len(raw) >= 8: ts_code = f"{raw[2:]}.{'SH' if raw[:2].upper()=='SH' else 'SZ'}"
             elif len(raw) == 6: ts_code = f"{raw}.{'SH' if raw.startswith('6') else 'SZ'}"
             else: continue
         codes.append(ts_code); code_map[ts_code] = s
