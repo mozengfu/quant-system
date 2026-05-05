@@ -2,21 +2,21 @@
 
 ## 当前阶段
 
-Phase 0 — 项目初始化
+Phase 1 — 策略打磨与回测体系 ✅（2026-05-05 完成）
 
 ## 已完成
 
 - [x] 代码库开发运行（Python/FastAPI/LightGBM/MySQL）
 - [x] 代码库映射（7 份分析文档）
-- [x] PROJECT.md（项目愿景与核心价值）
-- [x] config.json（工作模式配置）
-- [x] REQUIREMENTS.md（v1/v2 需求）
-- [x] ROADMAP.md（5 阶段路线图）
-- [x] STATE.md（项目状态记忆）
+- [x] GSD 项目初始化（PROJECT.md / config.json / REQUIREMENTS.md / ROADMAP.md / STATE.md）
+- [x] Phase 1: 统一回测入口（run_backtest.py + backtest_metrics.py）
+- [x] Phase 1: 参数优化工具（optimize_v4_params.py + analyze_params.py）
+- [x] Phase 1: 多策略对比框架（compare_strategies.py）
+- [x] Phase 1: 废弃回测脚本标记
 
 ## 待办
 
-- [ ] Phase 1 规划与执行（策略打磨与回测体系）
+- [ ] Phase 2 规划与执行（模拟交易全自动化）
 
 ## 当前上下文
 
