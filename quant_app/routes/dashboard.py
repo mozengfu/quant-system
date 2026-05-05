@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = BASE_DIR / "data"
 
+router = APIRouter(tags=["dashboard"])
+
 # ========== 绩效看板 ==========
 
 @router.get("/api/sim/nav_history")
@@ -92,8 +94,6 @@ async def get_performance_summary(request: FastAPIRequest, token: str = Cookie(N
 
 POSITION_ALERT_STATE = {}
 POSITION_ALERT_LOCK = __import__('threading').Lock()
-
-router = APIRouter(tags=["dashboard"])
 
 
 # ========== 持仓数据（本地辅助函数）==========
