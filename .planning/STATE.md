@@ -2,21 +2,22 @@
 
 ## 当前阶段
 
-Phase 1 — 策略打磨与回测体系 ✅（2026-05-05 完成）
+Phase 2 — 模拟交易全自动化 ✅（2026-05-05 完成）
 
 ## 已完成
 
-- [x] 代码库开发运行（Python/FastAPI/LightGBM/MySQL）
+- [x] 代码库开发运行
 - [x] 代码库映射（7 份分析文档）
 - [x] GSD 项目初始化（PROJECT.md / config.json / REQUIREMENTS.md / ROADMAP.md / STATE.md）
-- [x] Phase 1: 统一回测入口（run_backtest.py + backtest_metrics.py）
-- [x] Phase 1: 参数优化工具（optimize_v4_params.py + analyze_params.py）
-- [x] Phase 1: 多策略对比框架（compare_strategies.py）
-- [x] Phase 1: 废弃回测脚本标记
+- [x] Phase 1: 策略打磨与回测体系（run_backtest.py + 参数优化 + 多策略对比）
+- [x] Phase 2: 自动止盈/超时卖出（execute_partial_sell + daily_scan 自动执行）
+- [x] Phase 2: sim_signals 表修复 + 回撤断路器 + 仓位上限
+- [x] Phase 2: 数据源统一（MySQL→JSON 同步）+ 止损阈值对齐 -3%
+- [x] Phase 2: v4_scan CLI + check_pipeline.py + crontab 注释
 
 ## 待办
 
-- [ ] Phase 2 规划与执行（模拟交易全自动化）
+- [ ] Phase 3 规划与执行（风控体系完善）
 
 ## 当前上下文
 
