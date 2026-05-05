@@ -1106,35 +1106,15 @@ def daily_scan():
         conn.close()
 
         if latest_date:
-            # 三策略依次选股
-            strategies = ['bottom', 'strong', 'combo']
-            picks = []
+            # V4 组合策略选股（ML增强），取最多 available_slots 只
+            candidates = v4_scan(top_n=available_slots)
 
-            for strategy in strategies:
-                try:
-                    pick = ml_select_from_strategy(strategy, latest_date)
-                    if pick and pick["现价"] > 0:
-                        picks.append(pick)
-                        logger.info("策略[%s]选出: %s (ML=%.2f, 信号=%s)",
-                                    pick["策略来源"], pick["名称"],
-                                    pick["ml概率"], pick["信号强度"])
-                except Exception as e:
-                    logger.warning("策略[%s]选股失败: %s", strategy, e)
-
-            if not picks:
-                logger.info("所有策略均未选出符合条件的股票")
+            if not candidates:
+                logger.info("V4 扫描无符合条件的股票")
             else:
-                # 去重（同一只股票可能被多个策略选中）
-                seen_codes = set()
-                unique_picks = []
-                for p in picks:
-                    if p["代码"] not in seen_codes:
-                        seen_codes.add(p["代码"])
-                        unique_picks.append(p)
-
-                # 按ML概率排序，取前available_slots只
-                unique_picks.sort(key=lambda x: x["ml概率"], reverse=True)
-                to_buy = unique_picks[:available_slots]
+                logger.info("V4 选出 %d 只候选: %s",
+                            len(candidates), ", ".join([f"{c['name']}(主力{c['mainforce_score']},ML{c.get('ml_prob',0):.2f})" for c in candidates]))
+                to_buy = candidates
 
                 if POSITION_SIZING_MODE == 'equal':
                     per_position = min(
@@ -1145,56 +1125,37 @@ def daily_scan():
                     per_position = float(account["cash"]) / available_slots
 
                 for pick in to_buy:
-                    price = pick["现价"]
+                    price = pick["price"]
                     if price <= 0:
                         continue
+
+                    ts_code = pick["ts_code"]
+                    name = pick["name"]
+                    market_full = pick["market"]
 
                     # 计算可买股数
                     shares = int(per_position / price / 100) * 100
                     if shares < 100:
-                        logger.warning("%s 可买股数不足100股，跳过", pick["名称"])
+                        logger.warning("%s 可买股数不足100股，跳过", name)
                         continue
 
                     # 检查是否已持有
-                    already_held = any(p["ts_code"] == pick["代码"] for p in current_holds)
+                    already_held = any(p["ts_code"] == ts_code for p in current_holds)
                     if already_held:
-                        logger.info("%s 已持有，跳过", pick["名称"])
+                        logger.info("%s 已持有，跳过", name)
                         continue
-
-                    # 提取ts_code格式
-                    raw_code = pick["代码"]
-                    if "." in raw_code and len(raw_code.split(".")[0]) == 6:
-                        # 已经是正确的 ts_code 格式: 000059.SZ
-                        ts_code = raw_code
-                        market_full = "sz" if raw_code.endswith(".SZ") else "sh"
-                    elif raw_code.startswith(("SH", "SZ")):
-                        # SH/SZ前缀格式 -> 转为 000059.SZ
-                        code_num = raw_code[2:]
-                        market_full = "sh" if raw_code.startswith("SH") else "sz"
-                        ts_code = "%s.%s" % (code_num, "SH" if market_full == "sh" else "SZ")
-                    elif len(raw_code) == 6:
-                        # 纯数字代码
-                        market_full = "sz" if raw_code.startswith(("00", "30")) else "sh"
-                        ts_code = "%s.%s" % (raw_code, "SH" if market_full == "sh" else "SZ")
-                    else:
-                        logger.warning("无法解析股票代码: %s", raw_code)
-                        continue
-
-                    reason = "%s: %s" % (pick["策略来源"], pick.get("入选理由", ""))
-                    if pick.get("热点板块"):
-                        reason += " | 热点: %s" % pick["热点板块"]
 
                     success = execute_buy(
-                        ts_code, pick["名称"], market_full,
+                        ts_code, name, market_full,
                         price, shares,
-                        reason=reason,
-                        strategy=pick["策略来源"],
-                        ml_prob=pick["ml概率"],
-                        enhanced_score=pick["增强评分"],
-                        market_state=pick["market_state"]
+                        reason="V4组合策略: 主力评分%.0f" % pick["mainforce_score"],
+                        strategy="组合策略(V4)",
+                        ml_prob=pick.get("ml_prob", 0),
+                        enhanced_score=pick.get("mainforce_score", 0),
+                        market_state=_mp_buy.get('state_name', '常态')
                     )
                     if not success:
-                        logger.warning("%s 买入失败，跳过", pick["名称"])
+                        logger.warning("%s 买入失败，跳过", name)
         else:
             logger.info("无最新交易日数据，跳过买入")
     elif available_slots > 0 and mkt_info['is_bear']:
