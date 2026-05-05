@@ -42,6 +42,13 @@ try:
 except Exception:
     STOP_LOSS_PCT = -0.03   # 兜底 -3%
     TAKE_PROFIT_PCT = 0.06  # 兜底 +6%
+
+# 仓位管理
+POSITION_SIZING_MODE = 'equal'   # 'equal' | 'weighted'
+PER_POSITION_PCT = 0.30          # 单仓最大占现金比例 30%
+
+# 回撤断路器：总亏损超过此比例时暂停新买入
+DRAWDOWN_CIRCUIT_BREAKER = -0.15  # -15%
 # 熊市不建仓（大盘跌幅>0.5%或涨跌比<35%）
 BEAR_NO_BUY = True
 
@@ -383,6 +390,34 @@ def create_tables():
             final_pnl_pct DECIMAL(8,4) DEFAULT NULL,
             updated_at DATETIME NOT NULL,
             INDEX idx_ts_code (ts_code),
+            INDEX idx_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """)
+
+    # 信号记录表
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sim_signals (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            signal_type VARCHAR(20) NOT NULL COMMENT '信号类型: 买入/止损/止盈/超时',
+            ts_code VARCHAR(20) NOT NULL,
+            stock_name VARCHAR(50) NOT NULL,
+            price DECIMAL(8,3) NOT NULL,
+            shares INT NOT NULL DEFAULT 0,
+            strategy VARCHAR(50) DEFAULT NULL COMMENT '策略来源',
+            ml_prob DECIMAL(6,4) DEFAULT NULL,
+            enhanced_score DECIMAL(8,2) DEFAULT NULL,
+            market_state VARCHAR(20) DEFAULT NULL,
+            reason VARCHAR(200) DEFAULT NULL,
+            signal_date DATE NOT NULL,
+            signal_time DATETIME NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT '已执行' COMMENT '已执行/持仓中/已平仓',
+            close_price DECIMAL(8,3) DEFAULT NULL,
+            close_date DATE DEFAULT NULL,
+            pnl DECIMAL(10,2) DEFAULT NULL,
+            pnl_pct DECIMAL(8,4) DEFAULT NULL,
+            created_at DATETIME NOT NULL,
+            INDEX idx_ts_code (ts_code),
+            INDEX idx_signal_date (signal_date),
             INDEX idx_status (status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """)
@@ -735,6 +770,82 @@ def execute_sell(position_id, price, trade_date=None, reason="止盈/止损"):
     return True
 
 
+def execute_partial_sell(position_id, shares_to_sell, price, trade_date=None, reason="止盈减仓"):
+    """执行模拟部分卖出（卖出指定股数，不清仓）"""
+    if trade_date is None:
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+
+    conn = get_db_conn()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT p.*, a.id as account_id, a.cash
+        FROM sim_positions p
+        JOIN sim_account a ON a.id = (SELECT MAX(id) FROM sim_account)
+        WHERE p.id = %s AND p.status = 'HOLD'
+    """, (position_id,))
+    row = cursor.fetchone()
+    if not row:
+        cursor.close()
+        conn.close()
+        logger.warning("持仓 %d 不存在或已卖出", position_id)
+        return False
+
+    cols = [d[0] for d in cursor.description]
+    pos = dict(zip(cols, row))
+
+    total_shares = int(pos["shares"])
+    shares_remaining = total_shares - shares_to_sell
+    if shares_remaining <= 0:
+        # 如果要卖的数量≥持仓数，转全仓卖出
+        cursor.close()
+        conn.close()
+        return execute_sell(position_id, price, trade_date, reason)
+
+    cost_price = float(pos["cost_price"])
+    amount = round(price * shares_to_sell, 2)
+    commission = max(5.0, amount * 0.00025)
+    stamp_tax = amount * 0.001
+    total_fees = commission + stamp_tax
+
+    sell_amount = amount - total_fees
+    cost_of_sold = float(pos["total_cost"]) * (shares_to_sell / total_shares)
+    pnl = sell_amount - cost_of_sold
+
+    # 更新账户资金
+    new_cash = float(pos["cash"]) + sell_amount
+    cursor.execute("""
+        UPDATE sim_account SET cash = %s, updated_at = %s WHERE id = %s
+    """, (new_cash, datetime.now(), pos["account_id"]))
+
+    # 更新持仓（减少股数和成本）
+    new_total_cost = float(pos["total_cost"]) * (shares_remaining / total_shares)
+    cursor.execute("""
+        UPDATE sim_positions
+        SET shares = %s, total_cost = %s, updated_at = %s
+        WHERE id = %s
+    """, (shares_remaining, new_total_cost, datetime.now(), position_id))
+
+    # 记录交易
+    cursor.execute("""
+        INSERT INTO sim_trades
+        (ts_code, stock_name, market, action, price, shares, amount, commission, stamp_tax,
+         trade_date, trade_time, profit_loss, profit_pct, reason, created_at)
+        VALUES (%s, %s, %s, 'SELL', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """, (pos["ts_code"], pos["stock_name"], pos["market"], price, shares_to_sell, amount,
+          commission, stamp_tax, trade_date, datetime.now(), pnl, pnl / cost_of_sold if cost_of_sold > 0 else 0,
+          reason, datetime.now()))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    logger.info("💰 模拟减仓: %s %d→%d股 @ %.2f 盈亏: %.2f (%s)",
+                pos["stock_name"], total_shares, shares_remaining, price, pnl, reason)
+    return True
+
+
+
 # ========== 更新账户净值 ==========
 def update_account_value():
     """更新账户总价值和最大回撤"""
@@ -891,29 +1002,49 @@ def daily_scan():
                           "触发止损线", "已平仓")
             continue
 
-        # === 半自动建议 ===
-        actions = []
+        # === 自动止盈/超时卖出 ===
+        sold_or_pending = False
 
-        # 分级止盈建议
+        # 分级止盈（从高到低判断，触发后不再检查后续）
         if price >= tp3_price:
-            actions.append(f"🟢 【建议清仓】{pos['stock_name']} 盈{pct_chg:.1f}%≥18%，建议全部卖出 {shares}股@{price:.2f}")
+            execute_sell(pos["id"], price, reason="止盈清仓(+18%)")
+            logger.info("🟢 自动止盈清仓: %s 买入%.2f→现价%.2f (%.1f%%)", pos["stock_name"], cost_price, price, pct_chg)
+            record_signal("止盈", pos["ts_code"], pos["stock_name"], price,
+                          shares, "持仓管理", pos.get('ml_prob'),
+                          pos.get('enhanced_score'), pos.get('market_state', ''),
+                          "触发止盈清仓(+18%)", "已平仓")
+            sold_or_pending = True
         elif price >= tp2_price:
-            p3 = shares // 3
-            actions.append(f"🟡 【建议再卖1/3】{pos['stock_name']} 盈{pct_chg:.1f}%≥10%，建议卖出 {p3}股@{price:.2f}")
+            sell_shares = max(100, shares // 3)
+            execute_partial_sell(pos["id"], sell_shares, price, reason="止盈减仓(+10%)")
+            logger.info("🟡 自动止盈减仓: %s 买入%.2f→现价%.2f (%.1f%%) 卖出%d股", pos["stock_name"], cost_price, price, pct_chg, sell_shares)
+            record_signal("止盈", pos["ts_code"], pos["stock_name"], price,
+                          sell_shares, "持仓管理", pos.get('ml_prob'),
+                          pos.get('enhanced_score'), pos.get('market_state', ''),
+                          "触发止盈减仓(+10%)", "持仓中")
+            sold_or_pending = True
         elif price >= tp1_price:
-            p3 = shares // 3
-            actions.append(f"🟡 【建议卖1/3】{pos['stock_name']} 盈{pct_chg:.1f}%≥6%，建议先卖 {p3}股@{price:.2f}，落袋为安")
+            sell_shares = max(100, shares // 3)
+            execute_partial_sell(pos["id"], sell_shares, price, reason="止盈减仓(+6%)")
+            logger.info("🟡 自动止盈减仓: %s 买入%.2f→现价%.2f (%.1f%%) 卖出%d股", pos["stock_name"], cost_price, price, pct_chg, sell_shares)
+            record_signal("止盈", pos["ts_code"], pos["stock_name"], price,
+                          sell_shares, "持仓管理", pos.get('ml_prob'),
+                          pos.get('enhanced_score'), pos.get('market_state', ''),
+                          "触发止盈减仓(+6%)", "持仓中")
+            sold_or_pending = True
 
-        # 超时卖出建议（持有超过5天）
-        if days_held > 5 and not actions:
-            actions.append(f"⚪ 【建议卖出】{pos['stock_name']} 已持有{days_held}天>5天，当前盈{pct_chg:.1f}%，建议卖出止盈/止损")
-        elif days_held > 5:
-            actions.append(f"⚪ 【提示】{pos['stock_name']} 已持有{days_held}天>5天，超时建议卖出")
+        # 超时卖出（持有超过5天且未触发任何止盈）
+        if not sold_or_pending and days_held > 5:
+            execute_sell(pos["id"], price, reason="超时卖出(>5天)")
+            logger.info("⚪ 自动超时卖出: %s 买入%.2f→现价%.2f (%.1f%%) 持有%d天",
+                        pos["stock_name"], cost_price, price, pct_chg, days_held)
+            record_signal("超时", pos["ts_code"], pos["stock_name"], price,
+                          shares, "持仓管理", pos.get('ml_prob'),
+                          pos.get('enhanced_score'), pos.get('market_state', ''),
+                          "超时卖出(>5天)", "已平仓")
+            sold_or_pending = True
 
-        for a in actions:
-            logger.info(a)
-
-        if not actions:
+        if not sold_or_pending:
             logger.info("  持仓正常: %s 成本%.2f 现价%.2f (%.1f%%) 持有%d天",
                         pos["stock_name"], cost_price, price, pct_chg, days_held)
 
@@ -921,7 +1052,13 @@ def daily_scan():
     current_holds = get_holding_positions()
     available_slots = MAX_POSITIONS - len(current_holds)
 
-    if available_slots > 0 and not mkt_info['is_bear']:
+    # 回撤断路器：总亏损超过阈值时暂停新买入
+    account_info = get_account()
+    if account_info and float(account_info.get("profit_pct", 0)) < DRAWDOWN_CIRCUIT_BREAKER:
+        logger.warning("⚠️ 回撤断路器触发: 总亏损 %.1f%% < %.0f%%，暂停新买入",
+                       float(account_info["profit_pct"]) * 100, abs(DRAWDOWN_CIRCUIT_BREAKER) * 100)
+
+    elif available_slots > 0 and not mkt_info['is_bear']:
         # 获取最新交易日
         conn = get_db_conn()
         cursor = conn.cursor()
@@ -961,7 +1098,13 @@ def daily_scan():
                 unique_picks.sort(key=lambda x: x["ml概率"], reverse=True)
                 to_buy = unique_picks[:available_slots]
 
-                per_position = float(account["cash"]) / available_slots
+                if POSITION_SIZING_MODE == 'equal':
+                    per_position = min(
+                        float(account["cash"]) / available_slots,
+                        float(account["cash"]) * PER_POSITION_PCT
+                    )
+                else:
+                    per_position = float(account["cash"]) / available_slots
 
                 for pick in to_buy:
                     price = pick["现价"]
@@ -1027,7 +1170,54 @@ def daily_scan():
     # 5. 更新账户净值
     update_account_value()
 
+    # 6. 同步持仓到 JSON（供 position_monitor / feishu_alerts 读取）
+    sync_positions_to_json()
+
     logger.info("=== 模拟交易每日扫描完成 ===")
+
+
+# ========== JSON 同步（供 position_monitor / feishu_alerts 使用）==========
+def sync_positions_to_json():
+    """将 MySQL 持仓同步到 data/positions.json（单向：MySQL → JSON）"""
+    conn = get_db_conn()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT ts_code, stock_name, market, shares, cost_price, total_cost,
+               current_price, market_value, profit_loss, profit_pct,
+               stop_loss, take_profit, buy_date, status, updated_at
+        FROM sim_positions
+        WHERE status = 'HOLD'
+    """)
+    rows = cursor.fetchall()
+    cols = [d[0] for d in cursor.description]
+    cursor.close()
+    conn.close()
+
+    positions = []
+    for row in rows:
+        p = dict(zip(cols, row))
+        code = str(p["ts_code"]).split(".")[0] if "." in str(p["ts_code"]) else str(p["ts_code"])
+        profit_pct_val = float(p["profit_pct"]) * 100 if p["profit_pct"] else 0
+        positions.append({
+            "code": code,
+            "market": p["market"],
+            "name": p["stock_name"],
+            "cost": float(p["cost_price"]),
+            "shares": int(p["shares"]),
+            "stop_loss": float(p["stop_loss"]),
+            "take_profit": float(p["take_profit"]),
+            "buy_date": str(p["buy_date"]) if p["buy_date"] else "",
+            "current_price": float(p["current_price"]) if p["current_price"] else float(p["cost_price"]),
+            "float_pnl": float(p["profit_loss"]) if p["profit_loss"] else 0,
+            "float_pnl_pct": round(profit_pct_val, 2),
+        })
+
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out_path = os.path.join(base_dir, "data", "positions.json")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, 'w', encoding='utf-8') as f:
+        json.dump({"positions": positions}, f, ensure_ascii=False, indent=2)
+    logger.info("✅ 持仓已同步到 positions.json（%d 只）", len(positions))
 
 
 # ========== API 响应 ==========
@@ -1120,8 +1310,8 @@ def get_sim_account_info():
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="模拟交易系统")
-    parser.add_argument("action", choices=["init", "scan", "status"],
-                        help="init=建表初始化, scan=每日扫描, status=账户状态")
+    parser.add_argument("action", choices=["init", "scan", "v4_scan", "status"],
+                        help="init=建表初始化, scan=每日扫描, v4_scan=V4候选扫描, status=账户状态")
     args = parser.parse_args()
 
     if args.action == "init":
@@ -1129,6 +1319,12 @@ if __name__ == "__main__":
     elif args.action == "scan":
         create_tables()  # 确保表存在
         daily_scan()
+    elif args.action == "v4_scan":
+        candidates = v4_scan(top_n=5)
+        for c in candidates:
+            logger.info("V4候选: %s(%s) 主力评分=%.0f ML=%.2f",
+                        c["name"], c["ts_code"], c["mainforce_score"], c.get("ml_prob", 0))
+        print(json.dumps(candidates, ensure_ascii=False, indent=2, default=str))
     elif args.action == "status":
         info = get_sim_account_info()
         print(json.dumps(info, ensure_ascii=False, indent=2))

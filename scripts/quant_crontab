@@ -1,0 +1,45 @@
+# 量化系统定时任务配置
+# 安装方式：crontab /Users/mozengfu/workspace/quant-system/scripts/quant_crontab
+# 查看：crontab -l
+
+# 环境变量
+SHELL=/bin/zsh
+PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin
+PYTHON3=/Library/Frameworks/Python.framework/Versions/3.12/bin/python3
+QUANT_DIR=/Users/mozengfu/workspace/quant-system
+
+# ========== 飞书预警 ==========
+# 盘前推送：工作日 9:00
+0 9 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/feishu_alerts.py morning >> $QUANT_DIR/logs/feishu_alerts.log 2>&1
+
+# 止盈止损检查：工作日 9:30-15:00 每 5 分钟
+*/5 9-14 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/feishu_alerts.py alert >> $QUANT_DIR/logs/feishu_alerts.log 2>&1
+
+# 收盘推送：工作日 15:05
+5 15 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/feishu_alerts.py daily >> $QUANT_DIR/logs/feishu_alerts.log 2>&1
+
+# ========== 盘中监控 ==========
+# 持仓扫描：工作日 9:30-15:00 每 5 分钟
+# 读取 data/positions.json（盘后由 sim_trading.py scan 同步写入）
+*/5 9-14 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/position_monitor.py >> $QUANT_DIR/logs/position_monitor.log 2>&1
+
+# ========== 数据自动刷新 ==========
+# stock_pool/recommend/premarket 每30分钟刷新一次
+# 盘前刷新（9:00）
+0 9 * * 1-5 cd $QUANT_DIR && bash scripts/auto_refresh_data.sh >> $QUANT_DIR/logs/auto_refresh.log 2>&1
+# 盘中每30分钟刷新（9:30-14:30）
+*/30 9-14 * * 1-5 cd $QUANT_DIR && bash scripts/auto_refresh_data.sh >> $QUANT_DIR/logs/auto_refresh.log 2>&1
+
+# ========== 每日盘后流水线（依赖链）==========
+# 17:00 Tushare数据导入（必须先完成）
+# 17:30 模拟交易扫描（依赖17:00的最新数据，含：止损/止盈/超时自动执行 → 持仓刷新 → JSON同步）
+# 17:45 V4策略扫描（可选，不影响模拟交易）
+
+# ========== 每日数据导入（Tushare → MySQL） ==========
+0 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/update_daily_price_cron.py >> $QUANT_DIR/logs/daily_import.log 2>&1
+
+# ========== 模拟交易 ==========
+30 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/sim_trading.py scan >> $QUANT_DIR/logs/sim_trading.log 2>&1
+
+# ========== V4 组合策略扫描 ==========
+45 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 run_three_strategies.py >> $QUANT_DIR/logs/v4_scan.log 2>&1

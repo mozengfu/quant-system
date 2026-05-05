@@ -104,8 +104,8 @@ def send_morning_alert(top_n=5):
             if mainforce_score < 60:
                 continue
 
-            # 止损止盈优先使用市场状态参数
-            sl_pct = -5
+            # 止损止盈优先使用市场状态参数，兜底 -3%/+10%
+            sl_pct = -3
             tp_pct = 10
             try:
                 from market_state import get_market_state
