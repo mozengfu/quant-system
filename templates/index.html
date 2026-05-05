@@ -317,6 +317,7 @@
                 <button onclick="window.location.href='/ml_top15'" aria-label="ML Top15">🤖 ML Top15</button>
                 <button onclick="showPanel('sim',event)" aria-label="模拟交易">🧪 模拟交易</button>
                 <button onclick="showPanel('performance',event)" aria-label="绩效看板">📊 绩效看板</button>
+                <button onclick="showPanel('follow',event)" aria-label="跟单建议">📋 跟单建议</button>
                 <button onclick="showPanel('ai_sim',event)" aria-label="AI模拟组合">🤖 AI模拟组合</button>
                 <button onclick="showPanel('backtest',event)" aria-label="历史回测">📉 历史回测</button>
                 <button onclick="showPanel('signals',event)" aria-label="信号记录">📋 信号记录</button>
@@ -566,6 +567,13 @@
             </div>
         </div>
 
+        <!-- 跟单建议面板 -->
+        <div id="panel-follow" class="panel">
+            <h3 class="section-title">📋 今日跟单建议</h3>
+            <div class="card" id="followContent">
+                <div class="empty" style="text-align:center;padding:40px;color:#8892b0;">加载中...</div>
+            </div>
+        </div>
         <!-- 绩效看板面板 -->
         <div id="panel-performance" class="panel">
             <h3 class="section-title">📊 绩效看板</h3>
@@ -800,6 +808,7 @@
             if (name === 'track') loadTrackStats();
             if (name === 'sim') loadSimAccount();
             if (name === 'performance') loadPerformance();
+            if (name === 'follow') loadFollowSignals();
         }
 
         // 加载建仓建议
@@ -2007,6 +2016,44 @@
         // ==================== 指标卡片 ====================
         function cardHTML(label, value, colorClass) {
             return `<div class="card"><div class="label">${label}</div><div class="value ${colorClass}">${value}</div></div>`;
+        }
+
+        // ==================== 跟单建议 ====================
+        async function loadFollowSignals() {
+            const el = document.getElementById('followContent');
+            el.innerHTML = '<div class="empty" style="text-align:center;padding:40px;color:#8892b0;">加载中...</div>';
+            try {
+                const res = await fetch('/api/sim/today_signals', {credentials: 'include'});
+                const data = await res.json();
+                const signals = data.signals || [];
+
+                if (signals.length === 0) {
+                    el.innerHTML = '<div class="empty" style="text-align:center;padding:40px;color:#8892b0;">今日暂无买入信号，模拟盘未建仓<br><span style="font-size:13px;color:#5a6a8a;">每日 17:30 盘后扫描后更新</span></div>';
+                    return;
+                }
+
+                let html = '<div style="margin-bottom:12px;color:#8892b0;">📅 信号日期: ' + data.date + ' | 共 ' + signals.length + ' 条</div>';
+                for (const s of signals) {
+                    const diff = s.current_price > 0 ? ((s.current_price - s.buy_price) / s.buy_price * 100).toFixed(2) : '--';
+                    const diffClass = diff >= 0 ? 'profit' : 'loss';
+                    html += '<div style="background:#1a2332;border-radius:8px;padding:14px;margin-bottom:10px;border:1px solid #2a3a52;">'
+                        + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
+                        + '<div><b style="font-size:16px;">' + s.name + '</b> <span style="color:#8892b0;font-size:13px;">' + s.ts_code + '</span></div>'
+                        + '<span class="' + diffClass + '">现价 ' + s.current_price.toFixed(2) + ' (' + diff + '%)</span></div>'
+                        + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:13px;">'
+                        + '<div><span style="color:#8892b0;">买入价</span><br><b>' + s.buy_price.toFixed(2) + '</b></div>'
+                        + '<div><span style="color:#8892b0;">建议买入 ≤</span><br><b style="color:#4ecdc4;">' + s.suggest_buy_upper.toFixed(2) + '</b></div>'
+                        + '<div><span style="color:#8892b0;">止损参考</span><br><b style="color:#ff6b6b;">' + s.suggest_stop_loss.toFixed(2) + '</b></div>'
+                        + '<div><span style="color:#8892b0;">ML概率</span><br><b>' + (s.ml_prob * 100).toFixed(0) + '%</b></div></div>'
+                        + '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:13px;margin-top:8px;padding-top:8px;border-top:1px solid #2a3a52;">'
+                        + '<div><span style="color:#8892b0;">止盈一档 +6%</span><br><b style="color:#4ecdc4;">' + s.suggest_take_profit_1.toFixed(2) + '</b></div>'
+                        + '<div><span style="color:#8892b0;">止盈三档 +18%</span><br><b style="color:#4ecdc4;">' + s.suggest_take_profit_3.toFixed(2) + '</b></div>'
+                        + '<div><span style="color:#8892b0;">策略</span><br><b>' + (s.strategy || 'V4组合') + '</b></div></div></div>';
+                }
+                el.innerHTML = html;
+            } catch(e) {
+                el.innerHTML = '<div class="empty" style="text-align:center;padding:40px;color:#ff6b6b;">加载失败: ' + e.message + '</div>';
+            }
         }
 
 </script>

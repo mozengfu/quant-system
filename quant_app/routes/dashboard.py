@@ -96,6 +96,60 @@ async def get_performance_summary(request: FastAPIRequest, token: str = Cookie(N
         "nav_values": [round(h["total_value"], 2) for h in history],
     }
 
+# ========== 跟单建议 ==========
+
+@router.get("/api/sim/today_signals")
+async def get_today_signals(token: str = Cookie(None)):
+    """返回今日模拟盘买入信号，供实盘跟单参考"""
+    user = get_current_user(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        import pymysql
+        from quant_app.utils.config import get_db_config
+        conn = pymysql.connect(**get_db_config())
+        cur = conn.cursor()
+        # 查询今日买入信号
+        cur.execute("""
+            SELECT s.ts_code, s.stock_name, s.price, s.shares, s.strategy,
+                   s.ml_prob, s.reason, s.signal_time,
+                   t.price as current_price
+            FROM sim_signals s
+            LEFT JOIN (
+                SELECT ts_code, current_price FROM sim_positions WHERE status='HOLD'
+            ) t ON s.ts_code = t.ts_code
+            WHERE s.signal_type='买入' AND s.signal_date = %s
+            ORDER BY s.signal_time DESC
+        """, (today,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        signals = []
+        for r in rows:
+            buy_price = float(r[2])
+            current = float(r[7]) if r[7] else buy_price
+            signals.append({
+                "ts_code": r[0],
+                "name": r[1],
+                "buy_price": buy_price,
+                "shares": int(r[3]),
+                "strategy": r[4] or "",
+                "ml_prob": float(r[5]) if r[5] else 0,
+                "reason": r[6] or "",
+                "signal_time": str(r[7]) if r[7] else "",
+                "current_price": current,
+                "suggest_buy_upper": round(buy_price * 1.02, 2),  # 建议买入上限（+2%）
+                "suggest_stop_loss": round(buy_price * 0.97, 2),  # 止损参考
+                "suggest_take_profit_1": round(buy_price * 1.06, 2),  # 止盈一档
+                "suggest_take_profit_3": round(buy_price * 1.18, 2),  # 止盈三档
+            })
+        return {"signals": signals, "date": today}
+    except Exception as e:
+        logger.warning(f"获取今日信号失败: {e}")
+        return {"signals": [], "date": today, "error": str(e)}
+
 POSITION_ALERT_STATE = {}
 POSITION_ALERT_LOCK = __import__('threading').Lock()
 
