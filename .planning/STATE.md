@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-Phase 3 — 风控体系完善 ✅（2026-05-05 完成）
+Phase 4 — ML 模型迭代规范化 ✅（2026-05-05 完成）
 
 ## 已完成
 
@@ -11,13 +11,14 @@ Phase 3 — 风控体系完善 ✅（2026-05-05 完成）
 - [x] GSD 项目初始化
 - [x] Phase 1: 策略打磨与回测体系
 - [x] Phase 2: 模拟交易全自动化
-- [x] Phase 3: 盘中自动止损止盈（position_monitor 告警→执行）
-- [x] Phase 3: position_id 同步 + 动态市场状态参数
-- [x] Phase 3: risk_config.json + risk_config.py 风控配置
+- [x] Phase 3: 风控体系完善
+- [x] Phase 4: 废弃模型清理（7 个 .pkl + 3 个 feature_config 移入 archive）
+- [x] Phase 4: train_model.py 统一训练入口 + model_registry.json 版本注册
+- [x] Phase 4: cleanup_models.py 清理工具 + model_loader.py 清理
+- [x] Phase 4: 预测快照保存 + check_model_perf.py 性能检查
 
 ## 待办
 
-- [ ] Phase 4 规划与执行（ML 模型迭代规范化）
 - [ ] Phase 5 规划与执行（监控与报表）
 
 ## 当前上下文
