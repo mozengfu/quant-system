@@ -12,6 +12,11 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from alicloud_api import get_stock_realtime
 
+# 盘中自动执行交易（止损/止盈/超时）
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+from sim_trading import execute_sell, execute_partial_sell
+from quant_app.utils.config import get_db_config
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s %(message)s',
@@ -25,10 +30,8 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).parent.parent
 POSITIONS_FILE = BASE_DIR / "data" / "positions.json"
 
-# ========== V4.1→V6.5 级联策略风控 ==========
-# 固定止损 -3%，一级止盈 +6%
-STOP_LOSS_PCT = -0.03
-TAKE_PROFIT_PCT = 0.06
+# ========== 风控参数（由 sim_trading.get_market_params 动态获取，此处仅留参考）==========
+# 实际止损止盈由市场状态动态决定
 
 def calc_trailing_stop(cost, current_price, original_stop_loss):
     """级联策略使用固定止损，无移动止损"""
@@ -39,6 +42,12 @@ def scan_positions():
     """
     扫描所有持仓，获取实时价格，计算浮动盈亏，检查止盈止损
     """
+    # 获取市场状态参数（动态止盈止损、最大持仓等）
+    from sim_trading import get_market_params
+    mp = get_market_params()
+    logger.info("当前市场状态: %s 止损%.0f%% 止盈%.0f%% 最大持仓%d",
+                mp['state'], mp['stop_loss_pct'] * -100, mp['take_profit_pct'] * 100, mp['max_positions'])
+
     if not POSITIONS_FILE.exists():
         logger.warning("positions.json 不存在")
         return {"positions": [], "alerts": []}
@@ -64,6 +73,7 @@ def scan_positions():
         stop_loss = float(pos.get("stop_loss", 0))
         take_profit = float(pos.get("take_profit", 0))
         buy_date = pos.get("buy_date", "")
+        position_id = int(pos.get("position_id", 0))
 
         if cost <= 0:
             continue
@@ -95,70 +105,36 @@ def scan_positions():
         trailing_stop, _ = calc_trailing_stop(cost, price, stop_loss)
         pos["trailing_stop"] = trailing_stop
 
-        # 止盈止损判断
+        # 止盈止损判断 + 自动执行
         alert_type = None
-        if price <= trailing_stop:
+        if price <= trailing_stop and position_id > 0:
+            execute_sell(position_id, price, reason="盘中自动止损")
             alert_type = "STOP_LOSS"
-            alert_detail = {
-                "code": code,
-                "name": name,
-                "type": "止损",
-                "price": price,
-                "cost": cost,
-                "pnl_pct": round(pnl_pct, 2),
-                "trailing_stop": trailing_stop,
-                "time": now.strftime("%Y-%m-%d %H:%M:%S")
-            }
-            alerts.append(alert_detail)
-            logger.warning("🔴 止损触发: %s 现价 %.2f 移动止损 %.2f", name, price, trailing_stop)
+            logger.warning("🔴 自动止损执行: %s 现价 %.2f 移动止损 %.2f", name, price, trailing_stop)
+            # 已卖出，不继续检查止盈
 
-        elif take_profit > 0 or cost > 0:
+        elif (take_profit > 0 or cost > 0) and position_id > 0:
             # 三档止盈（与 sim_trading 对齐）
             tp1_price = cost * 1.06   # +6%
             tp2_price = cost * 1.10   # +10%
             tp3_price = cost * 1.18   # +18%
 
             if price >= tp3_price:
+                execute_sell(position_id, price, reason="盘中自动止盈清仓(+18%)")
                 alert_type = "TAKE_PROFIT_3"
-                alert_detail = {
-                    "code": code,
-                    "name": name,
-                    "type": "止盈第三档(+18%)",
-                    "price": price,
-                    "cost": cost,
-                    "pnl_pct": round(pnl_pct, 2),
-                    "time": now.strftime("%Y-%m-%d %H:%M:%S")
-                }
-                alerts.append(alert_detail)
-                logger.warning("🟢 止盈第三档: %s 现价 %.2f 涨幅 %.2f%%", name, price, pnl_pct)
+                logger.warning("🟢 自动止盈清仓: %s 现价 %.2f 涨幅 %.2f%%", name, price, pnl_pct)
 
             elif price >= tp2_price:
+                sell_shares = max(100, shares // 3)
+                execute_partial_sell(position_id, sell_shares, price, reason="盘中自动止盈减仓(+10%)")
                 alert_type = "TAKE_PROFIT_2"
-                alert_detail = {
-                    "code": code,
-                    "name": name,
-                    "type": "止盈第二档(+10%)",
-                    "price": price,
-                    "cost": cost,
-                    "pnl_pct": round(pnl_pct, 2),
-                    "time": now.strftime("%Y-%m-%d %H:%M:%S")
-                }
-                alerts.append(alert_detail)
-                logger.warning("🟢 止盈第二档: %s 现价 %.2f 涨幅 %.2f%%", name, price, pnl_pct)
+                logger.warning("🟡 自动止盈减仓: %s 现价 %.2f 涨幅 %.2f%% 卖出%d股", name, price, pnl_pct, sell_shares)
 
             elif price >= tp1_price:
+                sell_shares = max(100, shares // 3)
+                execute_partial_sell(position_id, sell_shares, price, reason="盘中自动止盈减仓(+6%)")
                 alert_type = "TAKE_PROFIT_1"
-                alert_detail = {
-                    "code": code,
-                    "name": name,
-                    "type": "止盈第一档(+6%)",
-                    "price": price,
-                    "cost": cost,
-                    "pnl_pct": round(pnl_pct, 2),
-                    "time": now.strftime("%Y-%m-%d %H:%M:%S")
-                }
-                alerts.append(alert_detail)
-                logger.info("🟢 止盈第一档: %s 现价 %.2f 涨幅 %.2f%%", name, price, pnl_pct)
+                logger.info("🟡 自动止盈减仓: %s 现价 %.2f 涨幅 %.2f%% 卖出%d股", name, price, pnl_pct, sell_shares)
 
         # 打印监控摘要
         status = "⚠️" if alert_type else "✅"
@@ -185,5 +161,18 @@ def scan_positions():
 
 
 if __name__ == "__main__":
-    result = scan_positions()
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if len(sys.argv) > 1 and sys.argv[1] == "status":
+        import sim_trading as _st
+        mp = _st.get_market_params()
+        print(json.dumps({
+            "market_state": mp['state'],
+            "effective_params": {
+                "stop_loss_pct": mp['stop_loss_pct'],
+                "take_profit_pct": mp['take_profit_pct'],
+                "max_positions": mp['max_positions'],
+                "ml_threshold": mp['ml_threshold'],
+            },
+        }, ensure_ascii=False, indent=2))
+    else:
+        result = scan_positions()
+        print(json.dumps(result, ensure_ascii=False, indent=2))

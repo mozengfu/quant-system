@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "description": "风控参数配置。优先级：市场状态参数 > 此文件 > 代码默认值",
+  "updated_at": "2026-05-05",
+  "circuit_breaker": {
+    "max_drawdown_pct": -15,
+    "enabled": true
+  },
+  "position_sizing": {
+    "mode": "equal",
+    "per_position_pct": 30
+  },
+  "market_state_overrides": {
+    "trend_up": null,
+    "trend_down": null,
+    "range": null,
+    "panic": {
+      "max_positions": 1,
+      "stop_loss_pct": -2,
+      "take_profit_pct": 3
+    },
+    "overheated": {
+      "max_positions": 3,
+      "stop_loss_pct": -5,
+      "take_profit_pct": 10
+    }
+  }
+}

@@ -12,15 +12,16 @@ QUANT_DIR=/Users/mozengfu/workspace/quant-system
 # 盘前推送：工作日 9:00
 0 9 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/feishu_alerts.py morning >> $QUANT_DIR/logs/feishu_alerts.log 2>&1
 
-# 止盈止损检查：工作日 9:30-15:00 每 5 分钟
+# 止盈止损检查：工作日 9:30-14:55 每 5 分钟（含自动执行）
+# 注意：飞书预警仅通知，不执行交易；盘中自动执行在 position_monitor 中
 */5 9-14 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/feishu_alerts.py alert >> $QUANT_DIR/logs/feishu_alerts.log 2>&1
 
 # 收盘推送：工作日 15:05
 5 15 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/feishu_alerts.py daily >> $QUANT_DIR/logs/feishu_alerts.log 2>&1
 
-# ========== 盘中监控 ==========
+# ========== 盘中监控（含自动止盈止损执行）==========
 # 持仓扫描：工作日 9:30-15:00 每 5 分钟
-# 读取 data/positions.json（盘后由 sim_trading.py scan 同步写入）
+# 触发止损(-3%)/止盈(+6%/+10%/+18%)时自动执行卖出，不依赖日志告警
 */5 9-14 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/position_monitor.py >> $QUANT_DIR/logs/position_monitor.log 2>&1
 
 # ========== 数据自动刷新 ==========

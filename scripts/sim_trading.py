@@ -32,16 +32,8 @@ DB_CONFIG = get_db_config()
 
 INITIAL_CAPITAL = 100000  # 初始资金 10 万
 MAX_POSITIONS = 3          # 最大持仓数（V4.1→V6.5级联策略最优）
-# 止盈止损优先使用市场状态参数
-try:
-    from market_state import get_market_state
-    _ms = get_market_state() or {}
-    _p = _ms.get('params', {})
-    STOP_LOSS_PCT = _p.get('stop_loss_pct', -3) / 100
-    TAKE_PROFIT_PCT = _p.get('take_profit_pct', 6) / 100
-except Exception:
-    STOP_LOSS_PCT = -0.03   # 兜底 -3%
-    TAKE_PROFIT_PCT = 0.06  # 兜底 +6%
+STOP_LOSS_PCT = -0.03   # 固定止损 -3%（兜底值，动态值由 get_market_params 提供）
+TAKE_PROFIT_PCT = 0.06  # 固定止盈 +6%（兜底值，动态值由 get_market_params 提供）
 
 # 仓位管理
 POSITION_SIZING_MODE = 'equal'   # 'equal' | 'weighted'
@@ -51,6 +43,42 @@ PER_POSITION_PCT = 0.30          # 单仓最大占现金比例 30%
 DRAWDOWN_CIRCUIT_BREAKER = -0.15  # -15%
 # 熊市不建仓（大盘跌幅>0.5%或涨跌比<35%）
 BEAR_NO_BUY = True
+
+
+# ========== 市场状态参数 ==========
+def get_market_params():
+    """获取当前生效的全部风控参数
+    优先级：市场状态参数 > 代码默认值
+    供 daily_scan（动态止损/仓位）和 position_monitor status 命令使用"""
+    try:
+        from market_state import get_market_state
+        ms = get_market_state() or {}
+        p = ms.get('params', {})
+        # 取大盘涨跌幅用于状态名称
+        market_info = get_market_state_for_sim()
+        return {
+            'state': ms.get('state', 'range'),
+            'state_name': market_info.get('state_name', '常态'),
+            'stop_loss_pct': p.get('stop_loss_pct', -3) / 100,
+            'take_profit_pct': p.get('take_profit_pct', 6) / 100,
+            'max_positions': p.get('max_positions', 3),
+            'ml_threshold': p.get('ml_threshold', 0.55),
+            'position_sizing_mode': POSITION_SIZING_MODE,
+            'per_position_pct': PER_POSITION_PCT,
+            'drawdown_circuit_breaker': DRAWDOWN_CIRCUIT_BREAKER,
+        }
+    except Exception:
+        return {
+            'state': 'range',
+            'state_name': '常态',
+            'stop_loss_pct': -0.03,
+            'take_profit_pct': 0.06,
+            'max_positions': 3,
+            'ml_threshold': 0.55,
+            'position_sizing_mode': POSITION_SIZING_MODE,
+            'per_position_pct': PER_POSITION_PCT,
+            'drawdown_circuit_breaker': DRAWDOWN_CIRCUIT_BREAKER,
+        }
 
 
 # ========== 腾讯财经行情（盘后也可用）==========
@@ -310,7 +338,7 @@ def ml_select_from_strategy(strategy_name, latest_date):
         "资金趋势": best.get('资金趋势', ''),
         "信号强度": signal,
         "入选理由": best.get('入选理由', ''),
-        "止损价": round(best.get('现价', 0) * (1 + STOP_LOSS_PCT), 2),
+        "止损价": round(best.get('现价', 0) * (1 + get_market_params()['stop_loss_pct']), 2),
         "策略来源": {"bottom": "底部起步", "strong": "强势活跃", "combo": "组合策略"}[strategy_name],
         "market_state": mkt_info['state_name'],
     }
@@ -649,9 +677,10 @@ def execute_buy(ts_code, name, market, price, shares, trade_date=None, reason="M
     """, (ts_code, name, market, price, shares, amount, commission,
           trade_date, datetime.now(), reason, datetime.now()))
 
-    # 记录持仓（含ML信息）
-    stop_loss = round(price * (1 + STOP_LOSS_PCT), 3)
-    take_profit = round(price * (1 + TAKE_PROFIT_PCT), 3)
+    # 记录持仓（含ML信息），使用市场状态参数计算止盈止损
+    _mp_exec = get_market_params()
+    stop_loss = round(price * (1 + _mp_exec['stop_loss_pct']), 3)
+    take_profit = round(price * (1 + _mp_exec['take_profit_pct']), 3)
     total_cost = amount + commission
 
     cursor.execute("""
@@ -955,9 +984,15 @@ def daily_scan():
     5. 更新模拟账户状态
     """
     logger.info("=== 模拟交易每日扫描开始（ML驱动）===")
-    logger.info("V4.1→V6.5级联策略 | 止损-3% | 分级止盈+6%/+10%/+18% | 持有≤5天")
+    logger.info("V4.1→V6.5级联策略 | 分级止盈+6%/+10%/+18% | 持有≤5天")
 
-    # 1. 获取大盘状态
+    # 1. 获取大盘状态 + 市场参数
+    market_params = get_market_params()
+    logger.info("市场状态: %s 止损%.0f%% 止盈%.0f%% 最大持仓%d",
+                market_params['state'],
+                market_params['stop_loss_pct'] * -100,
+                market_params['take_profit_pct'] * 100,
+                market_params['max_positions'])
     mkt_info = get_market_state_for_sim()
     logger.info("大盘状态: %s (涨跌幅: %.2f%%, 阈值: %.2f)",
                 mkt_info['state_name'], mkt_info['mkt_chg'], mkt_info['threshold'])
@@ -982,8 +1017,10 @@ def daily_scan():
         cost_price = float(pos["cost_price"])
         pct_chg = (price - cost_price) / cost_price * 100
 
-        # 计算关键价位
-        stop_price = round(cost_price * (1 + STOP_LOSS_PCT), 2)
+        # 计算关键价位（使用动态市场状态参数）
+        _mp = get_market_params()
+        _sl = _mp['stop_loss_pct']
+        stop_price = round(cost_price * (1 + _sl), 2)
         tp1_price = round(cost_price * 1.06, 2)    # +6% 建议卖1/3
         tp2_price = round(cost_price * 1.10, 2)    # +10% 建议再卖1/3
         tp3_price = round(cost_price * 1.18, 2)    # +18% 建议清仓
@@ -1050,7 +1087,8 @@ def daily_scan():
 
     # 3. ML策略选股买入（检查大盘状态）
     current_holds = get_holding_positions()
-    available_slots = MAX_POSITIONS - len(current_holds)
+    _mp_buy = get_market_params()
+    available_slots = _mp_buy['max_positions'] - len(current_holds)
 
     # 回撤断路器：总亏损超过阈值时暂停新买入
     account_info = get_account()
@@ -1162,7 +1200,7 @@ def daily_scan():
     elif available_slots > 0 and mkt_info['is_bear']:
         logger.info("🐻 大盘为逆市状态，暂停建仓")
     else:
-        logger.info("已满仓(%d/%d)，无需买入", len(current_holds), MAX_POSITIONS)
+        logger.info("已满仓(%d/%d)，无需买入", len(current_holds), _mp_buy['max_positions'])
 
     # 4. 刷新持仓现价（确保数据库数据是最新的）
     refresh_positions_prices()
@@ -1182,7 +1220,7 @@ def sync_positions_to_json():
     conn = get_db_conn()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT ts_code, stock_name, market, shares, cost_price, total_cost,
+        SELECT id, ts_code, stock_name, market, shares, cost_price, total_cost,
                current_price, market_value, profit_loss, profit_pct,
                stop_loss, take_profit, buy_date, status, updated_at
         FROM sim_positions
@@ -1199,6 +1237,7 @@ def sync_positions_to_json():
         code = str(p["ts_code"]).split(".")[0] if "." in str(p["ts_code"]) else str(p["ts_code"])
         profit_pct_val = float(p["profit_pct"]) * 100 if p["profit_pct"] else 0
         positions.append({
+            "position_id": int(p["id"]),
             "code": code,
             "market": p["market"],
             "name": p["stock_name"],
