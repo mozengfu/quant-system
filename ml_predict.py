@@ -28,6 +28,10 @@ _v6_4_bundle = None  # V6.4 集成模型（实验性）
 _v6_5_bundle = None  # V6.5 精选特征集成模型
 _model_lock = threading.Lock()  # 模型加载并发锁
 
+# 最近一次批量扫描的 ML 结果缓存（股票代码 → ML 预测）
+# 个股分析时直接使用，不重新计算（单只股票 rank 特征全是 1.0 导致模型输出失真）
+_last_scan_results = {}
+
 def _load_model(version="v6"):
     """加载指定版本的模型（线程安全）"""
     with _model_lock:
@@ -1161,13 +1165,12 @@ def predict_batch(ts_codes, db_conn=None, as_of_date=None):
             pred_returns = bundle['model'].predict(X)
 
         # LambdaRank 输出排序分数（无绝对标度），做 z-score 标准化再显示
-        # 单只股票时跳过 z-score（N=1 时 z_score 恒为 0），直接使用原始分
-        if len(pred_returns) <= 1:
-            pred_z = pred_returns
-        else:
+        if len(pred_returns) > 1:
             pred_mean = np.mean(pred_returns)
             pred_std = np.std(pred_returns) + 1e-9
             pred_z = (pred_returns - pred_mean) / pred_std
+        else:
+            pred_z = np.zeros_like(pred_returns)  # N=1 时 rank 特征异常，退回中性
 
         results = {}
         for i, (_, row) in enumerate(feat_df.iterrows()):
@@ -1185,6 +1188,19 @@ def predict_batch(ts_codes, db_conn=None, as_of_date=None):
                 'is_likely_up': is_up,
                 'model_type': version,
                 'model_task': 'lambdarank',
+            }
+        if len(ts_codes) > 1:
+            rank_ic = bundle.get('final_rank_ic', 0)
+            model_label = f'{version}集成(IC={rank_ic:.3f})' if version and (version.startswith('v6') or 'v6' in str(version)) else str(version or 'unknown')
+            global _last_scan_results
+            _last_scan_results = {
+                tc: {
+                    'ml概率': float(r['probability']),
+                    '预测收益': float(r['predicted_return']),
+                    'ml看涨': bool(r['is_likely_up']),
+                    '模型名称': model_label,
+                }
+                for tc, r in results.items()
             }
         return results
     except Exception as e:
@@ -1236,6 +1252,8 @@ def ml_enhanced_score(stocks_list, db_conn=None):
     from sector_rotation import get_fund_flow_continuity, get_sector_bonus, get_hot_sectors, _build_industry_map
     hot_sectors = get_hot_sectors(top_n=8, db_conn=db_conn)
     industry_map = _build_industry_map(list(code_map.keys()), db_conn)  # 批量加载，避免N次SQL
+    # 批量扫描结果写入缓存（供个股分析页面直接引用）
+    scan_cache = {}
     for ts_code, s in code_map.items():
         pred = predictions.get(ts_code, {'probability': 0.5, 'is_likely_up': False, 'predicted_return': 0})
         prob = float(pred['probability']); is_up = bool(pred.get('is_likely_up', prob >= 0.5))
@@ -1249,6 +1267,13 @@ def ml_enhanced_score(stocks_list, db_conn=None):
         s['预测收益'] = round(pred_ret, 2); s['热点板块'] = sector_name
         s['资金趋势'] = flow['trend']; s['资金连续'] = flow['continuous_inflow']
         s['市场状态'] = f'{model_label}'
+        scan_cache[ts_code] = {
+            'ml概率': round(prob, 3), '预测收益': round(pred_ret, 2),
+            'ml看涨': is_up, '资金趋势': flow['trend'],
+            '模型名称': model_label,
+        }
+    global _last_scan_results
+    _last_scan_results = scan_cache
     return stocks_list
 
 

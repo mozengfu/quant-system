@@ -375,37 +375,34 @@ def analyze_stock(code, market="sz"):
     score = max(0, score)  # 不限制下限
 
     # ========== ML模型集成 ==========
+    # LambdaRank 依赖 batch 内百分位 rank 特征，单只股票时 rank 全为 1.0 导致输出失真。
+    # 因此直接从 ml_predictions 表读取最近一次批量扫描的结果，不重新计算。
     ml_info = None
     ml_bonus = 0
     try:
-        from ml_predict import ml_enhanced_score
         import pymysql
         from quant_app.utils.config import get_db_config
-        db_cfg = get_db_config(connect_timeout=3)
-        conn = pymysql.connect(**db_cfg)
-        # 构造单只股票列表供 ml_enhanced_score 处理
-        stock_item = {
-            "代码": f"{'sz' if market=='sz' else 'sh'}{code}",
-            "ts_code": ts_code,
-            "名称": rt.get("名称", ""),
-            "现价": price,
-        }
-        scored = ml_enhanced_score([stock_item], db_conn=conn)
+        conn = pymysql.connect(**get_db_config(connect_timeout=3))
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT _ml_pred, predicted_return, model_type FROM ml_predictions "
+            "WHERE ts_code=%s ORDER BY trade_date DESC LIMIT 1", [ts_code]
+        )
+        row = cur.fetchone()
+        cur.close()
         conn.close()
-        if scored and len(scored) > 0:
-            s = scored[0]
-            ml_prob = s.get("ml概率", 0)
-            if ml_prob:
-                ml_info = {
-                    "ML概率": f"{ml_prob*100:.1f}%",
-                    "ML看涨": s.get("ml看涨", False),
-                    "预测收益": f"{s.get('预测收益', 0):+.2f}%",
-                    "资金趋势": s.get("资金趋势", "N/A"),
-                    "模型名称": s.get("市场状态", "V6回归模型"),
-                }
-                ml_bonus = round(ml_prob * 20)  # ML概率贡献最多20分
-                if ml_bonus > 0:
-                    reasons.append(f"ML模型+{ml_bonus}分")
+        if row:
+            ml_prob, pred_ret, model_type = float(row[0]), float(row[1]), str(row[2] or '')
+            ml_info = {
+                "ML概率": f"{ml_prob*100:.1f}%",
+                "ML看涨": ml_prob >= 0.5,
+                "排序分": f"{pred_ret:+.2f}",
+                "资金趋势": "N/A",
+                "模型名称": model_type,
+            }
+            ml_bonus = round(ml_prob * 20)
+            if ml_bonus > 0:
+                reasons.append(f"ML模型+{ml_bonus}分")
     except Exception as e:
         logger.info(f"ML增强不可用: {e}")
 
@@ -498,7 +495,7 @@ def analyze_stock(code, market="sz"):
     if ml_info:
         trend_map = {'accelerating': '加速流入', 'steady': '平稳', 'weakening': '减弱', 'inflow': '流入', 'outflow': '流出', 'unknown': '未知'}
         trend_cn = trend_map.get(ml_info.get('资金趋势', ''), ml_info.get('资金趋势', 'N/A'))
-        ml_summary = f"ML模型看好概率{ml_info['ML概率']}，预测{ml_info['预测收益']}，{trend_cn}"
+        ml_summary = f"ML模型看好概率{ml_info['ML概率']}，排序分{ml_info['排序分']}，{trend_cn}"
         if ml_info.get("ML看涨"):
             ml_summary += "，模型信号偏积极"
         else:
