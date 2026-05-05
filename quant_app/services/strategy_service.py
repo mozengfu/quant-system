@@ -376,29 +376,41 @@ def analyze_stock(code, market="sz"):
 
     # ========== ML模型集成 ==========
     # LambdaRank 依赖 batch 内百分位 rank 特征，单只股票时 rank 全为 1.0 导致输出失真。
-    # 因此直接从 ml_predictions 表读取最近一次批量扫描的结果，不重新计算。
+    # 优先取最近一次批量扫描的内存缓存（_last_scan_results），
+    # 没有则降级查询 ml_predictions 表（可能版本较旧）。
     ml_info = None
     ml_bonus = 0
     try:
-        import pymysql
-        from quant_app.utils.config import get_db_config
-        conn = pymysql.connect(**get_db_config(connect_timeout=3))
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT _ml_pred, predicted_return, model_type FROM ml_predictions "
-            "WHERE ts_code=%s ORDER BY trade_date DESC LIMIT 1", [ts_code]
-        )
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        if row:
-            ml_prob, pred_ret, model_type = float(row[0]), float(row[1]), str(row[2] or '')
+        ml_prob = pred_ret = model_type = None
+        # 1) 内存缓存（实时批量扫描结果）
+        from ml_predict import _last_scan_results
+        cached = _last_scan_results.get(ts_code)
+        if cached:
+            ml_prob = cached['ml概率']
+            pred_ret = cached['预测收益']
+            model_type = cached.get('模型名称', '')
+        # 2) 数据库表（历史扫描结果）
+        if ml_prob is None:
+            import pymysql
+            from quant_app.utils.config import get_db_config
+            conn = pymysql.connect(**get_db_config(connect_timeout=3))
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT _ml_pred, predicted_return, model_type FROM ml_predictions "
+                "WHERE ts_code=%s ORDER BY trade_date DESC LIMIT 1", [ts_code]
+            )
+            row = cur.fetchone()
+            cur.close()
+            conn.close()
+            if row:
+                ml_prob, pred_ret, model_type = float(row[0]), float(row[1]), str(row[2] or '')
+        if ml_prob is not None:
             ml_info = {
                 "ML概率": f"{ml_prob*100:.1f}%",
                 "ML看涨": ml_prob >= 0.5,
                 "排序分": f"{pred_ret:+.2f}",
                 "资金趋势": "N/A",
-                "模型名称": model_type,
+                "模型名称": model_type or "未知",
             }
             ml_bonus = round(ml_prob * 20)
             if ml_bonus > 0:
