@@ -2,22 +2,23 @@
 
 ## 当前阶段
 
-Phase 2 — 模拟交易全自动化 ✅（2026-05-05 完成）
+Phase 3 — 风控体系完善 ✅（2026-05-05 完成）
 
 ## 已完成
 
 - [x] 代码库开发运行
 - [x] 代码库映射（7 份分析文档）
-- [x] GSD 项目初始化（PROJECT.md / config.json / REQUIREMENTS.md / ROADMAP.md / STATE.md）
-- [x] Phase 1: 策略打磨与回测体系（run_backtest.py + 参数优化 + 多策略对比）
-- [x] Phase 2: 自动止盈/超时卖出（execute_partial_sell + daily_scan 自动执行）
-- [x] Phase 2: sim_signals 表修复 + 回撤断路器 + 仓位上限
-- [x] Phase 2: 数据源统一（MySQL→JSON 同步）+ 止损阈值对齐 -3%
-- [x] Phase 2: v4_scan CLI + check_pipeline.py + crontab 注释
+- [x] GSD 项目初始化
+- [x] Phase 1: 策略打磨与回测体系
+- [x] Phase 2: 模拟交易全自动化
+- [x] Phase 3: 盘中自动止损止盈（position_monitor 告警→执行）
+- [x] Phase 3: position_id 同步 + 动态市场状态参数
+- [x] Phase 3: risk_config.json + risk_config.py 风控配置
 
 ## 待办
 
-- [ ] Phase 3 规划与执行（风控体系完善）
+- [ ] Phase 4 规划与执行（ML 模型迭代规范化）
+- [ ] Phase 5 规划与执行（监控与报表）
 
 ## 当前上下文
 
