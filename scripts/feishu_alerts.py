@@ -367,6 +367,62 @@ def send_daily_report():
     total_direction = "🔴 亏损" if total_pnl < 0 else "🟢 盈利"
     msg += f"\n💰 当日盈亏汇总: {total_direction} {total_pnl:+.2f}元"
 
+    # ========== 净值追踪 ==========
+    nav_file = BASE_DIR / "data" / "nav_history.json"
+    if nav_file.exists():
+        try:
+            with open(nav_file, 'r') as f:
+                nav_data = json.load(f)
+            if nav_data:
+                current = nav_data[-1]
+                cur_val = float(current["total_value"])
+                cur_profit = current["profit_pct"]
+                cur_mdd = current["max_drawdown"]
+                msg += "\n\n📊 净值追踪"
+                msg += f"\n当前净值: {cur_val:,.0f} 元 ({cur_profit:+.2f}%)"
+                if len(nav_data) >= 2:
+                    yesterday = nav_data[-2]
+                    yest_val = yesterday["total_value"]
+                    day_diff = cur_val - yest_val
+                    day_pct = (cur_val / yest_val - 1) * 100
+                    msg += f"\n较昨日: {day_diff:+,.0f} 元 ({day_pct:+.2f}%)"
+                # 5日前
+                current_date = datetime.strptime(current["date"], "%Y-%m-%d")
+                target_date = current_date - timedelta(days=5)
+                target_str = target_date.strftime("%Y-%m-%d")
+                five_day_ago = next((e for e in nav_data if e["date"] == target_str), None)
+                if five_day_ago is None:
+                    candidates = [e for e in nav_data if e["date"] <= target_str]
+                    if candidates:
+                        five_day_ago = candidates[-1]
+                if five_day_ago:
+                    fv = five_day_ago["total_value"]
+                    fd_diff = cur_val - fv
+                    fd_pct = (cur_val / fv - 1) * 100
+                    msg += f"\n较5日前: {fd_diff:+,.0f} 元 ({fd_pct:+.2f}%)"
+                msg += f"\n最大回撤: {cur_mdd:.2f}%"
+                # ========== 月度收益 ==========
+                monthly = {}
+                for entry in nav_data:
+                    month = entry["date"][:7]
+                    if month not in monthly:
+                        monthly[month] = []
+                    monthly[month].append(entry)
+                msg += "\n\n📅 月度收益"
+                for month in sorted(monthly.keys(), reverse=True):
+                    entries = monthly[month]
+                    first_val = entries[0]["total_value"]
+                    last_val = entries[-1]["total_value"]
+                    month_return = (last_val / first_val - 1) * 100
+                    msg += f"\n{month}: {month_return:+.2f}%"
+                # ========== 回撤预警 ==========
+                if cur_mdd > 10:
+                    msg += f"\n\n⚠️ 回撤预警: 当前回撤 {cur_mdd:.2f}% > 10%，建议关注风控"
+                elif cur_mdd > 5:
+                    msg += f"\n\n📌 回撤注意: 当前回撤 {cur_mdd:.2f}% > 5%"
+        except Exception as e:
+            logger.warning(f"读取净值数据失败: {e}")
+
     # 明日关注（取 V4 扫描前 3）
     try:
         conn = pymysql.connect(**DB_CONFIG)

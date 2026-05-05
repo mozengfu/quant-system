@@ -316,6 +316,7 @@
                 <button onclick="showPanel('scan',event)" aria-label="策略选股">✨ 策略选股</button>
                 <button onclick="window.location.href='/ml_top15'" aria-label="ML Top15">🤖 ML Top15</button>
                 <button onclick="showPanel('sim',event)" aria-label="模拟交易">🧪 模拟交易</button>
+                <button onclick="showPanel('performance',event)" aria-label="绩效看板">📊 绩效看板</button>
                 <button onclick="showPanel('ai_sim',event)" aria-label="AI模拟组合">🤖 AI模拟组合</button>
                 <button onclick="showPanel('backtest',event)" aria-label="历史回测">📉 历史回测</button>
                 <button onclick="showPanel('signals',event)" aria-label="信号记录">📋 信号记录</button>
@@ -565,6 +566,14 @@
             </div>
         </div>
 
+        <!-- 绩效看板面板 -->
+        <div id="panel-performance" class="panel">
+            <h3 class="section-title">📊 绩效看板</h3>
+            <div id="performanceContent">
+                <div class="loading"><span class="spinner"></span>加载绩效数据...</div>
+            </div>
+        </div>
+
         <!-- AI模拟组合面板 -->
         <div id="panel-ai_sim" class="panel">
             <h3 class="section-title">🤖 AI模拟组合 — TOP5推荐跟踪</h3>
@@ -790,6 +799,7 @@
             if (name === 'recommend') loadRecommend();
             if (name === 'track') loadTrackStats();
             if (name === 'sim') loadSimAccount();
+            if (name === 'performance') loadPerformance();
         }
 
         // 加载建仓建议
@@ -1938,6 +1948,65 @@
         // ==================== 加载动画HTML ====================
         function getLoadingHTML(message = '加载中...') {
             return `<div class="loading"><span class="spinner"></span>${message}</div>`;
+        }
+
+        // ==================== 绩效看板 ====================
+        async function loadPerformance() {
+            const el = document.getElementById('performanceContent');
+            el.innerHTML = getLoadingHTML('正在加载绩效数据...');
+            try {
+                const [perfRes, acctRes] = await Promise.all([
+                    fetch('/api/sim/performance_summary', {credentials: 'include'}),
+                    fetch('/api/sim_account', {credentials: 'include'})
+                ]);
+                const perf = await perfRes.json();
+                const acct = await acctRes.json();
+
+                if (perf.error) {
+                    el.innerHTML = '<div class="empty" style="text-align:center;padding:40px;color:#8892b0;">暂无绩效数据，请先运行模拟交易扫描</div>';
+                    return;
+                }
+
+                const totalReturn = perf.total_return || 0;
+                const totalReturnColor = totalReturn >= 0 ? 'profit' : 'loss';
+
+                // 8 metric cards in 4x2 grid
+                let html = '<div class="summary" style="grid-template-columns:repeat(4,1fr);">';
+                html += cardHTML('总收益率', totalReturn.toFixed(2) + '%', totalReturnColor);
+                html += cardHTML('年化收益', (perf.annual_return || 0).toFixed(2) + '%', (perf.annual_return || 0) >= 0 ? 'profit' : 'loss');
+                html += cardHTML('夏普比率', (perf.sharpe || 0).toFixed(2), parseFloat(perf.sharpe || 0) >= 1 ? 'profit' : parseFloat(perf.sharpe || 0) >= 0 ? 'neutral' : 'loss');
+                html += cardHTML('最大回撤', (perf.max_drawdown || 0).toFixed(2) + '%', 'loss');
+                html += cardHTML('交易次数', perf.trade_count || 0, 'neutral');
+                html += cardHTML('当前净值', '¥' + (perf.current_value || 0).toLocaleString('zh-CN', {minimumFractionDigits:2}), 'neutral');
+                html += cardHTML('可用现金', '¥' + (perf.current_cash || 0).toLocaleString('zh-CN', {minimumFractionDigits:2}), 'neutral');
+                // 胜率 from sim_account
+                const winRate = (acct.account && acct.account.win_rate) || (acct.win_rate) || null;
+                html += cardHTML('胜率', winRate != null ? winRate.toFixed(1) + '%' : 'N/A', winRate != null && winRate >= 50 ? 'profit' : 'loss');
+                html += '</div>';
+
+                // Monthly returns table
+                const monthly = perf.monthly_returns || {};
+                const months = Object.keys(monthly).sort();
+                if (months.length > 0) {
+                    html += '<h3 class="section-title" style="margin-top:24px;">月度收益</h3>';
+                    html += '<div class="table-wrap"><table><thead><tr><th>月份</th><th>收益率</th></tr></thead><tbody>';
+                    for (const m of months) {
+                        const ret = monthly[m];
+                        const retColor = ret >= 0 ? 'profit' : 'loss';
+                        html += `<tr><td>${m}</td><td class="${retColor}">${ret.toFixed(2)}%</td></tr>`;
+                    }
+                    html += '</tbody></table></div>';
+                }
+
+                el.innerHTML = html;
+            } catch(e) {
+                el.innerHTML = `<div class="error">加载绩效数据失败: ${h(e.message)}</div>`;
+            }
+        }
+
+        // ==================== 指标卡片 ====================
+        function cardHTML(label, value, colorClass) {
+            return `<div class="card"><div class="label">${label}</div><div class="value ${colorClass}">${value}</div></div>`;
         }
 
 </script>

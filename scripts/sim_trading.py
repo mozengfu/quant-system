@@ -1211,6 +1211,9 @@ def daily_scan():
     # 6. 同步持仓到 JSON（供 position_monitor / feishu_alerts 读取）
     sync_positions_to_json()
 
+    # 7. 记录净值快照
+    _record_nav_snapshot()
+
     logger.info("=== 模拟交易每日扫描完成 ===")
 
 
@@ -1257,6 +1260,52 @@ def sync_positions_to_json():
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump({"positions": positions}, f, ensure_ascii=False, indent=2)
     logger.info("✅ 持仓已同步到 positions.json（%d 只）", len(positions))
+
+
+# ========== 净值历史 ==========
+def _record_nav_snapshot():
+    """记录每日净值快照到 data/nav_history.json"""
+    account = get_account()
+    if not account:
+        return
+    today = str(datetime.now().date())
+
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    nav_path = os.path.join(base_dir, "data", "nav_history.json")
+
+    history = []
+    if os.path.exists(nav_path):
+        try:
+            with open(nav_path, 'r') as f:
+                history = json.load(f)
+        except Exception:
+            history = []
+
+    # 去重：同一天不重复记录
+    if history and history[-1].get("date") == today:
+        logger.debug("今日净值已记录，跳过")
+        return
+
+    positions = get_holding_positions()
+    holdings_value = sum(
+        float(p.get("current_price", 0)) * int(p.get("shares", 0))
+        for p in positions
+    ) if positions else 0
+
+    snapshot = {
+        "date": today,
+        "total_value": float(account["total_value"]),
+        "cash": float(account["cash"]),
+        "holdings_value": round(holdings_value, 2),
+        "profit_pct": round(float(account["profit_pct"]) * 100, 2) if account.get("profit_pct") else 0,
+        "max_drawdown": round(float(account["max_drawdown"]) * 100, 2) if account.get("max_drawdown") else 0,
+        "trade_count": account.get("trade_count", 0),
+    }
+    history.append(snapshot)
+
+    with open(nav_path, 'w', encoding='utf-8') as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+    logger.info("📊 净值快照已记录: %.2f (%.2f%%)", snapshot["total_value"], snapshot["profit_pct"])
 
 
 # ========== API 响应 ==========
