@@ -59,8 +59,12 @@ async def get_performance_summary(request: FastAPIRequest, token: str = Cookie(N
     total_return = last["profit_pct"]
     trade_count = last.get("trade_count", 0)
 
-    days = max((datetime.strptime(last["date"], "%Y-%m-%d") - datetime.strptime(first["date"], "%Y-%m-%d")).days, 1)
-    annual_return = ((1 + total_return / 100) ** (365 / days) - 1) * 100 if total_return != 0 else 0
+    # 年化收益：至少 5 个交易日数据才计算，否则显示 None
+    days = (datetime.strptime(last["date"], "%Y-%m-%d") - datetime.strptime(first["date"], "%Y-%m-%d")).days
+    if days >= 5 and total_return != 0:
+        annual_return = round(((1 + total_return / 100) ** (365 / days) - 1) * 100, 2)
+    else:
+        annual_return = None
 
     values = [h["total_value"] for h in history]
     daily_returns = [(values[i] - values[i-1]) / values[i-1] for i in range(1, len(values))]

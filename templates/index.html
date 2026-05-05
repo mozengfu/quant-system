@@ -1973,7 +1973,7 @@
                 // 8 metric cards in 4x2 grid
                 let html = '<div class="summary" style="grid-template-columns:repeat(4,1fr);">';
                 html += cardHTML('总收益率', totalReturn.toFixed(2) + '%', totalReturnColor);
-                html += cardHTML('年化收益', (perf.annual_return || 0).toFixed(2) + '%', (perf.annual_return || 0) >= 0 ? 'profit' : 'loss');
+                html += cardHTML('年化收益', perf.annual_return != null ? perf.annual_return.toFixed(2) + '%' : '数据不足', perf.annual_return >= 0 ? 'profit' : 'loss');
                 html += cardHTML('夏普比率', (perf.sharpe || 0).toFixed(2), parseFloat(perf.sharpe || 0) >= 1 ? 'profit' : parseFloat(perf.sharpe || 0) >= 0 ? 'neutral' : 'loss');
                 html += cardHTML('最大回撤', (perf.max_drawdown || 0).toFixed(2) + '%', 'loss');
                 html += cardHTML('交易次数', perf.trade_count || 0, 'neutral');
