@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(_script_dir))
 from alicloud_api import get_stock_realtime
 
 from quant_app.utils.config import get_db_config
+DB_CONFIG = get_db_config()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -30,137 +31,102 @@ from quant_app.services.notification_service import send_feishu
 # ========== 1. 盘前推送 ==========
 def send_morning_alert(top_n=5):
     """
-    盘前推送（9:00）：V4组合策略候选股 Top 5
-    调用与 /api/combo_scan 相同的 SQL 逻辑
+    盘前推送（9:00）：模拟盘持仓 + 近期买入信号
     """
     logger.info("开始盘前推送...")
-    
+
     try:
         conn = pymysql.connect(**DB_CONFIG)
         cursor = conn.cursor()
 
-        # 获取最新交易日
-        cursor.execute("SELECT MAX(trade_date) FROM quant_db.daily_price")
-        latest_date = cursor.fetchone()[0]
-        if not latest_date:
-            send_feishu("⚠️ 盘前推送：无交易数据，无法扫描")
-            return
-        today_str = str(latest_date)
+        # 1. 当前模拟持仓
+        cursor.execute("""
+            SELECT ts_code, stock_name, shares, cost_price, current_price,
+                   profit_loss, profit_pct, stop_loss
+            FROM sim_positions WHERE status = 'HOLD'
+        """)
+        holdings = cursor.fetchall()
 
-        # V4 强势活跃技术筛选 SQL（与 combo_scan 一致）
-        sql = """
-            SELECT d.ts_code, s.name, s.industry,
-                   d.close, d.pct_chg,
-                   d.turnover_rate, d.volume_ratio,
-                   d.ma5, d.ma10, d.ma20
-            FROM quant_db.daily_price d
-            JOIN quant_db.stock_info s ON d.ts_code = s.ts_code COLLATE utf8mb4_unicode_ci
-            WHERE d.trade_date = %s
-              AND d.close > 5
-              AND d.pct_chg > 1
-              AND d.pct_chg < 9.5
-              AND d.turnover_rate > 1.5
-              AND s.is_st = 0
-              AND d.ts_code NOT LIKE '688%%'
-              AND d.ts_code NOT LIKE '92%%'
-              AND d.ts_code NOT LIKE '8%%'
-              AND d.ts_code NOT LIKE '4%%'
-              AND (
-                  (d.ma5 > d.ma10 AND d.ma10 > d.ma20 AND d.ma5 IS NOT NULL AND d.ma20 IS NOT NULL AND d.close > d.ma5 AND d.volume_ratio > 1.5)
-                  OR (d.pct_chg > 4.0 AND d.volume_ratio > 2.0 AND d.close > d.ma5)
-              )
-            ORDER BY d.pct_chg DESC
-            LIMIT 200
-        """
-        cursor.execute(sql, (today_str,))
-        candidates = cursor.fetchall()
+        # 2. 最近买入信号（3 天内）
+        cursor.execute("""
+            SELECT ts_code, stock_name, price, shares, strategy, signal_date
+            FROM sim_signals
+            WHERE signal_type = '买入' AND signal_date >= DATE_SUB(CURDATE(), INTERVAL 3 DAY)
+            ORDER BY signal_date DESC
+        """)
+        signals = cursor.fetchall()
+
+        # 3. 账户概况
+        cursor.execute("""
+            SELECT total_value, profit_loss, profit_pct, trade_count, win_count
+            FROM sim_account ORDER BY id DESC LIMIT 1
+        """)
+        account = cursor.fetchone()
         cursor.close()
-
-        if not candidates:
-            conn.close()
-            send_feishu("📊 盘前扫描完成（%s）\n\n技术筛选无结果，今日无候选股。\n建议：空仓观望" % today_str)
-            return
-
-        # 主力评分
-        from mainforce_scoring import calculate_mainforce_score
-        scored = []
-        for r in candidates:
-            ts_code = r[0]
-            name = r[1] or ""
-            price = float(r[3]) if r[3] else 0
-            pct_chg = float(r[4]) if r[4] else 0
-            vol_ratio = float(r[6]) if r[6] else 0
-            ma5 = float(r[7]) if r[7] else 0
-            ma10 = float(r[8]) if r[8] else 0
-            ma20 = float(r[9]) if r[9] else 0
-
-            try:
-                mf = calculate_mainforce_score(ts_code, latest_date, conn=conn)
-            except Exception:
-                mf = {'score': 0, 'level': '未知'}
-            mainforce_score = mf.get('score', 0)
-            mainforce_level = mf.get('level', '未知')
-
-            if mainforce_score < 60:
-                continue
-
-            # 止损止盈优先使用市场状态参数，兜底 -3%/+10%
-            sl_pct = -3
-            tp_pct = 10
-            try:
-                from market_state import get_market_state
-                _ms = get_market_state() or {}
-                _p = _ms.get('params', {})
-                sl_pct = _p.get('stop_loss_pct', -5)
-                tp_pct = _p.get('take_profit_pct', 10)
-            except Exception:
-                pass
-            stop_loss = round(price * (1 + sl_pct / 100), 2)
-            take_profit = round(price * (1 + tp_pct / 100), 2)
-
-            code_raw = ts_code.split(".")[0]
-            mkt = "sz" if ts_code.endswith(".SZ") else "sh"
-
-            scored.append({
-                "ts_code": ts_code,
-                "代码": f"{mkt.upper()}{code_raw}",
-                "名称": name,
-                "现价": price,
-                "涨跌幅": pct_chg,
-                "主力评分": int(mainforce_score),
-                "阶段判断": mainforce_level,
-                "止损价": stop_loss,
-                "止盈价": take_profit,
-            })
-
         conn.close()
 
-        # 按主力评分降序
-        scored.sort(key=lambda x: x["主力评分"], reverse=True)
-        top = scored[:top_n]
-
-        # 构建飞书消息
-        date_str = latest_date.strftime("%Y-%m-%d") if hasattr(latest_date, 'strftime') else today_str
-        msg = "📊 V4盘前扫描（%s）\n共 %d 只候选，Top %d 如下：\n" % (date_str, len(scored), top_n)
+        today = datetime.now().strftime("%Y-%m-%d")
+        msg = f"📊 盘前简报 · {today}\n"
         msg += "━" * 30 + "\n"
 
-        for i, s in enumerate(top, 1):
-            msg += "【%d】%s（%s）\n" % (i, s["名称"], s["代码"])
-            msg += "  现价: %.2f  涨跌幅: %+.2f%%\n" % (s["现价"], s["涨跌幅"])
-            msg += "  主力评分: %d  阶段: %s\n" % (s["主力评分"], s["阶段判断"])
-            msg += "  止损: %.2f  止盈: %.2f\n" % (s["止损价"], s["止盈价"])
-            if i < len(top):
-                msg += "─" * 20 + "\n"
+        # 账户概览
+        if account:
+            total_value = float(account[0])
+            profit_loss = float(account[1])
+            profit_pct = float(account[2]) * 100 if account[2] else 0
+            trade_count = account[3]
+            win_count = account[4] or 0
+            msg += f"💰 模拟账户: {total_value:.0f} 元 ({profit_pct:+.2f}%)\n"
+            msg += f"   交易 {trade_count} 次, 胜率 {win_count/max(trade_count,1)*100:.0f}%\n"
+
+        # 当前持仓
+        if holdings:
+            msg += "\n📋 当前持仓:\n"
+            for r in holdings:
+                name = r[1]
+                shares = int(r[2])
+                cost = float(r[3])
+                cur = float(r[4]) if r[4] else cost
+                pnl_pct = (cur - cost) / cost * 100
+                stop = float(r[7])
+                marker = "🟢" if pnl_pct >= 0 else "🔴"
+                msg += f"{marker} {name} {shares}股 成本{cost:.2f} 现价{cur:.2f} ({pnl_pct:+.1f}%) 止损{stop:.2f}\n"
+        else:
+            msg += "\n📋 当前持仓: 空仓\n"
+
+        # 近期买入信号
+        if signals:
+            msg += f"\n🆕 最近买入信号:\n"
+            seen = set()
+            for r in signals:
+                ts_code = r[0]
+                if ts_code in seen:
+                    continue
+                seen.add(ts_code)
+                name = r[1]
+                price = float(r[2])
+                signal_date = str(r[4]) if r[4] else ""
+                msg += f"  {name} ({ts_code}) 买入价{price:.2f} {signal_date}\n"
+
+        # 市场状态
+        try:
+            from market_state import get_market_state
+            ms = get_market_state() or {}
+            state = ms.get('state', 'unknown')
+            state_names = {"trend_up": "上涨", "trend_down": "下跌", "range": "震荡", "panic": "恐慌", "overheated": "过热"}
+            msg += f"\n📌 市场状态: {state_names.get(state, state)}\n"
+        except Exception:
+            pass
 
         msg += "━" * 30 + "\n"
-        msg += "⚡ 操作建议：结合盘中量能择机介入"
-        
+        msg += "📋 跟单建议在系统 → 跟单建议面板查看"
+
         send_feishu(msg)
-        logger.info("盘前推送完成，共推送 %d 只", len(top))
+        logger.info("盘前简报推送完成")
 
     except Exception as e:
         logger.error(f"盘前推送失败: {e}")
-        send_feishu("⚠️ 盘前推送异常：%s" % str(e))
+        send_feishu(f"⚠️ 盘前推送异常: {e}")
 
 
 # ========== 2. 止盈止损预警 ==========

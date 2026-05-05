@@ -22,6 +22,7 @@ def is_admin(username):
     if isinstance(user_data, dict):
         return user_data.get("role") == "admin"
     # 旧格式：纯字符串密码 — 兼容已存在的旧数据
+    # TODO: 旧数据迁移完成后移除硬编码
     return username == "mozengfu"
 
 

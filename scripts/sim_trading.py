@@ -45,6 +45,26 @@ DRAWDOWN_CIRCUIT_BREAKER = -0.15  # -15%
 BEAR_NO_BUY = True
 
 
+# ========== 交易日工具 ==========
+def _count_trading_days_since(buy_date):
+    """统计买入后经过了多少个交易日，fallback 到日历日"""
+    try:
+        conn = pymysql.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(DISTINCT trade_date) FROM daily_price "
+            "WHERE trade_date > %s AND trade_date <= %s",
+            (buy_date.strftime("%Y%m%d") if hasattr(buy_date, 'strftime') else str(buy_date),
+             datetime.now().strftime("%Y%m%d"))
+        )
+        count = cursor.fetchone()[0] or 0
+        cursor.close()
+        conn.close()
+        return count
+    except Exception:
+        return (datetime.now().date() - buy_date).days if buy_date else 0
+
+
 # ========== 市场状态参数 ==========
 def get_market_params():
     """获取当前生效的全部风控参数
@@ -1025,9 +1045,9 @@ def daily_scan():
         tp2_price = round(cost_price * 1.10, 2)    # +10% 建议再卖1/3
         tp3_price = round(cost_price * 1.18, 2)    # +18% 建议清仓
 
-        # 持有天数
+        # 持有天数（按交易日计算）
         buy_date = pos.get("buy_date")
-        days_held = (datetime.now().date() - buy_date).days if buy_date else 0
+        days_held = _count_trading_days_since(buy_date) if buy_date else 0
 
         # 止损（自动执行）
         if price <= stop_price:
@@ -1107,7 +1127,11 @@ def daily_scan():
 
         if latest_date:
             # V4 组合策略选股（ML增强），取最多 available_slots 只
-            candidates = v4_scan(top_n=available_slots)
+            candidates = v4_scan(top_n=3)
+
+            # 按可用仓位截断
+            if len(candidates) > available_slots:
+                candidates = candidates[:available_slots]
 
             if not candidates:
                 logger.info("V4 扫描无符合条件的股票")

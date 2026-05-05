@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 
 from quant_app.utils.config import (
-    FEISHU_WEBHOOK, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS,
+    FEISHU_WEBHOOK, WECOM_WEBHOOK, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS,
     ALIYUN_SMS_ACCESS_KEY, ALIYUN_SMS_ACCESS_SECRET, ALIYUN_SMS_SIGN_NAME
 )
 
@@ -105,4 +105,26 @@ def send_feishu(message):
         return True
     except Exception as e:
         logger.warning(f"飞书发送失败: {e}")
+        return False
+
+
+def send_wecom(message):
+    """发送企业微信消息（通过群机器人 webhook）"""
+    try:
+        import urllib.request
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        data = json.dumps({"msgtype": "text", "text": {"content": message}}).encode('utf-8')
+        req = urllib.request.Request(WECOM_WEBHOOK, data=data, headers={"Content-Type": "application/json"})
+        resp = urllib.request.urlopen(req, timeout=5, context=ctx)
+        result = json.loads(resp.read().decode())
+        if result.get("errcode") == 0:
+            logger.info("企业微信消息已发送")
+        else:
+            logger.warning(f"企业微信发送返回异常: {result}")
+        return True
+    except Exception as e:
+        logger.warning(f"企业微信发送失败: {e}")
         return False
