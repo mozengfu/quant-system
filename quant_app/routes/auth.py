@@ -13,6 +13,7 @@ from fastapi import APIRouter, Cookie, HTTPException, Request as FastAPIRequest
 from fastapi.responses import HTMLResponse
 from starlette.responses import RedirectResponse
 from quant_app.utils.auth import hash_pw, verify_pw, make_token
+from quant_app.utils.authz import require_admin, is_admin
 from quant_app.utils.persistence import (
     load_users, save_users, save_access_log, load_reset_tokens, save_reset_tokens as _persistence_save_reset_tokens,
     load_pending_users, save_pending_users, _load_sessions, get_client_ip,
@@ -182,7 +183,7 @@ async def do_login(request: FastAPIRequest, data: dict):
         if new_hash:
             user_data["password_hash"] = new_hash
             save_users(users)
-        if username not in ["mozengfu", "admin"]:
+        if not is_admin(username):
             expire_date = user_data.get("expire_date", "")
             if expire_date:
                 try:

@@ -1,0 +1,54 @@
+[
+  {
+    "date": "2026-04-17",
+    "time": "10:44",
+    "code": "605208",
+    "name": "永茂泰",
+    "action": "卖出",
+    "price": 15.09,
+    "quantity": 1200,
+    "cost": 13.9644,
+    "profit": 1336.33,
+    "profit_pct": 8.596,
+    "type": "止盈"
+  },
+  {
+    "date": "2026-04-17",
+    "time": "14:45",
+    "code": "300056",
+    "name": "中创环保",
+    "action": "卖出",
+    "price": 9.17,
+    "quantity": 1000,
+    "cost": 9.295,
+    "profit": -134.69,
+    "profit_pct": -1.45,
+    "type": "卖出"
+  },
+  {
+    "date": "2026-04-17",
+    "time": "14:53",
+    "code": "603202",
+    "name": "天有为",
+    "action": "卖出",
+    "price": 97.74,
+    "quantity": 100,
+    "cost": 96.20,
+    "profit": 143.81,
+    "profit_pct": 1.6,
+    "type": "止盈"
+  },
+  {
+    "date": "2026-04-23",
+    "time": "16:32",
+    "code": "000681",
+    "name": "视觉中国",
+    "action": "卖出",
+    "price": 20.89,
+    "quantity": 600,
+    "cost": 21.369,
+    "profit": -298.37,
+    "profit_pct": -2.24,
+    "type": "止损"
+  }
+]

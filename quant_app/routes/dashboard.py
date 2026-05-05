@@ -16,6 +16,7 @@ from app_core import (
     calculate_rps, get_latest_rps_from_db,
     send_feishu, save_access_log, get_client_ip,
 )
+from quant_app.utils.authz import require_admin, is_admin
 
 logger = logging.getLogger(__name__)
 
@@ -222,8 +223,7 @@ async def get_positions(request: FastAPIRequest, token: str = Cookie(None)):
     user = get_current_user(token)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
-    if user not in ["mozengfu", "admin"]:
-        raise HTTPException(status_code=403, detail="无权限查看持仓")
+    require_admin(user)
 
     import asyncio
 
