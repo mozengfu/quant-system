@@ -3,7 +3,7 @@
 ML选股模型推理 V6 - 回归模型（按预测收益率排序，无需顺/逆市切换）
 """
 
-import os, logging, warnings, threading
+import os, json, logging, warnings, threading
 from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()
@@ -1274,7 +1274,40 @@ def ml_enhanced_score(stocks_list, db_conn=None):
         }
     global _last_scan_results
     _last_scan_results = scan_cache
+    # 保存预测快照
+    _save_prediction_snapshot(stocks_list, version)
     return stocks_list
 
 
+def _save_prediction_snapshot(predictions, version):
+    """保存预测快照到 data/predictions_{date}_{version}.json"""
+    today = datetime.now().strftime("%Y%m%d")
+    path = os.path.join(BASE_DIR, "data", f"predictions_{today}_{version}.json")
 
+    # 简化预测记录（只保留核心字段）
+    simplified = []
+    for p in predictions[:200]:  # 只保存前 200 只
+        simplified.append({
+            "ts_code": p.get("ts_code") or p.get("_ts_code", ""),
+            "name": p.get("name", ""),
+            "close": p.get("close", 0),
+            "ml_prob": p.get("ml概率", 0),
+            "ml_bullish": p.get("ml看涨", False),
+            "enhanced_score": p.get("增强评分", 0),
+            "predicted_return": p.get("预测收益", 0),
+        })
+
+    snapshot = {
+        "date": today,
+        "version": version,
+        "n_stocks": len(predictions),
+        "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "predictions": simplified,
+    }
+
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(snapshot, f, ensure_ascii=False, indent=2)
+        logger.info(f"预测快照已保存: {path} ({len(simplified)} 只)")
+    except Exception as e:
+        logger.warning(f"预测快照保存失败: {e}")
