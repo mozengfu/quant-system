@@ -1937,7 +1937,249 @@ def get_hot_concepts():
     return []
 
 
-# ========== 底部起步策略 - 已下线（2026-05-02 回测亏损 -6.31%）==========
+# ========== V4 + ML 过滤选股（生产策略 2026-05-09） ==========
+# 架构：V4 规则初筛 → ML V6.5 负向过滤（自适应百分位阈值） → 按 V4 排序取 Top5
+# 回测（2025-10-01 ~ 2026-04-30）：收益 +20.25%，胜率 67.9%，回撤 9.64%，交易 56 次
+# 注：使用百分位而非绝对值阈值，适应市场强弱变化
+
+ML_FILTER_PERCENTILE = 0.40  # 保留 ML 排名前 60%（过滤底部 40%）
+V4_CANDIDATE_LIMIT = 30
+V4_TOP_N = 5
+
+
+def _v4_score_single(row):
+    """V4.1 评分（单股版，用于实时选股）"""
+    pct = float(row.get('pct_chg', 0) or 0)
+    vr = float(row.get('volume_ratio', 0) or 0)
+    tr = float(row.get('turnover_rate', 0) or 0)
+    ma5 = float(row.get('ma5', 0) or 0)
+    ma10 = float(row.get('ma10', 0) or 0)
+    ma20 = float(row.get('ma20', 0) or 0)
+    rps = float(row.get('rps_20', 0) or 0)
+    close = float(row.get('close', 0) or 0)
+    h52w = float(row.get('high_52w', 0) or 0)
+    l52w = float(row.get('low_52w', 0) or 0)
+    main_net = float(row.get('main_net', 0) or 0)
+
+    if close <= 0 or ma5 <= 0 or ma10 <= 0 or ma20 <= 0:
+        return -1
+
+    # 入场条件
+    cond1 = (1.0 < vr < 10 and tr > 1.5 and ma5 > ma10 > ma20 and close > ma5)
+    cond2 = (pct > 4.0 and vr > 2.0 and close > ma5)
+    if not cond1 and not cond2:
+        return -1
+
+    sc = 0
+    # 涨幅
+    if -3 <= pct < 0: sc += 30
+    elif 0 <= pct <= 3: sc += 25
+    elif 3 < pct <= 5: sc += 30
+    elif 5 < pct <= 10: sc += 20
+    else: return -1
+
+    # 量比
+    if vr > 3: sc += 30
+    elif vr > 1.5: sc += 25
+    elif vr > 1.0: sc += 10
+
+    # 换手率
+    if 5 <= tr <= 10: sc += 20
+    elif 3 <= tr < 5: sc += 15
+    elif 2 <= tr < 3: sc += 8
+    elif tr > 20: sc += 5
+
+    # 均线
+    sc += 30 if ma5 > ma10 > ma20 else 16
+
+    # RPS
+    if rps >= 80: sc += 20
+    elif rps >= 60: sc += 15
+    elif rps >= 40: sc += 10
+
+    # 52周位置
+    if h52w and l52w and h52w > l52w > 0:
+        pos = (close - l52w) / (h52w - l52w) * 100
+        if pos < 60: sc += 15
+        elif pos >= 85: return -1
+
+    # 主力资金
+    if main_net > 5000: sc += 15
+    elif main_net > 1000: sc += 10
+    elif main_net > 0: sc += 5
+
+    return sc
+
+
+def _dragon_holder_bonus(conn, ts_code, trade_date):
+    """龙虎榜 + 股东集中度加分"""
+    bonus = 0
+    cur = conn.cursor()
+    try:
+        td_30 = (datetime.strptime(str(trade_date)[:10], '%Y-%m-%d') - timedelta(days=30)).strftime('%Y-%m-%d')
+        # 龙虎榜机构
+        cur.execute("""
+            SELECT COALESCE(SUM(net_buy), 0) FROM dragon_tiger_inst
+            WHERE ts_code = %s AND trade_date >= %s
+        """, (ts_code, td_30))
+        inst_net = float(cur.fetchone()[0])
+        if inst_net > 30000000: bonus += 15
+        elif inst_net > 5000000: bonus += 12
+        else:
+            cur.execute("SELECT COUNT(*) FROM dragon_tiger WHERE ts_code = %s AND trade_date >= %s", (ts_code, td_30))
+            if int(cur.fetchone()[0]) > 0: bonus += 8
+
+        # 股东集中度
+        cur.execute("""
+            SELECT end_date, holder_num_change FROM holder_change
+            WHERE ts_code = %s ORDER BY end_date DESC LIMIT 4
+        """, (ts_code,))
+        rows = cur.fetchall()
+        dec = sum(1 for _, c in rows if c and int(c) < 0)
+        if dec >= 3: bonus += 10
+        elif dec >= 2: bonus += 7
+        elif dec >= 1: bonus += 4
+    except Exception:
+        pass
+    finally:
+        cur.close()
+    return bonus
+
+
+def generate_v4_ml_top5(conn, top_n=V4_TOP_N):
+    """
+    V4 + ML 过滤选股 — 生产策略
+
+    1. 从 daily_price 取最新交易日数据，V4 规则初筛 Top 30
+    2. V6.5 ML 模型打分，过滤 < -1.0 的股票
+    3. 按 V4 分数排序，取 Top N
+    """
+    import numpy as np
+    from ml_predict import _load_best_model, _build_features_for_stocks_v6_3, _ensemble_predict
+
+    cur = conn.cursor()
+
+    # 1. 最新交易日
+    cur.execute("SELECT MAX(trade_date) FROM daily_price")
+    latest = cur.fetchone()[0]
+    if not latest:
+        cur.close()
+        return []
+
+    date_str = str(latest).replace('-', '')[:8] if '-' in str(latest) else str(latest)[:8]
+    display_date = str(latest)[:10] if '-' in str(latest) else f"{latest[:4]}-{latest[4:6]}-{latest[6:8]}"
+
+    # 查询用原始日期格式（可能是 2026-05-08 或 20260508）
+    query_date = str(latest)[:10] if '-' in str(latest) else f"{latest[:4]}-{latest[4:6]}-{latest[6:8]}"
+
+    # 2. 取当日数据（排除科创板/北交所/ST）
+    cur.execute("""
+        SELECT d.ts_code, d.close, d.pct_chg, d.turnover_rate, d.volume_ratio,
+               d.ma5, d.ma10, d.ma20, d.rps_20, d.high_52w, d.low_52w,
+               COALESCE(m.main_net, 0) as main_net,
+               s.name, s.industry
+        FROM daily_price d
+        LEFT JOIN moneyflow_daily m ON d.ts_code COLLATE utf8mb4_unicode_ci = m.ts_code COLLATE utf8mb4_unicode_ci AND d.trade_date = m.trade_date
+        JOIN stock_info s ON d.ts_code COLLATE utf8mb4_unicode_ci = s.ts_code COLLATE utf8mb4_unicode_ci
+        WHERE d.trade_date = %s
+          AND d.ts_code NOT LIKE '688%%' AND d.ts_code NOT LIKE '8%%'
+          AND d.ts_code NOT LIKE '4%%' AND d.ts_code NOT LIKE '9%%'
+          AND s.name NOT LIKE '%%ST%%' AND s.name NOT LIKE '%%退%%'
+    """, (date_str,))
+
+    cols = ['ts_code','close','pct_chg','turnover_rate','volume_ratio',
+            'ma5','ma10','ma20','rps_20','high_52w','low_52w','main_net','name','industry']
+    rows = cur.fetchall()
+    cur.close()
+
+    df = pd.DataFrame(rows, columns=cols)
+    for c in cols[1:12]:
+        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+
+    # 3. V4 评分 + 龙虎榜/股东加分
+    candidates = []
+    for _, row in df.iterrows():
+        v4sc = _v4_score_single(row)
+        if v4sc < 0:
+            continue
+        bonus = _dragon_holder_bonus(conn, row['ts_code'], display_date)
+        v4sc += bonus
+        candidates.append({
+            'ts_code': row['ts_code'],
+            'name': row['name'],
+            'industry': row['industry'],
+            'close': float(row['close']),
+            'pct_chg': float(row['pct_chg']),
+            'volume_ratio': float(row['volume_ratio']),
+            'turnover_rate': float(row['turnover_rate']),
+            'rps_20': float(row['rps_20']),
+            'main_net': float(row['main_net']),
+            'v4_score': v4sc,
+        })
+
+    candidates.sort(key=lambda x: x['v4_score'], reverse=True)
+    candidates = candidates[:V4_CANDIDATE_LIMIT]
+
+    if not candidates:
+        logger.info("V4 初筛无候选")
+        return []
+
+    logger.info(f"V4 初筛: {len(candidates)} 只候选")
+
+    # 4. ML V6.5 过滤
+    bundle, version = _load_best_model()
+    if not bundle:
+        # ML 不可用时降级为纯 V4
+        logger.warning("ML 模型不可用，降级为纯 V4 选股")
+        return candidates[:top_n]
+
+    cands_codes = [c['ts_code'] for c in candidates]
+    try:
+        feat_df = _build_features_for_stocks_v6_3(conn, cands_codes, as_of_date=display_date)
+        if feat_df is not None and not feat_df.empty:
+            preds = _ensemble_predict(feat_df, bundle)
+            ml_scores = {}
+            for i, (_, frow) in enumerate(feat_df.iterrows()):
+                ml_scores[frow['ts_code']] = float(preds[i])
+
+            # 自适应百分位过滤：取 ML 分数 >= percentile 阈值的股票
+            ml_values = [ml_scores.get(c['ts_code'], 0.0) for c in candidates]
+            threshold = np.percentile(ml_values, ML_FILTER_PERCENTILE * 100) if ml_values else 0
+
+            passed = []
+            for c in candidates:
+                ml = ml_scores.get(c['ts_code'], 0.0)
+                c['ml_score'] = ml
+                if ml >= threshold:
+                    passed.append(c)
+
+            logger.info(f"ML 过滤: {len(candidates)} -> {len(passed)} 只 (百分位阈值 {threshold:.3f})")
+
+            # 按 V4 排序取 Top N
+            passed.sort(key=lambda x: x['v4_score'], reverse=True)
+            result = passed[:top_n]
+
+            # 格式化返回
+            for i, s in enumerate(result):
+                s['rank'] = i + 1
+                s['price'] = f"{s['close']:.2f}"
+                s['ml_score'] = round(s['ml_score'], 3)
+                s['total_score'] = s['v4_score']
+                s['reasons'] = [f"V4评分{ s['v4_score']}"]
+                if s.get('main_net', 0) > 1000:
+                    s['reasons'].append(f"主力净流入{s['main_net']:.0f}万")
+                if s['volume_ratio'] > 2:
+                    s['reasons'].append(f"量比{s['volume_ratio']:.2f}")
+                if s['rps_20'] >= 60:
+                    s['reasons'].append(f"RPS{s['rps_20']:.0f}")
+
+            return result
+        else:
+            logger.warning("ML 特征构建为空，降级为纯 V4")
+            return candidates[:top_n]
+    except Exception as e:
+        logger.error(f"ML 过滤失败: {e}，降级为纯 V4")
+        return candidates[:top_n]
 def scan_daily_pool_bottom_breakout():
     """底部起步策略 - 已下线，请使用 V4 组合策略"""
     return {"error": "底部起步策略已下线（回测亏损 -6.31%），请使用 V4 组合策略", "scan_type": "底部起步策略", "stocks": []}
