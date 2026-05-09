@@ -414,7 +414,7 @@
             <div id="scan-rule">
                 <div class="input-row">
                     <select id="ruleMode" onchange="updateRuleDesc()">
-                        <option value="combo">🎯 V4.1→V6.5 级联策略</option>
+                        <option value="combo">🎯 V4+ML 过滤策略</option>
                         <option value="v5">🔄 V5 缩量回踩</option>
                     </select>
                     <select id="blockSelectRule">
@@ -498,11 +498,14 @@
                 <div class="loading"><span class="spinner"></span>正在获取大盘状态...</div>
             </div>
 
-            <!-- V4.1→V6.5 级联策略单栏 -->
+            <!-- V4+ML 过滤策略单栏 -->
             <div>
-                <h4 style="color:#9c27b0; font-size:15px; margin-bottom:12px;">🎯 V4.1→V6.5 级联策略推荐</h4>
+                <h4 style="color:#9c27b0; font-size:15px; margin-bottom:12px;">🎯 V4+ML 过滤策略推荐</h4>
                 <div style="margin-bottom:12px; color:#8892b0; font-size:12px;">
-                    策略：V4.1规则筛选 → V6.5 ML排序（止损-3% | 分级止盈+6%/+10%/+18% | 持有≤5天）
+                    策略：V4规则初筛 + V6.5 ML自适应百分位过滤（止损-3% | 分级止盈+6%/+10%/+18% | 持有≤5天）
+                </div>
+                <div style="margin-bottom:12px; padding:8px 10px; background:rgba(255,152,0,0.08); border-radius:4px; font-size:11px; color:#a0a8b8; line-height:1.6;">
+                    提示：次日高开&gt;2%跳过买入（防追高），低开正常跟进。实际成交价为次日开盘价，与信号收盘价可能有差异。
                 </div>
                 <div id="recommendResult">
                     <div class="empty">点击"获取今日建议"查看最新选股结果</div>
@@ -522,10 +525,10 @@
                 <input type="date" id="btStart" style="width:150px;">
                 <span style="color:#8892b0">至</span>
                 <input type="date" id="btEnd" style="width:150px;">
-                <button onclick="doBacktest('combo')" style="background:#9c27b0;">🎯 V4.1→V6.5 级联策略</button>
+                <button onclick="doBacktest('combo')" style="background:#9c27b0;">🎯 V4+ML 过滤策略</button>
             </div>
             <div style="margin-bottom:16px; color:#8892b0; font-size:13px;">
-                级联策略：技术面（均线多头+放量 或 涨幅>4%+放量+站上MA5）+ 主力评分≥60 + ML增强 | 仅验证信号触发后5日/10日收益，不模拟买卖
+                V4+ML过滤策略：技术面（均线多头+放量 或 涨幅>4%+放量+站上MA5）+ V6.5 ML负向过滤 | 仅验证信号触发后5日/10日收益，不模拟买卖
             </div>
             <div id="backtestResult">
                 <div class="empty">输入股票代码，点击运行回测</div>
@@ -571,7 +574,7 @@
         <div id="panel-follow" class="panel">
             <h3 class="section-title">📋 今日跟单建议</h3>
             <div class="card" id="followContent">
-                <div class="empty" style="text-align:center;padding:40px;color:#8892b0;">加载中...</div>
+                <div class="loading"><span class="spinner"></span>正在加载跟单建议...</div>
             </div>
         </div>
         <!-- 绩效看板面板 -->
@@ -841,7 +844,7 @@
             window.open(`https://quote.eastmoney.com/concept/${ecMarket}${ecCode}.html`, '_blank');
         }
 
-        // 加载 级联策略推荐
+        // 加载 V4+ML 过滤策略推荐
         // 大盘状态自动刷新：交易时间每30秒更新一次状态栏
         async function refreshMarketStateBar() {
             const bar = document.getElementById('recommendResult')?.querySelector('[data-role="market-status-bar"]');
@@ -893,7 +896,7 @@
 
         async function loadRecommend(force = false) {
             const resultEl = document.getElementById('recommendResult');
-            resultEl.innerHTML = '<div class="loading"><span class="spinner"></span>正在获取 级联策略推荐...</div>';
+            resultEl.innerHTML = '<div class="loading"><span class="spinner"></span>正在获取 V4+ML 过滤策略推荐...</div>';
 
             // 先获取大盘状态（公开接口 premarket）
             let mktInfo = null;
@@ -973,7 +976,7 @@
 
                 html += `<span style="color:#9c27b0; font-size:13px;">`;
                 html += `📅 更新时间：${data['扫描时间'] || new Date().toLocaleString('zh-CN')}`;
-                html += ` | 级联策略 TOP3`;
+                html += ` | V4+ML TOP3`;
                 html += `</span>`;
                 html += '</div>';
 
@@ -1030,7 +1033,7 @@
                 });
                 html += '</div>';
 
-                html += `<div style="margin-top:12px; padding:10px; background:rgba(255,202,40,0.1); border-radius:6px; font-size:12px; color:#8892b0;">⚠️ 风险提示：以上建议仅供参考，不构成投资建议</div>`;
+                html += `<div style="margin-top:12px; padding:10px; background:rgba(255,202,40,0.1); border-radius:6px; font-size:12px; color:#8892b0; line-height:1.7;">⚠️ 风险提示：以上建议仅供参考，不构成投资建议。次日高开&gt;2%跳过买入，低开正常跟进。实际成交价（次日开盘）可能与信号价格存在差异。</div>`;
                 resultEl.innerHTML = html;
             } catch(e) {
                 console.error(e);
@@ -1546,7 +1549,7 @@
                         </tr>`;
                     });
                 } else {
-                    // 级联策略：ML排序分 + 综合评分 + ML概率
+                    // V4+ML过滤策略：V4评分 + ML得分
                     html += `<th>ML排序</th><th>综合评分</th><th>ML胜率</th><th>入选理由</th>
                     </tr></thead><tbody>`;
                     stocks.forEach(s => {
@@ -2021,38 +2024,58 @@
         // ==================== 跟单建议 ====================
         async function loadFollowSignals() {
             const el = document.getElementById('followContent');
-            el.innerHTML = '<div class="empty" style="text-align:center;padding:40px;color:#8892b0;">加载中...</div>';
+            el.innerHTML = '<div class="loading"><span class="spinner"></span>正在加载跟单建议...</div>';
             try {
                 const res = await fetch('/api/sim/today_signals', {credentials: 'include'});
                 const data = await res.json();
-                const signals = data.signals || [];
+                const actions = data.actions || [];
 
-                if (signals.length === 0) {
-                    el.innerHTML = '<div class="empty" style="text-align:center;padding:40px;color:#8892b0;">今日暂无买入信号，模拟盘未建仓<br><span style="font-size:13px;color:#5a6a8a;">每日 17:30 盘后扫描后更新</span></div>';
+                // 顶部信息栏
+                let html = '<div style="margin-bottom:12px;color:#888;font-size:13px;">'
+                    + '📅 ' + h(data.date) + ' · 持仓 ' + h(data.position_count) + '/' + h(data.max_positions) + '只 · 市场: ' + h(data.market_state_name)
+                    + '</div>';
+
+                if (actions.length === 0) {
+                    el.innerHTML = html + '<div class="empty" style="text-align:center;padding:40px;color:#888;">今日模拟盘无操作</div>';
                     return;
                 }
 
-                let html = '<div style="margin-bottom:12px;color:#8892b0;">📅 信号日期: ' + data.date + ' | 共 ' + signals.length + ' 条</div>';
-                for (const s of signals) {
-                    const diff = s.current_price > 0 ? ((s.current_price - s.buy_price) / s.buy_price * 100).toFixed(2) : '--';
-                    const diffClass = diff >= 0 ? 'profit' : 'loss';
-                    html += '<div style="background:#1a2332;border-radius:8px;padding:14px;margin-bottom:10px;border:1px solid #2a3a52;">'
+                for (const a of actions) {
+                    const isBuy = a.action === 'BUY';
+                    const label = isBuy ? '买入' : '卖出';
+                    const badgeBg = isBuy ? '#ef5350' : '#66bb6a';
+                    const cardBg = isBuy ? '#fff5f5' : '#f5fff5';
+                    const cardBorder = isBuy ? '#ffcdd2' : '#c8e6c9';
+                    const ecCode = a.ts_code.split('.')[0];
+                    const ecMarket = ecCode.startsWith('6') ? 'sh' : 'sz';
+                    const ecUrl = 'https://quote.eastmoney.com/' + ecMarket + ecCode + '.html';
+                    html += '<div style="background:' + cardBg + ';border-radius:8px;padding:14px;margin-bottom:10px;border:1px solid ' + cardBorder + ';">'
                         + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
-                        + '<div><b style="font-size:16px;">' + s.name + '</b> <span style="color:#8892b0;font-size:13px;">' + s.ts_code + '</span></div>'
-                        + '<span class="' + diffClass + '">现价 ' + s.current_price.toFixed(2) + ' (' + diff + '%)</span></div>'
-                        + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:13px;">'
-                        + '<div><span style="color:#8892b0;">买入价</span><br><b>' + s.buy_price.toFixed(2) + '</b></div>'
-                        + '<div><span style="color:#8892b0;">建议买入 ≤</span><br><b style="color:#4ecdc4;">' + s.suggest_buy_upper.toFixed(2) + '</b></div>'
-                        + '<div><span style="color:#8892b0;">止损参考</span><br><b style="color:#ff6b6b;">' + s.suggest_stop_loss.toFixed(2) + '</b></div>'
-                        + '<div><span style="color:#8892b0;">ML概率</span><br><b>' + (s.ml_prob * 100).toFixed(0) + '%</b></div></div>'
-                        + '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:13px;margin-top:8px;padding-top:8px;border-top:1px solid #2a3a52;">'
-                        + '<div><span style="color:#8892b0;">止盈一档 +6%</span><br><b style="color:#4ecdc4;">' + s.suggest_take_profit_1.toFixed(2) + '</b></div>'
-                        + '<div><span style="color:#8892b0;">止盈三档 +18%</span><br><b style="color:#4ecdc4;">' + s.suggest_take_profit_3.toFixed(2) + '</b></div>'
-                        + '<div><span style="color:#8892b0;">策略</span><br><b>' + (s.strategy || 'V4组合') + '</b></div></div></div>';
+                        + '<div>'
+                        + '<span style="display:inline-block;background:' + badgeBg + ';color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;margin-right:8px;">' + label + '</span>'
+                        + '<a href="' + ecUrl + '" target="_blank" style="color:#1976d2;text-decoration:none;font-size:16px;font-weight:bold;">' + h(a.name) + '</a>'
+                        + ' <a href="' + ecUrl + '" target="_blank" style="color:#888;font-size:12px;text-decoration:none;">' + h(a.ts_code) + '</a>'
+                        + '</div>'
+                        + '<span style="color:#888;font-size:12px;">' + h(a.trade_time) + '</span>'
+                        + '</div>'
+                        + '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:13px;">'
+                        + '<div><span style="color:#888;">价格</span><br><b style="color:#333;">' + a.price.toFixed(2) + '</b></div>'
+                        + '<div><span style="color:#888;">数量</span><br><b style="color:#333;">' + a.shares + '股</b></div>';
+                    if (isBuy) {
+                        html += '<div><span style="color:#888;">金额</span><br><b style="color:#333;">' + (a.price * a.shares).toFixed(0) + '元</b></div>';
+                    } else {
+                        const pnlClass = a.profit_loss >= 0 ? 'profit' : 'loss';
+                        html += '<div><span style="color:#888;">盈亏</span><br><b class="' + pnlClass + '">' + (a.profit_loss >= 0 ? '+' : '') + a.profit_loss.toFixed(2) + '</b></div>';
+                    }
+                    html += '</div>';
+                    if (a.reason) {
+                        html += '<div style="margin-top:6px;font-size:12px;color:#888;">原因: ' + h(a.reason) + '</div>';
+                    }
+                    html += '</div>';
                 }
                 el.innerHTML = html;
             } catch(e) {
-                el.innerHTML = '<div class="empty" style="text-align:center;padding:40px;color:#ff6b6b;">加载失败: ' + e.message + '</div>';
+                el.innerHTML = '<div class="empty" style="text-align:center;padding:40px;color:#ef5350;">加载失败: ' + h(e.message) + '</div>';
             }
         }
 
