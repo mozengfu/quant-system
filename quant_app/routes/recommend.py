@@ -79,19 +79,26 @@ async def get_recommend(force_refresh: bool = False, token: str = Cookie(None)):
 
         if top5:
             for s in top5[:3]:
+                ml = s.get('ml_score', 0)
+                import math
+                ml_prob = 1 / (1 + math.exp(-ml)) if ml != 0 else 0.5
+                price = float(s.get('close', s.get('price', 0)))
                 recommendations.append({
                     '代码': s['ts_code'].split('.')[0],
                     '名称': s['name'],
                     '行业': s.get('industry', ''),
-                    '现价': float(s.get('close', s.get('price', 0))),
+                    '现价': price,
                     '涨跌幅': f"{s.get('pct_chg', 0):+.2f}%",
-                    '评分': int(s.get('total_score', 0)),
-                    '综合评分': int(s.get('total_score', 0)),
-                    'ML得分': f"{s.get('ml_score', 0):.3f}",
+                    '评分': int(s.get('v4_score', 0)),
+                    '综合评分': int(s.get('v4_score', 0)),
+                    'ML得分': f"{ml:.3f}",
+                    '预测收益': round(ml, 2),
+                    'ml概率': round(ml_prob, 4),
                     '量比': float(s.get('volume_ratio', 0)),
                     '换手率': float(s.get('turnover_rate', 0)),
                     '入选理由': ' | '.join(s.get('reasons', [])),
                     '策略来源': 'V4+ML过滤',
+                    '止损价': round(price * 0.95, 2),
                 })
 
         today_str = top5[0].get('date', datetime.now().strftime('%Y-%m-%d')) if top5 else datetime.now().strftime('%Y-%m-%d')

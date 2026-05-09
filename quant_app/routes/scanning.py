@@ -485,6 +485,12 @@ async def scan_combo(request: FastAPIRequest, block: str = "", market: str = "",
             mkt = "sz" if ts_code.endswith(".SZ") else "sh"
             code_full = f"{mkt.upper()}{code_raw}"
 
+            # ML 得分 → 预测收益 / ml概率 映射
+            ml_score = c.get('ml_score', 0)
+            # ml_score 为模型预测收益，概率用 sigmoid 简单映射
+            import math
+            ml_prob = 1 / (1 + math.exp(-ml_score)) if ml_score != 0 else 0.5
+
             reasons = []
             if c.get('main_net', 0) > 1000:
                 reasons.append(f"主力净流入{c['main_net']:.0f}万")
@@ -492,6 +498,8 @@ async def scan_combo(request: FastAPIRequest, block: str = "", market: str = "",
                 reasons.append(f"量比{c['volume_ratio']:.2f}")
             if c['rps_20'] >= 60:
                 reasons.append(f"RPS{c['rps_20']:.0f}")
+            if not reasons:
+                reasons.append("V4+ML达标")
 
             stocks.append({
                 "代码": code_full,
@@ -503,13 +511,16 @@ async def scan_combo(request: FastAPIRequest, block: str = "", market: str = "",
                 "换手率": f"{c['turnover_rate']:.2f}%",
                 "量比": f"{c['volume_ratio']:.2f}",
                 "V4评分": c['v4_score'],
-                "ML得分": c.get('ml_score', 0),
+                "ML得分": ml_score,
                 "综合评分": c['v4_score'],
+                "预测收益": round(ml_score, 2),
+                "ml概率": round(ml_prob, 4),
                 "主力评分": 0,
                 "阶段判断": "",
                 "龙虎榜加分": 0,
                 "股东加分": 0,
-                "入选原因": " | ".join(reasons) if reasons else "",
+                "入选理由": " | ".join(reasons),
+                "入选原因": " | ".join(reasons),
                 "ts_code": ts_code,
             })
 
@@ -803,6 +814,8 @@ async def scan_rule(request: FastAPIRequest, mode: str = "bottom", block: str = 
         return await scan_combo(request, block=block, market=market, token=token)
     elif mode == "v5":
         return await scan_v5(request, block=block, market=market, token=token)
+    elif mode == "awakening":
+        return await scan_bottom_awakening(request, token=token)
     else:
         return await scan_strong(request, block=block, market=market, token=token)
 
@@ -845,6 +858,57 @@ async def scan_ml(request: FastAPIRequest, mode: str = "all", block: str = "", m
     else:
         # 复用 AI模型选股管道，取 top 10 或 top 50
         return await scan_aimodel(request, block=block, market=market, token=token)
+
+
+@router.get("/api/scan/bottom-awakening")
+async def scan_bottom_awakening(request: FastAPIRequest, token: str = Cookie(None)):
+    """底部苏醒策略 — 底部低量横盘放量起步"""
+    user = get_current_user(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
+    save_access_log(user, get_client_ip(request), "底部苏醒选股")
+
+    try:
+        import pymysql
+        from quant_app.utils.config import get_db_config
+        from quant_app.services.strategy_service import generate_bottom_awakening_top5
+
+        db_config = get_db_config(connect_timeout=3)
+        conn = pymysql.connect(**db_config)
+        top5 = generate_bottom_awakening_top5(conn)
+        conn.close()
+
+        stocks = []
+        for s in top5:
+            code = s['ts_code'].split('.')[0]
+            stocks.append({
+                'rank': s.get('rank', 0),
+                'code': code,
+                'name': s['name'],
+                'industry': s.get('industry', ''),
+                'price': f"{s['close']:.2f}",
+                'change_pct': f"{s['pct_chg']:+.2f}%",
+                'turnover_rate': f"{s['turnover_rate']:.2f}%",
+                'vol_ratio': round(float(s.get('volume_ratio', 0)), 2),
+                'vol_expansion': round(float(s.get('vol_expansion', 0)), 2),
+                'position_52w': round(float(s.get('position_52w', 0)), 1),
+                'awakening_score': s.get('awakening_score', 0),
+                'rps_20': round(float(s.get('rps_20', 0)), 1),
+                'main_net': f"{float(s.get('main_net', 0)):.0f}万",
+                'reasons': s.get('entry_reason', '') if isinstance(s.get('entry_reason'), str) else ' | '.join(s.get('reasons', [])),
+                'ts_code': s['ts_code'],
+            })
+
+        return {
+            "stocks": stocks,
+            "scan_date": top5[0].get('date', '') if top5 else '',
+            "count": len(stocks),
+            "scan_type": "底部苏醒策略",
+        }
+    except Exception as e:
+        import traceback
+        logger.error(f"底部苏醒扫描失败: {e}\n{traceback.format_exc()}")
+        return {"stocks": [], "error": str(e)}
 
 
 def _pick_best_from_combo(db_config, conn, latest_date):
