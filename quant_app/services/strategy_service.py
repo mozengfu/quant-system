@@ -2046,34 +2046,58 @@ def _dragon_holder_bonus(conn, ts_code, trade_date):
     return bonus
 
 
-def generate_v4_ml_top5(conn, top_n=V4_TOP_N):
+def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
     """
-    V4 + ML 过滤选股 — 生产策略
-
-    1. 从 daily_price 取最新交易日数据，V4 规则初筛 Top 30
-    2. V6.5 ML 模型打分，过滤 < -1.0 的股票
-    3. 按 V4 分数排序，取 Top N
+    V4 + ML 过滤选股 — 通用候选生成器（支持市场/板块筛选）
+    
+    1. 从 daily_price 取最新交易日数据，V4 规则初筛
+    2. V6.5 ML 模型打分，自适应百分位过滤
+    3. 按 V4 分数排序，返回完整列表
+    
+    返回: 按 V4 分数降序的候选列表（带 ML 评分）
     """
     import numpy as np
     from ml_predict import _load_best_model, _build_features_for_stocks_v6_3, _ensemble_predict
 
     cur = conn.cursor()
 
-    # 1. 最新交易日
+    # 最新交易日
     cur.execute("SELECT MAX(trade_date) FROM daily_price")
     latest = cur.fetchone()[0]
     if not latest:
         cur.close()
-        return []
+        return [], None
 
     date_str = str(latest).replace('-', '')[:8] if '-' in str(latest) else str(latest)[:8]
     display_date = str(latest)[:10] if '-' in str(latest) else f"{latest[:4]}-{latest[4:6]}-{latest[6:8]}"
-
-    # 查询用原始日期格式（可能是 2026-05-08 或 20260508）
     query_date = str(latest)[:10] if '-' in str(latest) else f"{latest[:4]}-{latest[4:6]}-{latest[6:8]}"
 
-    # 2. 取当日数据（排除科创板/北交所/ST）
-    cur.execute("""
+    # 市场筛选
+    if market == "创业板":
+        market_clause = " AND d.ts_code LIKE '30%%'"
+    elif market == "沪市主板":
+        market_clause = " AND d.ts_code LIKE '60%%'"
+    elif market == "深市主板":
+        market_clause = " AND (d.ts_code LIKE '00%%' OR d.ts_code LIKE '01%%')"
+    elif market == "科创板":
+        market_clause = " AND d.ts_code LIKE '68%%'"
+    else:
+        market_clause = ""
+
+    # 板块筛选
+    if block:
+        block_clause = " AND s.industry LIKE %s"
+        block_val = f"%{block}%"
+    else:
+        block_clause = ""
+        block_val = None
+
+    params = [date_str]
+    if block_val:
+        params.append(block_val)
+
+    # 取当日数据
+    cur.execute(f"""
         SELECT d.ts_code, d.close, d.pct_chg, d.turnover_rate, d.volume_ratio,
                d.ma5, d.ma10, d.ma20, d.rps_20, d.high_52w, d.low_52w,
                COALESCE(m.main_net, 0) as main_net,
@@ -2085,7 +2109,9 @@ def generate_v4_ml_top5(conn, top_n=V4_TOP_N):
           AND d.ts_code NOT LIKE '688%%' AND d.ts_code NOT LIKE '8%%'
           AND d.ts_code NOT LIKE '4%%' AND d.ts_code NOT LIKE '9%%'
           AND s.name NOT LIKE '%%ST%%' AND s.name NOT LIKE '%%退%%'
-    """, (date_str,))
+          {market_clause}
+          {block_clause}
+    """, tuple(params))
 
     cols = ['ts_code','close','pct_chg','turnover_rate','volume_ratio',
             'ma5','ma10','ma20','rps_20','high_52w','low_52w','main_net','name','industry']
@@ -2096,7 +2122,7 @@ def generate_v4_ml_top5(conn, top_n=V4_TOP_N):
     for c in cols[1:12]:
         df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
 
-    # 3. V4 评分 + 龙虎榜/股东加分
+    # V4 评分 + 龙虎榜/股东加分
     candidates = []
     for _, row in df.iterrows():
         v4sc = _v4_score_single(row)
@@ -2118,20 +2144,19 @@ def generate_v4_ml_top5(conn, top_n=V4_TOP_N):
         })
 
     candidates.sort(key=lambda x: x['v4_score'], reverse=True)
-    candidates = candidates[:V4_CANDIDATE_LIMIT]
+    candidates = candidates[:limit * 2]  # 初筛放宽，ML过滤后截断
 
     if not candidates:
         logger.info("V4 初筛无候选")
-        return []
+        return [], display_date
 
     logger.info(f"V4 初筛: {len(candidates)} 只候选")
 
-    # 4. ML V6.5 过滤
+    # ML V6.5 过滤
     bundle, version = _load_best_model()
     if not bundle:
-        # ML 不可用时降级为纯 V4
-        logger.warning("ML 模型不可用，降级为纯 V4 选股")
-        return candidates[:top_n]
+        logger.warning("ML 模型不可用，降级为纯 V4")
+        return candidates[:limit], display_date
 
     cands_codes = [c['ts_code'] for c in candidates]
     try:
@@ -2142,44 +2167,57 @@ def generate_v4_ml_top5(conn, top_n=V4_TOP_N):
             for i, (_, frow) in enumerate(feat_df.iterrows()):
                 ml_scores[frow['ts_code']] = float(preds[i])
 
-            # 自适应百分位过滤：取 ML 分数 >= percentile 阈值的股票
+            # 自适应百分位过滤
             ml_values = [ml_scores.get(c['ts_code'], 0.0) for c in candidates]
             threshold = np.percentile(ml_values, ML_FILTER_PERCENTILE * 100) if ml_values else 0
 
             passed = []
             for c in candidates:
                 ml = ml_scores.get(c['ts_code'], 0.0)
-                c['ml_score'] = ml
+                c['ml_score'] = round(ml, 3)
                 if ml >= threshold:
                     passed.append(c)
 
             logger.info(f"ML 过滤: {len(candidates)} -> {len(passed)} 只 (百分位阈值 {threshold:.3f})")
 
-            # 按 V4 排序取 Top N
             passed.sort(key=lambda x: x['v4_score'], reverse=True)
-            result = passed[:top_n]
-
-            # 格式化返回
-            for i, s in enumerate(result):
-                s['rank'] = i + 1
-                s['price'] = f"{s['close']:.2f}"
-                s['ml_score'] = round(s['ml_score'], 3)
-                s['total_score'] = s['v4_score']
-                s['reasons'] = [f"V4评分{ s['v4_score']}"]
-                if s.get('main_net', 0) > 1000:
-                    s['reasons'].append(f"主力净流入{s['main_net']:.0f}万")
-                if s['volume_ratio'] > 2:
-                    s['reasons'].append(f"量比{s['volume_ratio']:.2f}")
-                if s['rps_20'] >= 60:
-                    s['reasons'].append(f"RPS{s['rps_20']:.0f}")
-
-            return result
+            return passed[:limit], display_date
         else:
             logger.warning("ML 特征构建为空，降级为纯 V4")
-            return candidates[:top_n]
+            return candidates[:limit], display_date
     except Exception as e:
         logger.error(f"ML 过滤失败: {e}，降级为纯 V4")
-        return candidates[:top_n]
+        return candidates[:limit], display_date
+
+
+def generate_v4_ml_top5(conn, top_n=V4_TOP_N):
+    """
+    V4 + ML 过滤选股 — 生产策略 (Top5)
+    调用通用候选生成器，截取 Top N 并格式化
+    """
+    candidates, display_date = generate_v4_ml_candidates(conn, limit=max(top_n * 2, V4_CANDIDATE_LIMIT))
+    
+    if not candidates:
+        return []
+
+    result = candidates[:top_n]
+    for i, s in enumerate(result):
+        s['rank'] = i + 1
+        s['date'] = display_date
+        s['price'] = f"{s['close']:.2f}"
+        s['total_score'] = s['v4_score']
+        s['reasons'] = [f"V4评分{s['v4_score']}"]
+        if s.get('main_net', 0) > 1000:
+            s['reasons'].append(f"主力净流入{s['main_net']:.0f}万")
+        if s['volume_ratio'] > 2:
+            s['reasons'].append(f"量比{s['volume_ratio']:.2f}")
+        if s['rps_20'] >= 60:
+            s['reasons'].append(f"RPS{s['rps_20']:.0f}")
+
+    return result
+
+
+# ========== 旧函数保留但标记下线 ==========
 def scan_daily_pool_bottom_breakout():
     """底部起步策略 - 已下线，请使用 V4 组合策略"""
     return {"error": "底部起步策略已下线（回测亏损 -6.31%），请使用 V4 组合策略", "scan_type": "底部起步策略", "stocks": []}

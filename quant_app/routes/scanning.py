@@ -451,7 +451,7 @@ async def ai_sim_run_today(request: FastAPIRequest, token: str = Cookie(None)):
 
 @router.get("/api/combo_scan")
 async def scan_combo(request: FastAPIRequest, block: str = "", market: str = "", token: str = Cookie(None)):
-    """V4.1→V6.5 级联策略扫描：技术筛选 → V6.5 ML排序 → TOP推荐"""
+    """V4+ML 过滤策略扫描（2026-05-09 起）：V4 技术筛选 + ML 负向过滤"""
     user = get_current_user(token)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
@@ -460,227 +460,70 @@ async def scan_combo(request: FastAPIRequest, block: str = "", market: str = "",
     try:
         import pymysql
         from quant_app.utils.config import get_db_config
+        from quant_app.services.strategy_service import generate_v4_ml_candidates
         db_config = get_db_config(connect_timeout=3)
         conn = pymysql.connect(**db_config)
-        cursor = conn.cursor()
 
-        cursor.execute("SELECT MAX(trade_date) FROM quant_db.daily_price")
-        latest_date = cursor.fetchone()[0]
-        if not latest_date:
-            return {"stocks": [], "scan_type": "V4组合策略", "error": "无交易数据"}
-        today_str = str(latest_date)
-
-        if market == "创业板":
-            market_clause = " AND d.ts_code LIKE '30%%'"
-        elif market == "沪市主板":
-            market_clause = " AND d.ts_code LIKE '60%%'"
-        elif market == "深市主板":
-            market_clause = " AND (d.ts_code LIKE '00%%' OR d.ts_code LIKE '01%%')"
-        elif market == "科创板":
-            market_clause = " AND d.ts_code LIKE '68%%'"
-        else:
-            market_clause = ""
-
-        if block and block not in ['沪市主板', '深市主板', '创业板', '科创板']:
-            block_clause = " AND s.industry LIKE %s"
-            block_val = f"%{block}%"
-        else:
-            block_clause = ""
-            block_val = None
-        params = [today_str]
-        if block_val:
-            params.append(block_val)
-
-        sql = f"""
-            SELECT d.ts_code, s.name, s.industry,
-                   d.close, d.pct_chg,
-                   d.turnover_rate, d.volume_ratio,
-                   d.ma5, d.ma10, d.ma20
-            FROM quant_db.daily_price d
-            JOIN quant_db.stock_info s ON d.ts_code = s.ts_code COLLATE utf8mb4_unicode_ci
-            WHERE d.trade_date = %s
-              AND d.close > 5
-              AND d.pct_chg > 1
-              AND d.pct_chg < 9.5
-              AND d.turnover_rate > 1.5
-              AND s.is_st = 0
-              AND d.ts_code NOT LIKE '688%%'
-              AND d.ts_code NOT LIKE '92%%'
-              AND d.ts_code NOT LIKE '8%%'
-              AND d.ts_code NOT LIKE '4%%'
-              {market_clause}
-              {block_clause}
-              AND (
-                  (d.ma5 > d.ma10 AND d.ma10 > d.ma20 AND d.ma5 IS NOT NULL AND d.ma20 IS NOT NULL AND d.close > d.ma5 AND d.volume_ratio > 1.5)
-                  OR (d.pct_chg > 4.0 AND d.volume_ratio > 2.0 AND d.close > d.ma5)
-              )
-            ORDER BY d.pct_chg DESC
-            LIMIT 200
-        """
-        cursor.execute(sql, tuple(params))
-        candidates = cursor.fetchall()
-
-        # 加载龙虎榜数据（近30天）
-        dt_30 = (datetime.strptime(today_str, '%Y-%m-%d') - timedelta(days=30)).strftime('%Y-%m-%d')
-        cursor.execute("""SELECT ts_code, trade_date, net_buy FROM dragon_tiger
-                          WHERE trade_date >= %s AND net_buy != 0""", (dt_30,))
-        dt_map = {}
-        for r in cursor.fetchall():
-            dt_map.setdefault(r[0], []).append((str(r[1]), float(r[2] or 0)))
-
-        # 加载龙虎榜机构席位
-        cursor.execute("""SELECT ts_code, trade_date, net_buy, exalter FROM dragon_tiger_inst
-                          WHERE trade_date >= %s AND net_buy != 0""", (dt_30,))
-        dti_map = {}
-        for r in cursor.fetchall():
-            dti_map.setdefault(r[0], []).append((str(r[1]), float(r[2] or 0), r[3] or ''))
-
-        # 加载股东人数变化（最近2年数据，够用）
-        hc_from = (datetime.strptime(today_str, '%Y-%m-%d') - timedelta(days=730)).strftime('%Y-%m-%d')
-        cursor.execute("""SELECT ts_code, end_date, holder_num_change FROM holder_change
-                          WHERE end_date >= %s AND end_date <= %s ORDER BY ts_code, end_date DESC""",
-                       (hc_from, today_str))
-        hc_map = {}
-        for r in cursor.fetchall():
-            hc_map.setdefault(r[0], []).append((str(r[1]), int(r[2] or 0)))
-
-        cursor.close()
+        candidates, display_date = generate_v4_ml_candidates(
+            conn, market=market if market else None,
+            block=block if block else None, limit=50
+        )
         conn.close()
 
         if not candidates:
             return {
                 "stocks": [],
-                "scan_type": "V4组合策略",
-                "scan_date": today_str,
+                "scan_type": "V4+ML过滤策略",
+                "scan_date": display_date or datetime.now().strftime('%Y-%m-%d'),
                 "error": "技术筛选无结果"
             }
 
-        # 调用主力评分模块
-        scripts_dir = str(Path(__file__).resolve().parent.parent.parent / "scripts")
-        if scripts_dir not in sys.path:
-            sys.path.insert(0, scripts_dir)
-        from mainforce_scoring import calculate_mainforce_score
-
-        # 龙虎榜加分函数
-        def get_dragon_bonus(ts_code):
-            """机构净买入>3000万→15, >500万→12, 上榜→8"""
-            inst_net = sum(nb for td, nb, _ in dti_map.get(ts_code, []) if td >= dt_30)
-            if inst_net > 30000000: return 15
-            elif inst_net > 5000000: return 12
-            listed = sum(1 for td, _ in dt_map.get(ts_code, []) if td >= dt_30)
-            if listed > 0: return 8
-            return 0
-
-        # 股东集中度加分函数
-        def get_holder_bonus(ts_code):
-            """连续减少期数：3期+→10, 2期→7, 1期→4"""
-            rows = [(td, chg) for td, chg in hc_map.get(ts_code, []) if td <= today_str]
-            rows.sort(key=lambda x: x[0], reverse=True)
-            if len(rows) < 2: return 0
-            decreases = sum(1 for _, chg in rows[:4] if chg < 0)
-            if decreases >= 3: return 10
-            elif decreases >= 2: return 7
-            elif decreases >= 1: return 4
-            return 0
-
         stocks = []
-        for r in candidates:
-            ts_code = r[0]
-            name = r[1] or ""
-            industry = r[2] or ""
-            price = float(r[3]) if r[3] else 0
-            pct_chg = float(r[4]) if r[4] else 0
-            turnover = float(r[5]) if r[5] else 0
-            vol_ratio = float(r[6]) if r[6] else 0
-            ma5 = float(r[7]) if r[7] else 0
-            ma10 = float(r[8]) if r[8] else 0
-            ma20 = float(r[9]) if r[9] else 0
-
-            if price <= 0:
-                continue
-
-            try:
-                mf = calculate_mainforce_score(ts_code, latest_date)
-            except Exception:
-                mf = {'score': 0, 'level': '未知'}
-            mainforce_score = mf.get('score', 0)
-            mainforce_level = mf.get('level', '未知')
-
-            quick_score = 0
-            if ma5 > ma10 > ma20 and ma20 > 0:
-                quick_score += 40
-            if price > ma5:
-                quick_score += 20
-            if vol_ratio > 2.0:
-                quick_score += 20
-            if pct_chg > 3:
-                quick_score += 10
-            if turnover > 3:
-                quick_score += 10
-
-            # 新因子加分：龙虎榜 + 股东集中度
-            dt_bonus = get_dragon_bonus(ts_code)
-            hc_bonus = get_holder_bonus(ts_code)
-
+        for c in candidates:
+            ts_code = c['ts_code']
             code_raw = ts_code.split(".")[0]
             mkt = "sz" if ts_code.endswith(".SZ") else "sh"
             code_full = f"{mkt.upper()}{code_raw}"
 
-            # 构建入选原因
             reasons = []
-            if dt_bonus > 0:
-                reasons.append(f"龙虎榜+{dt_bonus}")
-            if hc_bonus > 0:
-                reasons.append(f"股东集中+{hc_bonus}")
+            if c.get('main_net', 0) > 1000:
+                reasons.append(f"主力净流入{c['main_net']:.0f}万")
+            if c['volume_ratio'] > 2:
+                reasons.append(f"量比{c['volume_ratio']:.2f}")
+            if c['rps_20'] >= 60:
+                reasons.append(f"RPS{c['rps_20']:.0f}")
 
             stocks.append({
                 "代码": code_full,
                 "交易所": mkt,
-                "名称": name,
-                "行业": industry,
-                "现价": price,
-                "涨跌幅": f"{pct_chg:+.2f}%",
-                "换手率": f"{turnover:.2f}%",
-                "量比": f"{vol_ratio:.2f}",
-                "主力评分": int(mainforce_score),
-                "阶段判断": mainforce_level,
-                "综合评分": quick_score + dt_bonus + hc_bonus,
-                "基础评分": quick_score,
-                "龙虎榜加分": dt_bonus,
-                "股东加分": hc_bonus,
+                "名称": c['name'],
+                "行业": c.get('industry', ''),
+                "现价": c['close'],
+                "涨跌幅": f"{c['pct_chg']:+.2f}%",
+                "换手率": f"{c['turnover_rate']:.2f}%",
+                "量比": f"{c['volume_ratio']:.2f}",
+                "V4评分": c['v4_score'],
+                "ML得分": c.get('ml_score', 0),
+                "综合评分": c['v4_score'],
+                "主力评分": 0,
+                "阶段判断": "",
+                "龙虎榜加分": 0,
+                "股东加分": 0,
                 "入选原因": " | ".join(reasons) if reasons else "",
                 "ts_code": ts_code,
             })
 
-        # ML增强评分（用于重排）
-        try:
-            from ml_predict import ml_enhanced_score
-            conn2 = pymysql.connect(**db_config)
-            stocks = ml_enhanced_score(stocks, db_conn=conn2)
-            conn2.close()
-        except Exception as e:
-            logger.info(f"ML增强不可用: {e}")
-            for s in stocks:
-                s['预测收益'] = 0.0
-                s['ml概率'] = 0.5
-                s['增强评分'] = round(s.get('综合评分', 0), 1)
-
-        # ML 重排：V4.1筛选 → V6.5 排序（按预测收益降序）
-        stocks.sort(key=lambda x: x.get('预测收益', 0), reverse=True)
-
         return {
-            "scan_date": latest_date.strftime("%Y%m%d") if hasattr(latest_date, 'strftime') else today_str,
+            "scan_date": display_date or datetime.now().strftime('%Y-%m-%d'),
             "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "total_candidates": len(stocks),
             "stocks": stocks,
-            "scan_type": "V4组合策略",
+            "scan_type": "V4+ML过滤策略",
         }
     except Exception as e:
         import traceback
         logger.error(f"combo_scan error: {traceback.format_exc()}")
-        try: conn.close()
-        except Exception: pass
-        return {"stocks": [], "scan_type": "V4组合策略", "error": str(e)}
+        return {"stocks": [], "scan_type": "V4+ML过滤策略", "error": str(e)}
 
 
 @router.get("/api/scan/v5")
