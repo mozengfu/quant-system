@@ -819,14 +819,29 @@ async def scan_ml(request: FastAPIRequest, mode: str = "all", block: str = "", m
     save_access_log(user, get_client_ip(request), f"AI选股({mode}) {block or market}")
 
     if mode == "top5":
-        # 复用现有 TOP5 管道（无板块筛选）
         import pymysql
         from quant_app.utils.config import get_db_config
-        from ml_daily_top5 import generate_top5
+        from quant_app.services.strategy_service import generate_v4_ml_top5
         _conn = pymysql.connect(**get_db_config())
-        result = generate_top5(conn=_conn)
+        top5 = generate_v4_ml_top5(_conn)
         _conn.close()
-        return {"stocks": result, "date": datetime.now().strftime("%Y-%m-%d")}
+
+        stocks = []
+        for s in top5:
+            code = s['ts_code'].split('.')[0]
+            stocks.append({
+                'rank': s.get('rank', 0),
+                'code': code,
+                'name': s['name'],
+                'industry': s.get('industry', ''),
+                'price': f"{s['close']:.2f}",
+                'change': f"{s['pct_chg']:+.2f}%",
+                'ml_score': s.get('ml_score', 0),
+                'total_score': s.get('total_score', s.get('v4_score', 0)),
+                'reasons': s.get('reasons', []),
+            })
+
+        return {"stocks": stocks, "date": top5[0].get('date', datetime.now().strftime('%Y-%m-%d')) if top5 else ''}
     else:
         # 复用 AI模型选股管道，取 top 10 或 top 50
         return await scan_aimodel(request, block=block, market=market, token=token)
