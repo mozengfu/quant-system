@@ -351,8 +351,6 @@ async def scan_aimodel(request: FastAPIRequest, block: str = "", market: str = "
     except Exception as e:
         import traceback
         logger.error(f"AI模型选股失败: {e}\n{traceback.format_exc()}")
-        try: conn.close()
-        except Exception: pass
         return {"stocks": [], "error": f"扫描失败: {str(e)}"}
 
 
@@ -730,8 +728,6 @@ async def scan_v5(request: FastAPIRequest, block: str = "", market: str = "", to
     except Exception as e:
         import traceback
         logger.error(f"scan_v5 error: {traceback.format_exc()}")
-        try: conn.close()
-        except Exception: pass
         return {"stocks": [], "scan_type": "V5缩量回踩", "error": str(e)}
 
 

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(awk '/@app\\\\.\\(get|post\\)/{route=$0; linenum=NR} /ml_enhanced_score/{if\\(NR>linenum && NR<linenum+100\\) print linenum\": \"route\" → line \"NR\": ml_enhanced_score\"}' /Users/mozengfu/workspace/quant-system/app_api.py)"
+    ]
+  }
+}

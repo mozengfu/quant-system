@@ -532,64 +532,93 @@ def get_holding_positions():
 
 
 # ========== V4 策略选股 ==========
-def v4_scan(top_n=5):
+def v4_scan(top_n=3):
     """
-    V4 组合策略扫描：强势活跃技术筛选 + 主力评分过滤
-    返回候选股列表
+    V4.1→V6.5 级联策略扫描：技术筛选 → 综合评分(龙虎榜/股东加分) → V6.5 ML排序
+    与 /api/combo_scan 级联策略一致
     """
     conn = get_db_conn()
-    cursor = conn.cursor()
-
-    # 获取最新交易日
-    cursor.execute("SELECT MAX(trade_date) FROM quant_db.daily_price")
-    latest_date = cursor.fetchone()[0]
+    cur = conn.cursor()
+    cur.execute("SELECT MAX(trade_date) FROM quant_db.daily_price")
+    latest_date = cur.fetchone()[0]
     if not latest_date:
-        cursor.close()
-        conn.close()
+        cur.close(); conn.close()
         return []
     today_str = str(latest_date)
 
-    # 强势活跃技术筛选 SQL（与 combo_scan 一致）
     sql = """
         SELECT d.ts_code, s.name, s.industry,
-               d.close, d.pct_chg,
-               d.turnover_rate, d.volume_ratio,
+               d.close, d.pct_chg, d.turnover_rate, d.volume_ratio,
                d.ma5, d.ma10, d.ma20
         FROM quant_db.daily_price d
         JOIN quant_db.stock_info s ON d.ts_code = s.ts_code COLLATE utf8mb4_unicode_ci
         WHERE d.trade_date = %s
-          AND d.close > 5
-          AND d.pct_chg > 1
-          AND d.pct_chg < 9.5
-          AND d.turnover_rate > 1.5
-          AND s.is_st = 0
-          AND d.ts_code NOT LIKE '688%%'
-          AND d.ts_code NOT LIKE '92%%'
-          AND d.ts_code NOT LIKE '8%%'
-          AND d.ts_code NOT LIKE '4%%'
+          AND d.close > 5 AND d.pct_chg > 1 AND d.pct_chg < 9.5 AND d.turnover_rate > 1.5
+          AND s.is_st = 0 AND d.ts_code NOT LIKE '688%%' AND d.ts_code NOT LIKE '92%%'
+          AND d.ts_code NOT LIKE '8%%' AND d.ts_code NOT LIKE '4%%'
           AND (
               (d.ma5 > d.ma10 AND d.ma10 > d.ma20 AND d.ma5 IS NOT NULL AND d.ma20 IS NOT NULL AND d.close > d.ma5 AND d.volume_ratio > 1.5)
               OR (d.pct_chg > 4.0 AND d.volume_ratio > 2.0 AND d.close > d.ma5)
           )
-        ORDER BY d.pct_chg DESC
-        LIMIT 200
+        ORDER BY d.pct_chg DESC LIMIT 200
     """
-    cursor.execute(sql, (today_str,))
-    candidates = cursor.fetchall()
-    cursor.close()
+    cur.execute(sql, (today_str,))
+    candidates = cur.fetchall()
 
     if not candidates:
-        conn.close()
+        cur.close(); conn.close()
         return []
 
-    # 主力评分过滤
-    scored = []
+    # 加载龙虎榜数据（近30天）
+    dt_30 = (datetime.strptime(today_str, '%Y-%m-%d') - timedelta(days=30)).strftime('%Y-%m-%d')
+    cur.execute("SELECT ts_code, trade_date, net_buy FROM dragon_tiger WHERE trade_date >= %s AND net_buy != 0", (dt_30,))
+    dt_map = {}
+    for r in cur.fetchall():
+        dt_map.setdefault(r[0], []).append((str(r[1]), float(r[2] or 0)))
+
+    cur.execute("SELECT ts_code, trade_date, net_buy, exalter FROM dragon_tiger_inst WHERE trade_date >= %s AND net_buy != 0", (dt_30,))
+    dti_map = {}
+    for r in cur.fetchall():
+        dti_map.setdefault(r[0], []).append((str(r[1]), float(r[2] or 0), r[3] or ''))
+
+    # 股东人数变化
+    hc_from = (datetime.strptime(today_str, '%Y-%m-%d') - timedelta(days=730)).strftime('%Y-%m-%d')
+    cur.execute("SELECT ts_code, end_date, holder_num_change FROM holder_change WHERE end_date >= %s AND end_date <= %s ORDER BY ts_code, end_date DESC",
+                (hc_from, today_str))
+    hc_map = {}
+    for r in cur.fetchall():
+        hc_map.setdefault(r[0], []).append((str(r[1]), int(r[2] or 0)))
+    cur.close()
+
+    # 龙虎榜加分
+    def _dragon_bonus(ts_code):
+        inst_net = sum(nb for _, nb, _ in dti_map.get(ts_code, []) if _ >= dt_30)
+        if inst_net > 30000000: return 15
+        if inst_net > 5000000: return 12
+        return 8 if any(True for _ in dt_map.get(ts_code, []) if _[0] >= dt_30) else 0
+
+    # 股东集中度加分
+    def _holder_bonus(ts_code):
+        rows = sorted([(td, chg) for td, chg in hc_map.get(ts_code, []) if td <= today_str], key=lambda x: x[0], reverse=True)
+        if len(rows) < 2: return 0
+        dec = sum(1 for _, chg in rows[:4] if chg < 0)
+        return (10 if dec >= 3 else 7 if dec >= 2 else 4 if dec >= 1 else 0)
+
+    from mainforce_scoring import calculate_mainforce_score
+    stocks = []
     for r in candidates:
         ts_code = r[0]
         name = r[1] or ""
+        industry = r[2] or ""
         price = float(r[3]) if r[3] else 0
         pct_chg = float(r[4]) if r[4] else 0
+        turnover = float(r[5]) if r[5] else 0
         vol_ratio = float(r[6]) if r[6] else 0
+        ma5 = float(r[7]) if r[7] else 0
+        ma10 = float(r[8]) if r[8] else 0
+        ma20 = float(r[9]) if r[9] else 0
+        if price <= 0:
+            continue
 
         try:
             mf = calculate_mainforce_score(ts_code, latest_date, conn=conn)
@@ -597,46 +626,117 @@ def v4_scan(top_n=5):
             mf = {'score': 0, 'level': '未知'}
         mainforce_score = mf.get('score', 0)
 
-        if mainforce_score < 60:
+        if mainforce_score < 50:
             continue
 
-        market = "sz" if ts_code.endswith(".SZ") else "sh"
-        scored.append({
-            "ts_code": ts_code,
-            "name": name,
-            "market": market,
-            "price": price,
-            "pct_chg": pct_chg,
-            "vol_ratio": vol_ratio,
-            "mainforce_score": mainforce_score,
+        qs = 0
+        if ma5 > ma10 > ma20 and ma20 > 0: qs += 40
+        if price > ma5: qs += 20
+        if vol_ratio > 2.0: qs += 20
+        if pct_chg > 3: qs += 10
+        if turnover > 3: qs += 10
+
+        dt_bonus = _dragon_bonus(ts_code)
+        hc_bonus = _holder_bonus(ts_code)
+
+        code_raw = ts_code.split(".")[0]
+        mkt = "sz" if ts_code.endswith(".SZ") else "sh"
+
+        stocks.append({
+            "代码": f"{mkt.upper()}{code_raw}",
+            "交易所": mkt, "名称": name, "行业": industry,
+            "现价": price, "涨跌幅": f"{pct_chg:+.2f}%",
+            "换手率": f"{turnover:.2f}%", "量比": f"{vol_ratio:.2f}",
+            "主力评分": int(mainforce_score), "阶段判断": mf.get('level', '未知'),
+            "综合评分": qs + dt_bonus + hc_bonus,
+            "龙虎榜加分": dt_bonus, "股东加分": hc_bonus,
+            "ts_code": ts_code, "name": name, "market": mkt,
+            "price": price, "pct_chg": pct_chg, "vol_ratio": vol_ratio,
         })
-
-    # ML阈值过滤 — 用 V6.2 模型作为风控过滤器
-    if scored:
-        try:
-            from ml_predict import predict_batch
-            codes = [s["ts_code"] for s in scored]
-            ml_results = predict_batch(codes, db_conn=conn, as_of_date=today_str)
-
-            filtered = []
-            for s in scored:
-                ml = ml_results.get(s["ts_code"], {})
-                ml_prob = ml.get('probability', 0.5)
-                # 过滤: ML概率 < 0.5 意味着跑输批次中位数，剔除
-                if ml_prob < 0.5:
-                    continue
-                s["ml_prob"] = ml_prob
-                s["ml_zscore"] = ml.get('predicted_return', 0)
-                filtered.append(s)
-
-            scored = filtered
-        except Exception as e:
-            logger.warning("ML过滤失败，跳过: %s", e)
-
-    # 按主力评分降序
-    scored.sort(key=lambda x: x["mainforce_score"], reverse=True)
     conn.close()
-    return scored[:top_n]
+
+    if not stocks:
+        return []
+
+    # ML增强评分（级联核心：V4.1筛选 → V6.5 ML排序）
+    try:
+        from ml_predict import ml_enhanced_score
+        conn2 = get_db_conn()
+        stocks = ml_enhanced_score(stocks, db_conn=conn2)
+        conn2.close()
+    except Exception as e:
+        logger.warning("ML增强失败，跳过: %s", e)
+        for s in stocks:
+            s['ml概率'] = 0.5
+            s['预测收益'] = 0.0
+            s['增强评分'] = s.get('综合评分', 0)
+
+    # 按预测收益降序
+    stocks.sort(key=lambda x: x.get('预测收益', 0), reverse=True)
+
+    result = [{
+        "ts_code": s["ts_code"], "name": s["name"], "market": s["market"],
+        "price": s["price"], "pct_chg": s["pct_chg"], "vol_ratio": s["vol_ratio"],
+        "mainforce_score": s.get("主力评分", 0),
+        "ml_prob": s.get("ml概率", 0.5),
+        "enhanced_score": s.get("增强评分", 0),
+        "predicted_return": s.get("预测收益", 0),
+    } for s in stocks]
+
+    return result[:top_n]
+
+# === 旧版 v4_scan（2026-05-06 替换为级联策略，保留一个月后清理）===
+# 旧版逻辑：predict_batch + ML概率>=0.5硬过滤 + 按主力评分排序
+# 如需恢复，删掉上面的新 v4_scan 并取消下方注释即可
+# def v4_scan_old(top_n=5):
+#     conn = get_db_conn()
+#     cursor = conn.cursor()
+#     cursor.execute("SELECT MAX(trade_date) FROM quant_db.daily_price")
+#     latest_date = cursor.fetchone()[0]
+#     if not latest_date:
+#         cursor.close(); conn.close()
+#         return []
+#     today_str = str(latest_date)
+#     sql = \"\"\"...（同技术筛选SQL）...\"\"\"
+#     cursor.execute(sql, (today_str,))
+#     candidates = cursor.fetchall()
+#     cursor.close()
+#     if not candidates:
+#         conn.close()
+#         return []
+#     from mainforce_scoring import calculate_mainforce_score
+#     scored = []
+#     for r in candidates:
+#         ts_code, name = r[0], r[1] or ""
+#         price, pct_chg, vol_ratio = float(r[3]) if r[3] else 0, float(r[4]) if r[4] else 0, float(r[6]) if r[6] else 0
+#         try:
+#             mf = calculate_mainforce_score(ts_code, latest_date, conn=conn)
+#         except Exception:
+#             mf = {'score': 0, 'level': '未知'}
+#         if mf.get('score', 0) < 60:
+#             continue
+#         market = "sz" if ts_code.endswith(".SZ") else "sh"
+#         scored.append({"ts_code": ts_code, "name": name, "market": market,
+#                        "price": price, "pct_chg": pct_chg, "vol_ratio": vol_ratio,
+#                        "mainforce_score": mf.get('score', 0)})
+#     if scored:
+#         try:
+#             from ml_predict import predict_batch
+#             ml_results = predict_batch([s["ts_code"] for s in scored], db_conn=conn, as_of_date=today_str)
+#             filtered = []
+#             for s in scored:
+#                 ml = ml_results.get(s["ts_code"], {})
+#                 if ml.get('probability', 0.5) < 0.5:
+#                     continue
+#                 s["ml_prob"] = ml['probability']
+#                 s["ml_zscore"] = ml.get('predicted_return', 0)
+#                 filtered.append(s)
+#             scored = filtered
+#         except Exception:
+#             pass
+#     scored.sort(key=lambda x: x["mainforce_score"], reverse=True)
+#     conn.close()
+#     return scored[:top_n]
 
 
 # ========== 信号记录 ==========

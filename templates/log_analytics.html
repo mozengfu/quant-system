@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>访问分析 - 智能量化选股系统</title>
+    <link rel="icon" href="/static/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/static/icon-192.png">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #1a2332; min-height: 100vh; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { font-size: 22px; color: #ffffff; font-weight: 600; }
+        .header nav { display: flex; gap: 16px; }
+        .header nav a { color: rgba(255,255,255,0.9); text-decoration: none; font-size: 14px; padding: 4px 8px; border-radius: 4px; }
+        .header nav a:hover { background: rgba(255,255,255,0.15); }
+        .main { padding: 24px 30px; max-width: 1400px; margin: 0 auto; }
+
+        /* 日期选择器 */
+        .date-picker { display: flex; gap: 8px; margin-bottom: 24px; align-items: center; }
+        .date-picker label { color: #555; font-size: 14px; font-weight: 500; margin-right: 8px; }
+        .date-btn { padding: 8px 16px; border-radius: 8px; border: 2px solid #e0e0e0; background: white; cursor: pointer; font-size: 13px; color: #555; transition: all 0.2s; }
+        .date-btn.active { border-color: #667eea; background: #667eea; color: white; }
+        .date-btn:hover:not(.active) { border-color: #667eea; color: #667eea; }
+
+        /* 统计卡片 */
+        .stat-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+        .stat-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); position: relative; overflow: hidden; }
+        .stat-card::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 4px; background: linear-gradient(90deg, #667eea, #764ba2); }
+        .stat-card .label { font-size: 13px; color: #888; margin-bottom: 8px; }
+        .stat-card .value { font-size: 28px; font-weight: 700; color: #333; }
+        .stat-card .unit { font-size: 14px; color: #aaa; margin-left: 4px; }
+
+        /* 图表区域 */
+        .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
+        .chart-card { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        .chart-card h3 { font-size: 16px; color: #333; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px solid #f0f0f0; }
+        .chart-full { grid-column: 1 / -1; }
+        canvas { max-height: 350px; }
+
+        /* 筛选栏 */
+        .filter-bar { display: flex; gap: 12px; margin-bottom: 20px; align-items: flex-end; flex-wrap: wrap; }
+        .filter-group { display: flex; flex-direction: column; gap: 4px; }
+        .filter-group label { font-size: 12px; color: #888; font-weight: 500; }
+        .filter-group input, .filter-group select { padding: 6px 10px; border-radius: 6px; border: 1px solid #e0e0e0; font-size: 13px; min-width: 120px; outline: none; transition: border-color 0.2s; }
+        .filter-group input:focus, .filter-group select:focus { border-color: #667eea; }
+        .filter-btn { padding: 6px 16px; border-radius: 6px; border: none; background: #667eea; color: white; cursor: pointer; font-size: 13px; height: 32px; }
+        .filter-btn:hover { background: #5a6fd6; }
+        .filter-btn.reset { background: #e0e0e0; color: #555; }
+        .filter-btn.reset:hover { background: #d0d0d0; }
+
+        /* 表格 */
+        .log-table-card { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        .log-table-card h3 { font-size: 16px; color: #333; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px solid #667eea; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+        th { background: #f8f9fa; color: #555; font-weight: 500; }
+        td { color: #333; }
+        tr:hover td { background: #f8f9ff; }
+        .module-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; background: #e8eaf6; color: #5c6bc0; }
+        .empty { text-align: center; padding: 60px; color: #aaa; }
+
+        /* 迁移按钮 */
+        .migrate-btn { padding: 10px 20px; border-radius: 8px; border: 2px solid #667eea; background: white; color: #667eea; cursor: pointer; font-size: 13px; margin-bottom: 24px; transition: all 0.2s; }
+        .migrate-btn:hover { background: #667eea; color: white; }
+
+        /* 加载状态 */
+        .loading { text-align: center; padding: 60px; color: #aaa; }
+        @media (max-width: 900px) { .stat-cards { grid-template-columns: repeat(2, 1fr); } .charts-grid { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📊 访问分析</h1>
+        <nav>
+            <a href="/admin">🔧 管理员后台</a>
+            <a href="/">🏠 首页</a>
+        </nav>
+    </div>
+
+    <div class="main">
+        <!-- 日期选择器 -->
+        <div class="date-picker">
+            <label>时间范围：</label>
+            <button class="date-btn active" data-days="7">近 7 天</button>
+            <button class="date-btn" data-days="30">近 30 天</button>
+            <button class="date-btn" data-days="90">近 90 天</button>
+        </div>
+
+        <!-- 统计卡片 -->
+        <div class="stat-cards" id="statCards">
+            <div class="stat-card"><div class="label">总访问量</div><div class="value" id="totalCount">-</div></div>
+            <div class="stat-card"><div class="label">独立用户数</div><div class="value" id="uniqueUsers">-</div></div>
+            <div class="stat-card"><div class="label">今日访问</div><div class="value" id="todayCount">-</div></div>
+            <div class="stat-card"><div class="label">昨日访问</div><div class="value" id="yesterdayCount">-</div></div>
+        </div>
+
+        <!-- 图表 -->
+        <div class="charts-grid">
+            <div class="chart-card chart-full">
+                <h3>📈 访问趋势（按天）</h3>
+                <canvas id="trendChart"></canvas>
+            </div>
+            <div class="chart-card">
+                <h3>👥 用户访问排行 Top 10</h3>
+                <canvas id="userChart"></canvas>
+            </div>
+            <div class="chart-card">
+                <h3>🎯 操作类型分布</h3>
+                <canvas id="actionChart"></canvas>
+            </div>
+            <div class="chart-card">
+                <h3>📦 模块分布</h3>
+                <canvas id="moduleChart"></canvas>
+            </div>
+            <div class="chart-card">
+                <h3>🔔 模块分布（环形图）</h3>
+                <canvas id="moduleDonutChart"></canvas>
+            </div>
+        </div>
+
+        <!-- 最近访问日志 -->
+        <div class="log-table-card">
+            <h3>📋 最近访问日志（Top 50）</h3>
+            <div class="filter-bar">
+                <div class="filter-group">
+                    <label>用户</label>
+                    <select id="filterUser" onchange="applyFilter()">
+                        <option value="">全部用户</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>模块</label>
+                    <select id="filterModule" onchange="applyFilter()">
+                        <option value="">全部模块</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>操作</label>
+                    <select id="filterAction" onchange="applyFilter()">
+                        <option value="">全部操作</option>
+                    </select>
+                </div>
+                <button class="filter-btn reset" onclick="resetFilter()">重置</button>
+                <span id="filterCount" style="font-size:12px;color:#888;margin-left:auto;align-self:center;"></span>
+            </div>
+            <div id="logTable"><div class="loading">加载中...</div></div>
+        </div>
+    </div>
+
+    <script>
+        let trendChart, userChart, actionChart, moduleChart, moduleDonutChart;
+
+        const COLORS = ['#667eea','#764ba2','#4caf50','#ff9800','#f44336','#2196f3','#9c27b0','#00bcd4','#ffc107','#8bc34a','#e91e63','#3f51b5','#009688','#ff5722','#607d8b'];
+
+        async function loadData(days = 7, username = '', module = '', action = '') {
+            try {
+                let url = `/api/admin/log_stats?days=${days}`;
+                if (username) url += `&username=${encodeURIComponent(username)}`;
+                if (module) url += `&module=${encodeURIComponent(module)}`;
+                if (action) url += `&action=${encodeURIComponent(action)}`;
+                const res = await fetch(url);
+                if (res.status === 403) {
+                    document.getElementById('statCards').innerHTML = '<div class="empty" style="grid-column:1/-1"><a href="/login">请先登录</a></div>';
+                    return;
+                }
+                const data = await res.json();
+                if (data.error) { console.error(data.error); return; }
+                renderStats(data);
+                populateAllFilters(data);
+                renderCharts(data);
+                renderTable(data.recent_logs || []);
+            } catch (e) { console.error('Load error:', e); }
+        }
+
+        function renderStats(data) {
+            document.getElementById('totalCount').textContent = (data.total || 0).toLocaleString();
+            document.getElementById('uniqueUsers').textContent = data.unique_users || 0;
+            document.getElementById('todayCount').textContent = data.today_count || 0;
+            document.getElementById('yesterdayCount').textContent = data.yesterday_count || 0;
+        }
+
+        function renderCharts(data) {
+            // 更新模块筛选下拉
+            if (data.module_counts && data.module_counts.length > 0) {
+                populateModuleFilter(data.module_counts);
+            }
+            // 访问趋势折线图
+            if (trendChart) trendChart.destroy();
+            trendChart = new Chart(document.getElementById('trendChart'), {
+                type: 'line',
+                data: {
+                    labels: (data.daily_counts || []).map(d => d.date),
+                    datasets: [{
+                        label: '访问量',
+                        data: (data.daily_counts || []).map(d => d.count),
+                        borderColor: '#667eea',
+                        backgroundColor: 'rgba(102,126,234,0.1)',
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 4,
+                        pointHoverRadius: 6,
+                    }]
+                },
+                options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+            });
+
+            // 用户排行柱状图
+            if (userChart) userChart.destroy();
+            const top10 = (data.top_users || []).slice(0, 10).reverse();
+            userChart = new Chart(document.getElementById('userChart'), {
+                type: 'bar',
+                data: {
+                    labels: top10.map(u => u.username),
+                    datasets: [{
+                        label: '访问次数',
+                        data: top10.map(u => u.count),
+                        backgroundColor: COLORS.slice(0, top10.length),
+                        borderRadius: 6,
+                    }]
+                },
+                options: { responsive: true, indexAxis: 'y', plugins: { legend: { display: false } } }
+            });
+
+            // 操作类型饼图
+            if (actionChart) actionChart.destroy();
+            actionChart = new Chart(document.getElementById('actionChart'), {
+                type: 'pie',
+                data: {
+                    labels: (data.action_counts || []).slice(0, 10).map(a => a.action),
+                    datasets: [{
+                        data: (data.action_counts || []).slice(0, 10).map(a => a.count),
+                        backgroundColor: COLORS.slice(0, 10),
+                    }]
+                },
+                options: { responsive: true, plugins: { legend: { position: 'right', labels: { font: { size: 11 } } } } }
+            });
+
+            // 模块分布饼图
+            if (moduleChart) moduleChart.destroy();
+            moduleChart = new Chart(document.getElementById('moduleChart'), {
+                type: 'pie',
+                data: {
+                    labels: (data.module_counts || []).map(m => m.module),
+                    datasets: [{
+                        data: (data.module_counts || []).map(m => m.count),
+                        backgroundColor: COLORS.slice(0, 8),
+                    }]
+                },
+                options: { responsive: true, plugins: { legend: { position: 'right', labels: { font: { size: 11 } } } } }
+            });
+
+            // 模块环形图
+            if (moduleDonutChart) moduleDonutChart.destroy();
+            moduleDonutChart = new Chart(document.getElementById('moduleDonutChart'), {
+                type: 'doughnut',
+                data: {
+                    labels: (data.module_counts || []).map(m => m.module),
+                    datasets: [{
+                        data: (data.module_counts || []).map(m => m.count),
+                        backgroundColor: COLORS.slice(0, 8),
+                    }]
+                },
+                options: { responsive: true, plugins: { legend: { position: 'right', labels: { font: { size: 11 } } } } }
+            });
+        }
+
+        // 筛选相关
+        let currentModuleOptions = [];
+
+        function populateUserFilter(users) {
+            const sel = document.getElementById('filterUser');
+            const currentVal = sel.value;
+            sel.innerHTML = '<option value="">全部用户</option>';
+            users.forEach(u => {
+                const opt = document.createElement('option');
+                opt.value = u;
+                opt.textContent = u;
+                sel.appendChild(opt);
+            });
+            sel.value = currentVal;
+        }
+
+        function populateActionFilter(actions) {
+            const sel = document.getElementById('filterAction');
+            const currentVal = sel.value;
+            sel.innerHTML = '<option value="">全部操作</option>';
+            actions.forEach(a => {
+                const opt = document.createElement('option');
+                opt.value = a;
+                opt.textContent = a;
+                sel.appendChild(opt);
+            });
+            sel.value = currentVal;
+        }
+
+        function applyFilter() {
+            const days = getSelectedDays();
+            const username = document.getElementById('filterUser').value.trim();
+            const module = document.getElementById('filterModule').value;
+            const action = document.getElementById('filterAction').value.trim();
+            loadData(days, username, module, action);
+        }
+
+        function resetFilter() {
+            document.getElementById('filterUser').value = '';
+            document.getElementById('filterModule').value = '';
+            document.getElementById('filterAction').value = '';
+            document.getElementById('filterCount').textContent = '';
+            loadData(getSelectedDays());
+        }
+
+        function populateAllFilters(data) {
+            if (data.user_options) populateUserFilter(data.user_options);
+            if (data.module_counts) populateModuleFilter(data.module_counts);
+            if (data.action_options) populateActionFilter(data.action_options);
+        }
+
+        function populateModuleFilter(modules) {
+            const sel = document.getElementById('filterModule');
+            const currentVal = sel.value;
+            currentModuleOptions = modules;
+            sel.innerHTML = '<option value="">全部模块</option>';
+            modules.forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m.module;
+                opt.textContent = m.module;
+                sel.appendChild(opt);
+            });
+            sel.value = currentVal;
+        }
+
+        function renderTable(logs) {
+            if (!logs || logs.length === 0) {
+                document.getElementById('logTable').innerHTML = '<div class="empty">暂无数据</div>';
+                return;
+            }
+            let html = '<table><thead><tr><th>时间</th><th>用户</th><th>IP</th><th>操作</th><th>模块</th></tr></thead><tbody>';
+            for (const log of logs) {
+                const ts = log.timestamp ? String(log.timestamp).replace('T', ' ').substring(0, 19) : '-';
+                html += `<tr><td>${ts}</td><td>${log.username || '-'}</td><td>${log.ip || '-'}</td><td>${log.action || '-'}</td><td><span class="module-tag">${log.module || '-'}</span></td></tr>`;
+            }
+            html += '</tbody></table>';
+            document.getElementById('logTable').innerHTML = html;
+            document.getElementById('filterCount').textContent = `显示 ${logs.length} 条`;
+        }
+
+        function getSelectedDays() {
+            return parseInt(document.querySelector('.date-btn.active')?.dataset.days || '7');
+        }
+
+        // 日期按钮
+        document.querySelectorAll('.date-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                loadData(parseInt(btn.dataset.days));
+            });
+        });
+
+        // 初始加载
+        loadData(7);
+    </script>
+</body>
+</html>

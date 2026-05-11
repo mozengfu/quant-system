@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang=zh-CN>
+<head>
+    <meta charset=UTF-8>
+    <meta name=viewport content=width=device-width, initial-scale=1.0>
+    <title>登录 - 智能量化选股系统</title>
+    <link rel="icon" href="/static/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/static/icon-192.png">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: url('/static/login-bg.jpg') no-repeat center center fixed;
+            background-size: cover;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            overflow: hidden;
+        }
+        body::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            z-index: 0;
+        }
+        /* 股市行情动画背景 */
+        .ticker-bg {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 0;
+            pointer-events: none;
+            overflow: hidden;
+        }
+        .ticker-line {
+            position: absolute;
+            bottom: 0;
+            width: 200%;
+            height: 100px;
+            background: linear-gradient(180deg, transparent 0%, rgba(79,195,247,0.05) 50%, transparent 100%);
+            animation: tickerScroll 20s linear infinite;
+        }
+        .ticker-line:nth-child(2) { bottom: 100px; animation-duration: 25s; animation-delay: -5s; opacity: 0.5; }
+        .ticker-line:nth-child(3) { bottom: 200px; animation-duration: 30s; animation-delay: -10s; opacity: 0.3; }
+        @keyframes tickerScroll {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(-50%); }
+        }
+        .stock-float {
+            position: absolute;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            font-weight: bold;
+            opacity: 0;
+            animation: floatUp 8s ease-in infinite;
+            white-space: nowrap;
+        }
+        @keyframes floatUp {
+            0% { opacity: 0; transform: translateY(100vh) scale(0.8); }
+            10% { opacity: 0.6; }
+            90% { opacity: 0.6; }
+            100% { opacity: 0; transform: translateY(-10vh) scale(1); }
+        }
+        .stock-up { color: rgba(239, 83, 80, 0.7); }
+        .stock-down { color: rgba(102, 187, 106, 0.7); }
+        /* 图表线动画 */
+        .chart-line-bg {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 40%;
+            z-index: 0;
+            pointer-events: none;
+            opacity: 0.08;
+        }
+        .chart-line-bg svg {
+            width: 100%;
+            height: 100%;
+        }
+        .chart-path {
+            fill: none;
+            stroke: #4fc3f7;
+            stroke-width: 2;
+            animation: drawChart 3s ease-in-out infinite alternate;
+        }
+        @keyframes drawChart {
+            0% { stroke-dashoffset: 1000; }
+            100% { stroke-dashoffset: 0; }
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+            width: 100%;
+            max-width: 400px;
+            position: relative;
+            z-index: 1;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+            font-size: 24px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-size: 14px;
+        }
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .password-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+        .password-wrapper input {
+            padding-right: 44px;
+        }
+        .toggle-password {
+            position: absolute;
+            right: 8px;
+            background: none;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            padding: 6px;
+            font-size: 18px;
+            line-height: 1;
+            width: auto;
+            border-radius: 4px;
+            transition: color 0.2s, transform 0.2s;
+        }
+        .toggle-password:hover {
+            color: #667eea;
+            transform: none;
+            box-shadow: none;
+        }
+        button {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+        .links {
+            text-align: center;
+            margin-top: 20px;
+        }
+        .links a {
+            color: #667eea;
+            text-decoration: none;
+            font-size: 14px;
+        }
+        .message {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+            display: block;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            display: block;
+        }
+        /* Accessibility */
+        @media (prefers-reduced-motion: reduce) {
+            .ticker-line { animation: none; }
+            .stock-float { animation: none; display: none; }
+            .chart-path { animation: none; }
+        }
+        button:focus-visible, input:focus-visible, a:focus-visible {
+            outline: 2px solid #1976d2;
+            outline-offset: 2px;
+        }
+    </style>
+</head>
+<body>
+    <!-- 股市行情动画背景 -->
+    <div class="ticker-bg">
+        <div class="ticker-line"></div>
+        <div class="ticker-line"></div>
+        <div class="ticker-line"></div>
+        <div id="stockFloats"></div>
+    </div>
+    <!-- 图表线背景 -->
+    <div class="chart-line-bg" id="chartLineBg"></div>
+    <div class="container">
+        <a href="/" style="display:block; text-align:left; color:#888; text-decoration:none; font-size:13px; margin-bottom:16px;">← 返回首页</a>
+        <h1>🔐 用户登录</h1>
+        
+        <div id="message" class="message"></div>
+        
+        <!-- 登录表单 - 禁用自动填充 -->
+        <form id="loginForm" onsubmit="doLogin(event)" autocomplete="off">
+            <div class="form-group">
+                <label>用户名</label>
+                <input type="text" 
+                       id="username" 
+                       name="username_login" 
+                       placeholder="请输入用户名" 
+                       required 
+                       autocomplete="off" 
+                       readonly 
+                       onfocus="this.removeAttribute('readonly')">
+            </div>
+            
+            <div class="form-group">
+                <label>密码</label>
+                <div class="password-wrapper">
+                    <input type="password"
+                           id="password"
+                           name="password_login"
+                           placeholder="请输入密码"
+                           required
+                           autocomplete="new-password"
+                           readonly
+                           onfocus="this.removeAttribute('readonly')">
+                    <button type="button" class="toggle-password" onclick="togglePassword()" title="显示/隐藏密码">👁</button>
+                </div>
+            </div>
+            
+            <div style="text-align:right; margin-bottom:16px;">
+                <a href="#" onclick="showForgotPassword()" style="color:#4fc3f7; font-size:12px; text-decoration:none;">忘记密码？</a>
+            </div>
+            
+            <button type="submit" class="btn btn-primary">登录</button>
+        </form>
+        
+        <!-- 找回密码表单 -->
+        <form id="forgotForm" style="display:none;" onsubmit="doForgotPassword(event)" autocomplete="off">
+            <div class="form-group">
+                <label>用户名</label>
+                <input type="text" id="fpUsername" name="fp_username" placeholder="请输入用户名" required autocomplete="off">
+            </div>
+            <div class="form-group">
+                <label>邮箱</label>
+                <input type="email" id="fpEmail" name="fp_email" placeholder="请输入注册邮箱" required autocomplete="off">
+            </div>
+            <button type="submit" class="btn btn-primary">发送重置邮件</button>
+            <button type="button" class="btn btn-secondary" onclick="showLogin()" style="margin-top:10px; background:#f0f0f0; color:#666;">返回登录</button>
+        </form>
+        
+        <div class="links">
+            <a href="/register">没有账号？立即注册</a>
+        </div>
+    </div>
+    
+    <script>
+        async function doLogin(event) {
+            event.preventDefault();
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            
+            try {
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({username, password})
+                });
+                const data = await res.json();
+                
+                if (data.error) {
+                    showMessage(data.error, 'error');
+                } else {
+                    showMessage('✅ 登录成功！正在跳转...', 'success');
+                    setTimeout(() => {
+                        var target = data.redirect || '/';
+                        var hash = sessionStorage.getItem('landing_hash');
+                        if (hash) target += '#' + hash;
+                        window.location.href = target;
+                    }, 1000);
+                }
+            } catch (e) {
+                showMessage('登录失败，请重试', 'error');
+            }
+        }
+        
+        async function doForgotPassword(event) {
+            event.preventDefault();
+            const username = document.getElementById('fpUsername').value.trim();
+            const email = document.getElementById('fpEmail').value.trim();
+            
+            try {
+                const res = await fetch('/api/auth/forgot-password', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({username, email})
+                });
+                const data = await res.json();
+                
+                if (data.error) {
+                    showMessage(data.error, 'error');
+                } else {
+                    showMessage('✅ 重置邮件已发送，请检查邮箱', 'success');
+                    setTimeout(() => {
+                        showLogin();
+                    }, 2000);
+                }
+            } catch (e) {
+                showMessage('发送失败，请重试', 'error');
+            }
+        }
+        
+        function showForgotPassword() {
+            document.getElementById('loginForm').style.display = 'none';
+            document.getElementById('forgotForm').style.display = 'block';
+        }
+        
+        function showLogin() {
+            document.getElementById('loginForm').style.display = 'block';
+            document.getElementById('forgotForm').style.display = 'none';
+        }
+
+        function togglePassword() {
+            const pwd = document.getElementById('password');
+            if (pwd.type === 'password') {
+                pwd.type = 'text';
+            } else {
+                pwd.type = 'password';
+            }
+        }
+        
+        function showMessage(msg, type) {
+            const el = document.getElementById('message');
+            el.textContent = msg;
+            el.className = 'message ' + type;
+            setTimeout(() => {
+                el.className = 'message';
+            }, 5000);
+        }
+    </script>
+    <!-- 浮动股票代码动画 -->
+    <script>
+        (function(){
+            const stocks = [
+                {code:'600519', name:'贵州茅台', up:true},
+                {code:'000858', name:'五粮液', up:true},
+                {code:'300750', name:'宁德时代', up:false},
+                {code:'002594', name:'比亚迪', up:true},
+                {code:'601318', name:'中国平安', up:false},
+                {code:'000333', name:'美的集团', up:true},
+                {code:'600276', name:'恒瑞医药', up:false},
+                {code:'002415', name:'海康威视', up:true},
+                {code:'600036', name:'招商银行', up:false},
+                {code:'000001', name:'平安银行', up:true},
+                {code:'300059', name:'东方财富', up:true},
+                {code:'002230', name:'科大讯飞', up:false},
+                {code:'600900', name:'长江电力', up:true},
+                {code:'688981', name:'中芯国际', up:false},
+                {code:'601012', name:'隆基绿能', up:true},
+                {code:'002475', name:'立讯精密', up:false},
+            ];
+            const container = document.getElementById('stockFloats');
+            if(!container) return;
+            function createFloat(idx) {
+                const s = stocks[idx % stocks.length];
+                const el = document.createElement('div');
+                el.className = 'stock-float ' + (s.up ? 'stock-up' : 'stock-down');
+                el.textContent = s.code + ' ' + s.name + ' ' + (s.up ? '↑' : '↓') + (Math.random()*5+0.5).toFixed(1) + '%';
+                el.style.left = (Math.random() * 80 + 5) + '%';
+                el.style.animationDuration = (Math.random() * 8 + 6) + 's';
+                el.style.animationDelay = (Math.random() * 5) + 's';
+                el.style.fontSize = (Math.random() * 4 + 11) + 'px';
+                container.appendChild(el);
+                // 动画结束后移除并重新创建
+                el.addEventListener('animationend', ()=>{
+                    el.remove();
+                    setTimeout(()=>createFloat(idx+1), Math.random()*3000);
+                });
+            }
+            for(let i=0; i<8; i++) {
+                setTimeout(()=>createFloat(i), i*800);
+            }
+        })();
+    </script>
+</body>
+</html>

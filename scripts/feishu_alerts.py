@@ -105,7 +105,7 @@ def send_morning_alert(top_n=5):
                 seen.add(ts_code)
                 name = r[1]
                 price = float(r[2])
-                signal_date = str(r[4]) if r[4] else ""
+                signal_date = str(r[5]) if r[5] else ""
                 msg += f"  {name} ({ts_code}) 买入价{price:.2f} {signal_date}\n"
 
         # 市场状态

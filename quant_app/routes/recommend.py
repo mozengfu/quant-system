@@ -131,8 +131,6 @@ async def get_recommend(force_refresh: bool = False, token: str = Cookie(None)):
         return result
     except Exception as e:
         logger.error(f"建仓推荐失败: {e}")
-        try: conn.close()
-        except Exception: pass
         return {"error": str(e)}
 
 
@@ -337,8 +335,6 @@ async def get_recommend_strong(token: str = Cookie(None)):
         return result
     except Exception as e:
         logger.error(f"强势推荐失败: {e}")
-        try: conn.close()
-        except Exception: pass
         return {"error": str(e), "recommendations": []}
 
 

@@ -1,0 +1,13 @@
+{
+  "tasks": [
+    {
+      "id": "544698b8",
+      "cron": "0 10 6 6 *",
+      "prompt": "清理 sim_trading.py 中被注释的旧 v4_scan 代码。检查过去一个月内是否有人启用过旧代码（查看 git log 或是否有 `v4_scan_old` 的调用）。如果确未使用，删除 `# === 旧版 v4_scan...` 到末尾的所有注释代码块。",
+      "createdAt": 1778074106403,
+      "createdBySessionId": "9485127b-3cd1-4737-b85b-86d595a0e9ac",
+      "createdByPid": 84362,
+      "createdByProcStart": "Wed May  6 13:09:55 2026"
+    }
+  ]
+}

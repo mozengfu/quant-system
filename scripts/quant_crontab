@@ -44,3 +44,6 @@ QUANT_DIR=/Users/mozengfu/workspace/quant-system
 
 # ========== V4 组合策略扫描 ==========
 45 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 run_three_strategies.py >> $QUANT_DIR/logs/v4_scan.log 2>&1
+
+# ========== 底部苏醒策略扫描 ==========
+55 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/scan_bottom_awakening.py >> $QUANT_DIR/logs/bottom_awakening.log 2>&1

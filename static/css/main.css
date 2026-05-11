@@ -1,0 +1,390 @@
+/* ========================================
+   智能量化选股系统 - 共享样式表
+   Design Tokens + 公共组件样式
+   ======================================== */
+
+/* --- CSS Variables (Design Tokens) --- */
+:root {
+  /* 主题色 */
+  --primary: #4fc3f7;
+  --primary-dark: #1976d2;
+  --secondary: #667eea;
+  --secondary-dark: #764ba2;
+
+  /* 语义色 */
+  --profit: #ef5350;
+  --loss: #66bb6a;
+  --warning: #ffca28;
+  --info: #64b5f6;
+
+  /* 背景色 */
+  --bg-main: #1a1f2e;
+  --bg-card: #ffffff;
+  --bg-hover: #f8f9fa;
+
+  /* 文字色 */
+  --text-primary: #1a2332;
+  --text-secondary: #666666;
+  --text-muted: #8892b0;
+  --text-light: #e0e6ed;
+
+  /* 边框 */
+  --border-color: #e0e0e0;
+  --border-radius: 10px;
+
+  /* 阴影 */
+  --shadow-card: 0 2px 8px rgba(0,0,0,0.08);
+  --shadow-hover: 0 4px 12px rgba(0,0,0,0.15);
+
+  /* 字体 */
+  --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
+/* --- 重置样式 --- */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-family);
+  background: var(--bg-main);
+  color: var(--text-light);
+  line-height: 1.6;
+}
+
+/* --- 通用卡片 --- */
+.card {
+  background: var(--bg-card);
+  border-radius: var(--border-radius);
+  box-shadow: var(--shadow-card);
+  padding: 20px;
+  transition: box-shadow 0.2s ease;
+}
+
+.card:hover {
+  box-shadow: var(--shadow-hover);
+}
+
+/* --- 按钮样式 --- */
+.btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 14px;
+  transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  touch-action: manipulation;
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--primary, #4fc3f7);
+  outline-offset: 2px;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: var(--primary-dark);
+}
+
+.btn-secondary {
+  background: var(--secondary);
+  color: #fff;
+}
+
+.btn-secondary:hover {
+  background: var(--secondary-dark);
+}
+
+.btn-danger {
+  background: var(--profit);
+  color: #fff;
+}
+
+.btn-success {
+  background: var(--loss);
+  color: #fff;
+}
+
+/* --- 刷新按钮 (页面原有) --- */
+.refresh-btn {
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.refresh-btn:hover {
+  background: var(--primary-dark);
+}
+
+/* --- 表格样式 --- */
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 600px;
+}
+
+thead {
+  background: #f5f7fa;
+}
+
+th {
+  padding: 10px 8px;
+  text-align: left;
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+td {
+  padding: 10px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+tr:hover {
+  background: var(--bg-hover);
+}
+
+/* --- 表单输入 --- */
+input[type="text"],
+input[type="number"],
+input[type="date"],
+select {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid #d0d0d0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+input[type="date"] {
+  color: #333333;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid #d0d0d0;
+  background: #ffffff;
+}
+
+/* --- Loading Spinner --- */
+.loading {
+  color: var(--text-muted);
+  padding: 20px;
+  text-align: center;
+}
+
+.spinner {
+  display: inline-block;
+  width: 30px;
+  height: 30px;
+  border: 3px solid rgba(79, 195, 247, 0.3);
+  border-radius: 50%;
+  border-top-color: var(--primary);
+  animation: spin 0.8s linear infinite;
+  margin-right: 10px;
+  vertical-align: middle;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* --- Toast 通知 --- */
+.toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.toast {
+  padding: 12px 24px;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 14px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  animation: slideIn 0.3s ease;
+}
+
+.toast.success {
+  background: var(--loss);
+}
+
+.toast.error {
+  background: var(--profit);
+}
+
+.toast.warning {
+  background: var(--warning);
+  color: var(--text-primary);
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* --- Reduced Motion --- */
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; border-color: var(--primary, #4fc3f7); }
+  .toast { animation: none; }
+  .card { transition: none; }
+  .btn, .refresh-btn { transition: none; }
+  @keyframes spin { to { transform: none; } }
+  @keyframes slideIn { from, to { transform: none; opacity: 1; } }
+}
+
+/* --- Refresh btn focus --- */
+.refresh-btn:focus-visible {
+  outline: 2px solid var(--primary, #4fc3f7);
+  outline-offset: 2px;
+}
+
+/* --- 空状态 --- */
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-muted);
+}
+
+.empty-icon {
+  font-size: 48px;
+  margin-bottom: 15px;
+  opacity: 0.6;
+}
+
+.empty-text {
+  font-size: 15px;
+  margin-bottom: 15px;
+}
+
+.empty-state button {
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* --- 错误提示 --- */
+.error {
+  color: var(--profit);
+  padding: 15px;
+  background: rgba(239, 83, 80, 0.1);
+  border-radius: 6px;
+  border: 1px solid rgba(239, 83, 80, 0.3);
+}
+
+/* --- 响应式断点 --- */
+@media (max-width: 768px) {
+  /* 导航 - 隐藏横向滚动，改为可折叠 */
+  .nav-tabs {
+    display: none;
+  }
+
+  .mobile-menu-btn {
+    display: block !important;
+  }
+
+  /* 摘要卡片 - 2列布局 */
+  .summary-grid {
+    grid-template-columns: 1fr 1fr !important;
+  }
+
+  /* 表格 - 移动端允许水平滚动 */
+  .table-wrap {
+    overflow-x: auto;
+  }
+
+  .table-wrap table {
+    min-width: 600px;
+  }
+
+  /* 暂时隐藏卡片（如果启用的活） */
+  .mobile-position-card {
+    display: none !important;
+  }
+
+  .mobile-position-card .card-title {
+    color: var(--info);
+    font-weight: bold;
+    margin-bottom: 8px;
+  }
+
+  .mobile-position-card .card-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px solid #f0f0f0;
+  }
+
+  .mobile-card .card-row:last-child {
+    border-bottom: none;
+  }
+
+  /* 面板内容区 */
+  .panel {
+    padding: 15px;
+  }
+
+  /* 输入框全宽 */
+  .input-row {
+    flex-wrap: wrap;
+  }
+
+  .input-row input,
+  .input-row select {
+    width: 100% !important;
+    min-width: unset !important;
+  }
+}
+
+/* --- 隐藏元素 (移动端显示控制) --- */
+.mobile-menu-btn {
+  display: none;
+}
+
+.mobile-card {
+  display: none;
+}
+
+.mobile-position-card {
+  display: none !important;
+  background: var(--bg-card);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow-card);
+  border: 1px solid var(--border-color);
+}
+
+/* --- 信号标签 --- */
+.tag-red { background: rgba(239, 83, 80, 0.15); color: #ef5350; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+.tag-green { background: rgba(102, 187, 106, 0.15); color: #66bb6a; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+.tag-blue { background: rgba(79, 195, 247, 0.15); color: #4fc3f7; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+.tag-yellow { background: rgba(255, 202, 40, 0.15); color: #ffca28; padding: 2px 8px; border-radius: 4px; font-size: 12px; }

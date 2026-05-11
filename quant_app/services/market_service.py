@@ -166,9 +166,10 @@ def calculate_rps(code, market="sz", n=20):
 
 
 # ========== 持仓自动同步 ==========
+
 def sync_positions():
     """
-    从 stocks.json 同步持仓到 positions.json（仅在有持仓数据时覆盖，否则保留现有持仓）
+    从 stocks.json 同步持仓到 positions.json（直接复制中文字段）
     """
     try:
         from quant_app.utils.config import DATA_DIR
@@ -177,16 +178,16 @@ def sync_positions():
         if stocks_path.exists():
             with open(stocks_path, "r", encoding="utf-8") as f:
                 stocks_data = json.load(f)
-            positions = stocks_data.get("持仓", None)
-            if positions and len(positions) > 0:
+            cn_positions = stocks_data.get("持仓", None)
+            if cn_positions and len(cn_positions) > 0:
                 positions_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(positions_path, "w", encoding="utf-8") as f:
-                    json.dump({"positions": positions}, f, ensure_ascii=False, indent=2)
-                logger.info(f"持仓同步完成: {len(positions)} 只")
+                    json.dump(cn_positions, f, ensure_ascii=False, indent=2)
+                logger.info("持仓同步完成: %d 只", len(cn_positions))
             else:
                 logger.info("stocks.json 无持仓数据，跳过同步，保留现有 positions.json")
     except Exception as e:
-        logger.warning(f"持仓同步失败: {e}")
+        logger.warning("持仓同步失败: %s", e)
 
 
 def add_to_positions(signal):

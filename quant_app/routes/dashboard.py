@@ -2,7 +2,7 @@
 """
 持仓、回测、追踪相关 API 路由
 """
-import os, json, time, logging, sys, math
+import os, json, time, logging, sys, math, asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 from fastapi import APIRouter, Cookie, Request as FastAPIRequest, HTTPException
@@ -17,6 +17,7 @@ from app_core import (
     send_feishu, save_access_log, get_client_ip,
 )
 from quant_app.utils.authz import require_admin, is_admin
+from market_state import get_market_state
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,7 @@ async def get_performance_summary(request: FastAPIRequest, token: str = Cookie(N
 
     return {
         "total_return": total_return,
-        "annual_return": round(annual_return, 2),
+        "annual_return": round(annual_return or 0, 2),
         "sharpe": round(sharpe, 2),
         "max_drawdown": last.get("max_drawdown", 0),
         "trade_count": trade_count,
@@ -100,7 +101,7 @@ async def get_performance_summary(request: FastAPIRequest, token: str = Cookie(N
 
 @router.get("/api/sim/today_signals")
 async def get_today_signals(token: str = Cookie(None)):
-    """返回今日模拟盘买入信号，供实盘跟单参考"""
+    """返回今日模拟交易实际操作（买入/卖出），供实盘跟单参考"""
     user = get_current_user(token)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
@@ -110,45 +111,56 @@ async def get_today_signals(token: str = Cookie(None)):
         from quant_app.utils.config import get_db_config
         conn = pymysql.connect(**get_db_config())
         cur = conn.cursor()
-        # 查询今日买入信号
+
+        # 获取市场状态，拿 max_positions
+        try:
+            ms = get_market_state(db_conn=conn)
+            params = ms.get('params', {})
+            max_positions = params.get('max_positions', 3)
+            market_state_name = ms.get('state_name', '未知')
+        except Exception:
+            max_positions = 3
+            market_state_name = '未知'
+
+        # 查询当前持仓数
+        cur.execute("SELECT COUNT(*) FROM sim_positions WHERE status='HOLD'")
+        position_count = cur.fetchone()[0]
+
+        # 查询今日模拟交易实际买卖操作
         cur.execute("""
-            SELECT s.ts_code, s.stock_name, s.price, s.shares, s.strategy,
-                   s.ml_prob, s.reason, s.signal_time,
-                   t.price as current_price
-            FROM sim_signals s
-            LEFT JOIN (
-                SELECT ts_code, current_price FROM sim_positions WHERE status='HOLD'
-            ) t ON s.ts_code = t.ts_code
-            WHERE s.signal_type='买入' AND s.signal_date = %s
-            ORDER BY s.signal_time DESC
+            SELECT ts_code, stock_name, action, price, shares,
+                   profit_loss, profit_pct, reason, trade_time
+            FROM sim_trades
+            WHERE trade_date = %s
+            ORDER BY trade_time ASC
         """, (today,))
         rows = cur.fetchall()
         cur.close()
         conn.close()
 
-        signals = []
+        actions = []
         for r in rows:
-            buy_price = float(r[2])
-            current = float(r[7]) if r[7] else buy_price
-            signals.append({
+            actions.append({
                 "ts_code": r[0],
                 "name": r[1],
-                "buy_price": buy_price,
-                "shares": int(r[3]),
-                "strategy": r[4] or "",
-                "ml_prob": float(r[5]) if r[5] else 0,
-                "reason": r[6] or "",
-                "signal_time": str(r[7]) if r[7] else "",
-                "current_price": current,
-                "suggest_buy_upper": round(buy_price * 1.02, 2),  # 建议买入上限（+2%）
-                "suggest_stop_loss": round(buy_price * 0.97, 2),  # 止损参考
-                "suggest_take_profit_1": round(buy_price * 1.06, 2),  # 止盈一档
-                "suggest_take_profit_3": round(buy_price * 1.18, 2),  # 止盈三档
+                "action": r[2],  # BUY / SELL
+                "price": float(r[3]) if r[3] else 0,
+                "shares": int(r[4]) if r[4] else 0,
+                "profit_loss": float(r[5]) if r[5] else 0,
+                "profit_pct": float(r[6]) if r[6] else 0,
+                "reason": r[7] or "",
+                "trade_time": str(r[8]) if r[8] else "",
             })
-        return {"signals": signals, "date": today}
+        return {
+            "actions": actions,
+            "date": today,
+            "position_count": position_count,
+            "max_positions": max_positions,
+            "market_state_name": market_state_name,
+        }
     except Exception as e:
-        logger.warning(f"获取今日信号失败: {e}")
-        return {"signals": [], "date": today, "error": str(e)}
+        logger.warning(f"获取今日操作失败: {e}")
+        return {"actions": [], "date": today, "error": str(e)}
 
 POSITION_ALERT_STATE = {}
 POSITION_ALERT_LOCK = __import__('threading').Lock()
@@ -473,26 +485,19 @@ async def technical_signals(request: FastAPIRequest, code: str = "", market: str
 
 @router.get("/api/track/stats")
 async def get_track_stats(token: str = Cookie(None)):
-    """获取胜率统计（异步更新，不阻塞响应）"""
+    """获取胜率统计（同步更新后返回最新数据）"""
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")
 
-    data = load_track_data()
-    stats = data.get("stats", {})
-
-    import asyncio
-    asyncio.create_task(_async_update_track_results())
-
-    return stats
-
-
-async def _async_update_track_results():
-    """异步更新追踪结果"""
+    # 同步更新（update_stock_results 内部有 300 秒冷却，冷却期内只重算不查库）
     try:
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, update_stock_results)
     except Exception as e:
-        logger.warning(f"异步更新追踪结果失败：{e}")
+        logger.warning(f"更新追踪结果失败：{e}")
+
+    data = load_track_data()
+    return data.get("stats", {})
 
 
 @router.get("/api/track/history")
@@ -501,7 +506,7 @@ async def get_track_history(token: str = Cookie(None)):
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")
     data = load_track_data()
-    return {"recommendations": data["recommendations"][-30:]}
+    return {"recommendations": data["recommendations"][-30:][::-1]}
 
 
 # ========== 模拟交易 ==========

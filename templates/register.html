@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang=zh-CN>
+<head>
+    <meta charset=UTF-8>
+    <meta name=viewport content=width=device-width, initial-scale=1.0>
+    <title>注册 - 智能量化选股系统</title>
+    <link rel="icon" href="/static/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/static/icon-192.png">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: url('/static/login-bg.jpg') no-repeat center center fixed;
+            background-size: cover;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+        }
+        body::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            z-index: 0;
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            position: relative;
+            z-index: 1;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            width: 100%;
+            max-width: 450px;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+            font-size: 24px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-size: 14px;
+        }
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        button {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .links {
+            text-align: center;
+            margin-top: 20px;
+        }
+        .links a {
+            color: #667eea;
+            text-decoration: none;
+            font-size: 14px;
+        }
+        .message {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .message.success {
+            background: #d4edda;
+            color: #155724;
+            display: block;
+        }
+        .message.error {
+            background: #f8d7da;
+            color: #721c24;
+            display: block;
+        }
+        .price-info {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .price-info .price {
+            font-size: 32px;
+            color: #667eea;
+            font-weight: bold;
+        }
+        .price-info .period {
+            color: #888;
+            font-size: 14px;
+        }
+        
+        /* 支付二维码样式 */
+        .pay-section {
+            display: none;
+            text-align: center;
+        }
+        .pay-section.active {
+            display: block;
+        }
+        .qr-container {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .qr-container img {
+            width: 200px;
+            height: 200px;
+            object-fit: contain;
+        }
+        .pay-amount {
+            font-size: 24px;
+            color: #667eea;
+            font-weight: bold;
+            margin: 15px 0;
+        }
+        .pay-tips {
+            background: #e7f3ff;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 15px 0;
+            text-align: left;
+            font-size: 13px;
+            color: #0066cc;
+        }
+        .pay-tips ol {
+            margin-left: 20px;
+            margin-top: 8px;
+        }
+        .pay-tips li {
+            margin: 5px 0;
+        }
+        .step-indicator {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        .step {
+            flex: 1;
+            text-align: center;
+            padding: 8px;
+            background: #f0f0f0;
+            margin: 0 5px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .step.active {
+            background: #667eea;
+            color: white;
+        }
+        .back-btn {
+            background: #f0f0f0;
+            color: #666;
+            margin-top: 10px;
+        }
+        .back-btn:hover {
+            background: #e0e0e0;
+        }
+        button:focus-visible, input:focus-visible, a:focus-visible {
+            outline: 2px solid #1976d2;
+            outline-offset: 2px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" style="display:block; text-align:left; color:#888; text-decoration:none; font-size:13px; margin-bottom:16px;">← 返回首页</a>
+        <h1>📝 用户注册</h1>
+        
+        <div class="step-indicator">
+            <div class="step active" id="step1">1. 填写信息</div>
+            <div class="step" id="step2">2. 支付验证</div>
+        </div>
+        
+        <div id="message" class="message"></div>
+        
+        <!-- 第一步：填写信息 -->
+        <div id="step1-form">
+            <div class="price-info">
+                <div style="display: flex; gap: 12px; margin-bottom: 15px;">
+                    <label style="flex: 1; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 8px; text-align: center; cursor: pointer; position: relative;">
+                        <input type="radio" name="plan" value="annual" checked onchange="updatePrice(99)" style="position: absolute; opacity: 0;">
+                        <!-- 注意：pay_amount 需在服务端严格校验，客户端值可被篡改 -->
+                        <div style="font-size: 20px; font-weight: bold;">¥99</div>
+                        <div style="font-size: 12px; opacity: 0.9;">包年会员</div>
+                    </label>
+                    <label style="flex: 1; background: linear-gradient(135deg, #4caf50 0%, #45a049 100%); color: white; padding: 15px; border-radius: 8px; text-align: center; cursor: pointer; position: relative;">
+                        <input type="radio" name="plan" value="trial" onchange="updatePrice(1)" style="position: absolute; opacity: 0;">
+                        <div style="font-size: 20px; font-weight: bold;">¥1</div>
+                        <div style="font-size: 12px; opacity: 0.9;">试用 1 天</div>
+                    </label>
+                </div>
+                <div id="planDesc" style="background: #f8f9fa; padding: 12px; border-radius: 6px; font-size: 13px; color: #555;">
+                    📦 包年会员：365 天无限使用所有功能
+                </div>
+                <div style="margin-top: 12px; padding-top: 12px; border-top: 1px dashed #ddd;">
+                    <div style="font-size: 12px; color: #4caf50; font-weight: 500;">
+                        🎉 新用户首次注册可享¥1 试用
+                    </div>
+                </div>
+            </div>
+            
+            <form autocomplete="off">
+                <div class="form-group">
+                    <label>用户名 <span style="color:red">*</span></label>
+                    <input type="text" id="username" name="username_new" autocomplete="off" placeholder="3-20 位字母或数字" maxlength="20">
+                </div>
+                
+                <div class="form-group">
+                    <label>密码 <span style="color:red">*</span></label>
+                    <input type="password" id="password" name="password_new" autocomplete="new-password" placeholder="至少8位，含大小写字母和数字" maxlength="32" oninput="updatePwdStrength()">
+                    <div id="pwdStrength" style="height:4px; border-radius:2px; margin-top:6px; transition:all 0.3s; background:#eee;"></div>
+                    <div id="pwdStrengthText" style="font-size:12px; color:#888; margin-top:2px;"></div>
+                </div>
+                
+                <div class="form-group">
+                    <label>邮箱 <span style="color:red">*</span></label>
+                    <input type="email" id="email" name="email_new" autocomplete="off" placeholder="用于接收通知">
+                </div>
+                
+                <div class="form-group">
+                    <label>手机号</label>
+                    <input type="tel" id="phone" name="phone_new" autocomplete="off" placeholder="选填" maxlength="11">
+                </div>
+            </form>
+            
+            <button onclick="goToPay()">下一步：支付验证</button>
+        </div>
+        
+        <!-- 第二步：支付验证 -->
+        <div id="step2-form" class="pay-section">
+            <div class="qr-container">
+                <!-- 收款二维码 -->
+                <img id="qrImage" src="/static/wechat_pay.png" alt="微信支付二维码">
+            </div>
+            
+            <div class="pay-amount">¥99 / 年</div>
+            
+            <div class="pay-tips">
+                <strong>支付说明：</strong>
+                <ol>
+                    <li>使用微信扫描二维码完成支付</li>
+                    <li>支付时备注：<strong style="color:#667eea">用户名</strong></li>
+                    <li>支付完成后，点击下方确认按钮</li>
+                    <li>管理员审核后即可开通会员</li>
+                </ol>
+            </div>
+            
+            <form autocomplete="off">
+                <div class="form-group">
+                    <label>付款备注 <span style="color:red">*</span></label>
+                    <input type="text" id="pay_remark" name="pay_remark_new" autocomplete="off" placeholder="请填写支付时的备注（用户名）" maxlength="50">
+                </div>
+                
+                <div class="form-group">
+                    <label>付款人微信 ID（选填）</label>
+                    <input type="text" id="pay_wxid" name="pay_wxid_new" autocomplete="off" placeholder="方便核对，可不填">
+                </div>
+            </form>
+            
+            <button onclick="submitRegister()">✅ 我已支付，提交审核</button>
+            <button class="back-btn" onclick="backToStep1()">返回修改</button>
+        </div>
+        
+        <div class="links">
+            <a href="/login">已有账号？立即登录</a>
+        </div>
+    </div>
+    
+    <script>
+        let orderId = '';
+        let selectedPlan = 'annual';
+        let selectedAmount = 99;
+        
+        function updatePrice(amount) {
+            selectedAmount = amount;
+            const descEl = document.getElementById('planDesc');
+            if (amount === 99) {
+                selectedPlan = 'annual';
+                descEl.innerHTML = '📦 包年会员：365 天无限使用所有功能';
+            } else {
+                selectedPlan = 'trial';
+                descEl.innerHTML = '🎁 试用套餐：24 小时体验所有功能（仅限首次注册）';
+            }
+        }
+        
+        // 切换到支付步骤
+        async function goToPay() {
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            const email = document.getElementById('email').value.trim();
+            
+            // 基础验证
+            if (username.length < 3 || username.length > 20) {
+                showMessage('用户名需 3-20 位', 'error');
+                return;
+            }
+            if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+                showMessage('用户名只能为字母或数字', 'error');
+                return;
+            }
+            if (password.length < 8) {
+                showMessage('密码至少 8 位', 'error');
+                return;
+            }
+            // 密码强度检查：必须包含大写+小写+数字
+            if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
+                showMessage('密码需包含大写字母、小写字母和数字', 'error');
+                return;
+            }
+            if (!email || !email.includes('@') || !email.split('@')[1]?.includes('.')) {
+                showMessage('请填写正确的邮箱地址', 'error');
+                return;
+            }
+            
+            try {
+                // 生成订单
+                const res = await fetch('/api/auth/pay-qrcode', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({username, email})
+                });
+                const data = await res.json();
+                
+                if (data.error) {
+                    showMessage(data.error, 'error');
+                    return;
+                }
+                
+                orderId = data.order_id;
+                document.getElementById('qrImage').src = data.qr_code || '/static/wechat_pay.png';
+                
+                // 切换界面
+                document.getElementById('step1-form').style.display = 'none';
+                document.getElementById('step2-form').classList.add('active');
+                document.getElementById('step1').classList.remove('active');
+                document.getElementById('step2').classList.add('active');
+                
+            } catch (e) {
+                showMessage('生成订单失败，请重试', 'error');
+            }
+        }
+        
+        // 返回第一步
+        function backToStep1() {
+            document.getElementById('step1-form').style.display = 'block';
+            document.getElementById('step2-form').classList.remove('active');
+            document.getElementById('step1').classList.add('active');
+            document.getElementById('step2').classList.remove('active');
+        }
+        
+        // 提交注册
+        async function submitRegister() {
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            const email = document.getElementById('email').value.trim();
+            const phone = document.getElementById('phone').value.trim();
+            const pay_remark = document.getElementById('pay_remark').value.trim();
+            const pay_wxid = document.getElementById('pay_wxid').value.trim();
+            
+            if (!pay_remark) {
+                showMessage('请填写付款备注', 'error');
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/auth/register', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        username,
+                        password,
+                        email,
+                        phone,
+                        pay_remark,
+                        pay_wxid,
+                        order_id: orderId,
+                        pay_amount: selectedAmount,
+                        plan_type: selectedPlan
+                    })
+                });
+                const data = await res.json();
+                
+                if (data.error) {
+                    showMessage(data.error, 'error');
+                } else {
+                    showMessage('✅ 提交成功！请等待管理员审核', 'success');
+                    setTimeout(() => {
+                        window.location.href = '/login';
+                    }, 2000);
+                }
+            } catch (e) {
+                showMessage('提交失败，请重试', 'error');
+            }
+        }
+        
+        // 显示消息
+        function updatePwdStrength() {
+            const pwd = document.getElementById('password').value;
+            const bar = document.getElementById('pwdStrength');
+            const txt = document.getElementById('pwdStrengthText');
+            let score = 0;
+            if (pwd.length >= 8) score++;
+            if (/[a-z]/.test(pwd) && /[A-Z]/.test(pwd)) score++;
+            if (/[0-9]/.test(pwd)) score++;
+            if (/[^a-zA-Z0-9]/.test(pwd)) score++;
+            const levels = ['', '弱', '一般', '强', '非常强'];
+            const colors = ['#eee', '#ef5350', '#ff9800', '#4caf50', '#1976d2'];
+            bar.style.width = (score * 25) + '%';
+            bar.style.background = colors[score];
+            txt.textContent = score > 0 ? '密码强度: ' + levels[score] : '';
+        }
+
+        function showMessage(msg, type) {
+            const el = document.getElementById('message');
+            el.textContent = msg;
+            el.className = 'message ' + type;
+            setTimeout(() => {
+                el.className = 'message';
+            }, 5000);
+        }
+    </script>
+</body>
+</html>

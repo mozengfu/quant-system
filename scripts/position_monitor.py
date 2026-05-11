@@ -52,10 +52,17 @@ def scan_positions():
         logger.warning("positions.json 不存在")
         return {"positions": [], "alerts": []}
 
-    with open(POSITIONS_FILE, 'r') as f:
+    with open(POSITIONS_FILE, 'r', encoding='utf-8') as f:
         data = json.load(f)
     
-    positions = data.get("positions", [])
+    # 兼容两种格式：中文字段列表 / 英文字段 {"positions": [...]}
+    if isinstance(data, list):
+        positions = data
+    elif isinstance(data, dict):
+        positions = data.get("positions", [])
+    else:
+        positions = []
+    
     if not positions:
         logger.info("无持仓，跳过监控")
         return {"positions": [], "alerts": []}
@@ -65,15 +72,16 @@ def scan_positions():
     updated = False
 
     for pos in positions:
-        code = pos.get("code", "")
-        market = pos.get("market", "sz")
-        name = pos.get("name", "")
-        cost = float(pos.get("cost", 0))
-        shares = int(pos.get("shares", 0))
-        stop_loss = float(pos.get("stop_loss", 0))
-        take_profit = float(pos.get("take_profit", 0))
-        buy_date = pos.get("buy_date", "")
-        position_id = int(pos.get("position_id", 0))
+        # 兼容中英文字段
+        code = pos.get("code") or pos.get("代码", "")
+        market = pos.get("market") or pos.get("市场", "sz")
+        name = pos.get("name") or pos.get("名称", "")
+        cost = float(pos.get("cost") or pos.get("成本", 0))
+        shares = int(pos.get("shares") or pos.get("数量", 0))
+        stop_loss = float(pos.get("stop_loss") or pos.get("止损", 0))
+        take_profit = float(pos.get("take_profit") or pos.get("止盈", 0))
+        buy_date = pos.get("buy_date") or pos.get("买入日期", "")
+        position_id = int(pos.get("position_id") or 0)
 
         if cost <= 0:
             continue

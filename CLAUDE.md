@@ -9,245 +9,268 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **股票与金融投资专家**：精通A股市场规则、交易机制、技术分析与基本面研究
 - **量化交易策略专家**：熟悉多因子模型、ML增强选股、回测框架、风控体系
 - **数据分析能手**：pandas/numpy/SQL 数据处理，LightGBM 机器学习建模
-- **公文办公技能**：能撰写汇报材料、数据分析报告、策略说明文档
 
 与用户（莫增富）沟通时称呼"主任"，风格简洁务实，结论先行。
 对量化策略参数调整、风险控制相关操作，必须先征求主任同意。
 
-## Project Overview
+## 项目概述
 
-智能量化系统 v2.0 — A Chinese A-share quantitative trading system with ML-enhanced stock screening, real-time monitoring, simulated trading, and multi-channel alerting.
+智能量化系统 v2.0 — 中国 A 股量化交易系统，ML 增强选股 + 实时监控 + 模拟交易 + 多渠道告警。
 
-**Tech Stack**: Python 3.12+, FastAPI, MySQL (pymysql), LightGBM, pandas, Tushare Pro, Jinja2
+**技术栈**：Python 3.12+, FastAPI, MySQL (pymysql, 无 ORM/裸 SQL), LightGBM, pandas, Tushare Pro, Jinja2
 
-## Commands
+**部署方式**：单进程 uvicorn，手动 scp 到阿里云 ECS，无容器化/CI/CD。`~/.claude/CLAUDE.md` 全局指令同样适用于本仓库。
+
+## 常用命令
 
 ```bash
-# Install dependencies
+# 安装依赖
 pip install -r requirements.txt
 
-# Start web server (FastAPI on port 5001)
+# 启动 Web 服务 (FastAPI, 端口 5001)
 python3 app.py
 
-# ML model training (latest version)
-python3 ml_train_v6.py
+# ── ML 相关 ──
 
-# Run all three strategies + print TOP5
+# ML 模型训练（最新版本 v8.0，演进路线：v6.5 → v6.6 → v6.7 → v8.0）
+python3 ml_train_v8_0.py
+
+# ML 预测（日常选股）
+python3 ml_predict.py
+
+# 每日 ML Top5 选股
+python3 ml_daily_top5.py
+
+# ── 策略扫描 ──
+
+# V4 组合策略扫描
 python3 run_three_strategies.py
 
-# Market state detection
-python3 market_state.py
+# 底部苏醒策略扫描（盘后）
+python3 scripts/scan_bottom_awakening.py
 
-# Simulated trading scan
-python3 scripts/sim_trading.py scan
-
-# Morning briefing (Feishu push)
-python3 scripts/morning_briefing.py
-
-# Feishu alerts (morning/alert/daily)
-python3 scripts/feishu_alerts.py morning
-python3 scripts/feishu_alerts.py daily
-
-# Data backfill from Tushare to MySQL
-python3 scripts/backfill_tushare.py
-python3 scripts/update_daily_price_cron.py
-
-# Alpha signal integration
-python3 alpha_signal_integration.py
+# Alpha 过滤
 python3 alpha_filter.py
 
-# Debug/analysis scripts
-python3 check_features.py          # ML feature distribution
-python3 check_label_dist.py        # Label distribution
-python3 debug_prediction.py        # Debug prediction output
-python3 backtest_alpha.py          # Backtest alpha strategy
+# 板块轮动分析
+python3 sector_rotation.py
+
+# ── 数据同步 ──
+
+# Tushare 数据导入
+python3 scripts/update_daily_price_cron.py
+python3 scripts/backfill_tushare.py
+python3 scripts/backfill_margin.py          # 融资融券数据回填
+python3 scripts/sync_akshare.py             # AKShare 拓展数据源
+python3 scripts/sync_mainforce_data.py      # 主力资金数据同步
+python3 scripts/sync_fina_indicator.py      # 财务指标数据同步
+
+# ── 模拟交易 & 持仓 ──
+
+# 模拟交易扫描
+python3 scripts/sim_trading.py scan
+
+# AI 模拟交易
+python3 ai_sim_trading.py
+
+# 盘中自动止盈止损执行（每5分钟运行）
+python3 scripts/position_monitor.py
+
+# ── 通知 & 报告 ──
+
+# 飞书推送（盘前/盘中/收盘）
+python3 scripts/feishu_alerts.py morning
+python3 scripts/feishu_alerts.py alert  # 盘中 5min 监控
+python3 scripts/feishu_alerts.py daily
+
+# 每日早报 (6:30)
+python3 scripts/morning_briefing.py
+
+# ── 回测 & 分析 ──
+
+# Alpha 信号
+python3 alpha_signal_integration.py
+python3 backtest_alpha.py
+
+# V4 + ML 对比回测（V6.5 vs V8.0，最优参数 pct=0.10 bw=0.10）
+ML_BACKTEST_PCT=0.10 ML_BACKTEST_BW=0.10 python3 scripts/backtest_v4_ml_v65_vs_v80.py
+
+# ── 调试工具 ──
+
+python3 market_state.py                   # 市场状态检测
+python3 debug_prediction.py               # ML 预测输出
+python3 check_features.py                 # ML 特征分布
+python3 check_label_dist.py               # 标签分布
+python3 scripts/mainforce_scoring.py      # 主力资金评分
+python3 scripts/check_pipeline.py         # 全流水线验证
+
+# ── 部署 ──
+
+bash sync-to-server.sh   # 本地 → 阿里云 ECS
+bash sync-from-server.sh # 阿里云 ECS → 本地
 ```
 
-## Architecture
+## 定时任务 (crontab)
+
+来源：`scripts/quant_crontab`
+
+| 时间 | 任务 |
+|------|------|
+| 交易日 09:00 | 盘前飞书推送（候选股） |
+| 09:30-14:30 每30min | `auto_refresh_data.sh` 数据刷新 |
+| 09:30-14:55 每5min | 飞书告警（仅通知，不交易） + 持仓监控（`position_monitor.py` 自动止盈止损执行） |
+| 15:05 | 收盘报告飞书推送 |
+| 17:00 | Tushare 日线数据导入 |
+| 17:30 | 模拟交易扫描 |
+| 17:45 | V4 策略扫描 |
+| 17:55 | 底部苏醒策略扫描 |
+
+注意：`feishu_alerts.py alert` 仅发送飞书通知，不执行交易；`position_monitor.py` 负责实际自动止盈止损卖出。两者独立运行，互不依赖。
+
+## 架构概述
+
+### 双代码结构并存（迁移中）
+
+**Import 链**：`app.py` → `app_api.py` → `app_core.py`(facade) → `quant_app/services/*` & `quant_app/utils/*`
 
 ```
-quant-system/
-├── app.py                 # Entry point — starts uvicorn on 0.0.0.0:5001
-├── app_api.py             # FastAPI routes (~190KB, defines all HTTP endpoints)
-├── app_core.py            # Core business logic (~170KB, monolithic legacy module)
-├── app_thin.py            # Lightweight variant
-├── quant_app/             # Refactored modular package
-│   ├── utils/
-│   │   └── auth.py        # bcrypt/sha256 auth, session token generation
-│   ├── services/
-│   │   ├── technical_service.py    # MA, MACD, KDJ, BOLL, ATR calculations
-│   │   └── notification_service.py # Feishu, QQ email, AliCloud SMS
-│   └── main.py            # Package exports
-├── scripts/               # Cron jobs and automation
-│   ├── quant_crontab      # Crontab configuration (all schedule tasks)
-│   ├── sim_trading.py     # Simulated trading engine (MySQL-backed)
-│   ├── feishu_alerts.py   # Feishu notification bot (pre-market, intraday, post-market)
-│   ├── morning_briefing.py # 6:30 daily briefing
-│   ├── position_monitor.py# Intraday position monitoring
-│   ├── auto_scan.sh       # Automated stock scan via API
-│   ├── auto_refresh_data.sh # Refresh stock pool data
-│   ├── update_daily_price_cron.py # Daily Tushare → MySQL import
-│   ├── backfill_tushare.py # Historical data backfill
-│   ├── backtest_combo_v*.py  # Backtesting scripts (v1-v6)
-│   └── mainforce_scoring.py  # Main force capital flow scoring
-├── ml_predict.py          # ML inference module (~64KB, LightGBM prediction)
-├── ml_predict_v3.py       # V3 ML inference variant
-├── ml_train.py            # Base ML training script
-├── ml_train_v6.py         # Latest ML training (v6, ~31KB)
-├── ml_train_bear.py       # Bear market specialized model
-├── market_state.py        # Market regime detection (trend_up/down/range/panic/overheated)
-├── sector_rotation.py     # Sector rotation analysis
-├── ai_sim_trading.py      # AI-powered simulated trading (LLM-based)
-├── alpha_filter.py        # Alpha signal filtering
-├── alpha_signal_integration.py # Alpha signal integration
-├── backfill_alpha_history.py   # Historical alpha backfill
-├── templates/             # Jinja2 HTML templates (login, dashboard, strategy, etc.)
-├── static/                # Static assets (CSS, icons, manifest)
-├── data/                  # JSON data files (users, positions, backtest results, configs)
-└── logs/                  # Application logs (error, monitor, sync, etc.)
+app.py                     # 入口：uvicorn.run("app_api:app", port=5001)
+app_api.py                 # FastAPI 应用创建，CORS/中间件，注册 9 个子路由
+app_core.py                # ★ 外观(facade)：从 quant_app 重新导出，保持旧 import 兼容
+quant_app/                 # ★ 重构后的模块化包（当前主代码）
+├── main.py                # 包入口，导出 config/auth/notification 符号
+├── models/                # 预留（ORM/data models）
+├── data/                  # 预留
+├── utils/
+│   ├── config.py          # 中央配置（env 变量、路径、DB 连接）
+│   ├── auth.py            # bcrypt 密码哈希 + 会话令牌
+│   ├── authz.py           # 授权检查
+│   ├── persistence.py     # JSON 文件 I/O（线程安全原子写入）
+│   ├── indicators.py      # 技术指标（EMA/MACD/KDJ/BOLL/ATR）
+│   ├── model_loader.py    # ML 模型加载（LRU 缓存）
+│   └── risk_config.py     # 风控参数配置
+├── services/
+│   ├── strategy_service.py    # ★ 最大模块(~106KB)：股票评分/扫描/分析
+│   ├── market_service.py      # 行情数据、RPS、交易日判断
+│   ├── realtime_service.py    # ★ 三层行情降级链路
+│   ├── backtest_service.py    # 历史回测引擎
+│   ├── technical_service.py   # 技术指标薄封装
+│   └── notification_service.py# 飞书/邮件/短信通知
+└── routes/
+    ├── market.py              # 行情路由（盘前/指数/板块）~41KB
+    ├── scanning.py            # 扫描路由（~47KB，第二大）
+    ├── dashboard.py           # 仪表盘路由
+    ├── recommend.py           # 推荐路由
+    ├── auth.py                # 登录注册路由
+    ├── admin.py               # 管理后台路由
+    ├── pages.py               # 页面渲染路由
+    ├── signals.py             # 信号路由
+    └── strategy.py            # 策略路由（~3.4KB，最小）
+scripts/                   # 独立运行的脚本（cron/回测/数据工具）
+templates/                 # Jinja2 模板（index.html ~134KB，含内联 JS）
+static/                    # CSS/图标/PWA manifest（manifest.json + sw.js）
+data/                      # JSON 运行时状态 + ML 模型 .pkl 文件（自动生成，除 .env 外无需手工编辑）
+├── *.json                 # positions/signals/users/sessions 等运行时状态
+├── ml_stock_model_v*.pkl  # LightGBM 模型文件
+├── rps_data/              # RPS 计算缓存
+├── track/                 # 推荐记录
+└── ml_features/           # ML 特征缓存
+logs/                      # 应用日志
 ```
 
-## Key Architecture Patterns
+### 依赖清单 (requirements.txt)
 
-### Two code structures coexist
-- **Legacy monolithic**: `app_core.py` + `app_api.py` — the main app imports nearly everything from `app_core`
-- **Refactored modular**: `quant_app/` package with separated utils/services/routes — gradually replacing monolithic code
-- Both coexist; `app_api.py` imports from `app_core` directly, while `quant_app/` is used by some scripts
-
-### Data flow
 ```
-Tushare Pro API ──→ MySQL (daily_price / market_index_daily / stock_basic tables)
-AliCloud/EastMoney ──→ Direct HTTP call → JSON response (realtime quotes)
-                        ↓
-          app_core.py / app_api.py (business logic + strategies)
-                        ↓
-         JSON files (data/*.json) + MySQL + Feishu/SMS/Email notifications
+fastapi==0.115.0  uvicorn[standard]==0.30.0  jinja2==3.1.4  python-multipart==0.0.9
+pandas==2.2.2  pymysql==1.1.1  cryptography==42.0.8
+tushare==1.4.7  python-dotenv==1.0.1  bcrypt>=4.0.1  DBUtils>=3.1.0
 ```
 
-### Stock selection pipeline
-1. **Rule-based filtering** — C3.0 V3 scoring system via `strategy_scan()`
-2. **ML scoring** — LightGBM model predicts 3-day rise probability (22 features)
-3. **Alpha integration** — Additional factor-based signals
-4. **Enhanced score** = Rule score × ML probability → ranked output
+无 `pyproject.toml`，无 Docker 文件，无 pytest/lint 配置。
 
-### 策略线
+### 已废弃代码（不要改、不要用）
+
+| 文件 | 说明 |
+|------|------|
+| `app_server.py` (141KB) | 原始单体核心，带独立 SHA256 认证。已由 `quant_app/` 替代 |
+| `app_thin.py` | 指向其他项目的轻量变体，与本项目无关 |
+| `archive/` | 废弃脚本归档 + 旧版 ML 模型（ml_stock_model.pkl, v3/v4 系列等），不应被引用 |
+
+### 数据流
+
+```
+Tushare Pro API ──→ MySQL (daily_price / market_index_daily / stock_basic)
+  └── scripts/update_daily_price_cron.py, backfill_tushare.py, sync_akshare.py 按 cron 填充
+
+阿里云/东方财富 ──→ HTTP 实时行情（JSON）
+  └── realtime_service.py 三层降级：缓存(30s TTL) → 腾讯(3s) → 东方财富(3s) → 阿里云(3s)
+
+        ↓
+quant_app/services/* (业务逻辑 + 策略)
+        ↓
+JSON 文件 (data/*.json) + MySQL + 飞书/邮件/短信
+```
+
+### ML 流水线
+
+- **模型**：LightGBM LambdaRank，~105 特征
+- **训练**：`ml_train_v8_0.py` → 模型保存至 `data/ml_stock_model_v8_0.pkl`
+- **预测**：`ml_predict.py` 读取模型，输出每日预测排序
+- **日常选股**：`ml_daily_top5.py` 基于 ML 预测输出 Top5
+- **V8.0 回测**：+64.62% / 夏普 1.96 / 回撤 27.57% (2025-10 ~ 2026-05)
+
+### 架构约束
+
+- **无 ORM**：全项目使用 pymysql 裸 SQL，无 SQLAlchemy/SQLModel
+- **无类型注解**：Python 函数无 type hints
+- **路由层以下无异步**：仅 FastAPI 层使用 async/await 语义，services/utils 均为同步代码
+- **实时数据统一入口**：所有实时行情必须走 `realtime_service.py`，禁止直接调用外部 API
+
+### 行情降级链路
+
+所有实时行情统一走 `quant_app/services/realtime_service.py`，调用链：
+
+```
+缓存(30s TTL) → 腾讯行情(3s超时) → 东方财富(3s超时) → 阿里云(3s超时)
+```
+
+外部请求统一 3 秒超时确保快速降级。前端 JS 调用 API 前，先 `curl http://localhost:5001/api/xxx` 确认返回 JSON 结构。
+
+### 选股流水线
+
+当前主策略 **V4+ML 混合选股**（`generate_v4_ml_candidates`）：
+
+1. **V4 规则初筛** — `_v4_score_single()` 技术面+资金流评分，取 Top60
+2. **ML 预测** — LightGBM LambdaRank 模型（V8.0 > V6.7 > V6.6 > V6.5）预测排序分数
+3. **百分位软过滤** — 候选池内 ML 分数转横截面百分位，低于阈值淘汰（默认 ≥0.10，历史调优最优参数 pct=0.10, bw=0.10）
+4. **混合评分排序** — `blended = V4分×(1-w) + ML百分位×100×w`（默认 w=0.10），取 Top5
+
+### 策略状态
 
 | 策略 | 状态 | 说明 |
 |------|------|------|
-| **V4 组合** | **主策略 ✅** | 技术面+主力评分综合筛选，回测+21.76%/夏普1.79 |
-| 底部起步（原均线多头启动） | 已下线 ❌ | 回测-6.31%，关闭独立入口 |
-| 强势活跃 | 已下线 ❌ | 回测-14.87%，独立文件归档至`archive/` |
+| **V4+ML 混合** | **当前主策略** | V4.1 初筛(30只) → ML百分位过滤(≥0.10) → 混合评分(ML权重0.10)取Top5，v8.0 回测 +64.62% / 夏普 1.96 / 回撤 27.57% (2025-10 ~ 2026-05) |
+| 底部起步 | 已下线 | 回测 -6.31%，2026-05-02 关闭。要素融入 V4 |
+| 强势活跃 | 已下线 | 回测 -14.87%，文件归档至 archive/ |
 
-> 底部起步和强势活跃策略回测亏损，2026-05-02 关闭。其评分逻辑的部分要素已融入 V4 组合策略的条件筛选和主力评分中。
+### 市场状态机
 
-### Market state machine
-`market_state.py` reads index trend + breadth + volatility + volume → classifies as `trend_up / trend_down / range / panic / overheated` → adjusts strategy parameters (stop-loss, take-profit, max positions, ML threshold)
+`market_state.py` 读取指数趋势 + 宽度 + 波动率 + 成交量 → 分类为 `trend_up / trend_down / range / panic / overheated` → 动态调整止损/止盈/最大持仓/ML阈值。
 
-### Scheduled automation (crontab)
-- Weekdays 9:00 — Pre-market candidate push (Feishu)
-- Weekdays 9:30-15:00 (every 5 min) — Stop-loss/take-profit monitoring
-- Weekdays 15:05 — Closing report
-- Weekdays 17:00 — Daily price data import
-- Weekdays 17:30 — Sim trading scan
-
-## Environment
-- `.env` file required with `TUSHARE_TOKEN`, `MYSQL_*`, `ALIYUN_APP_CODE`, `FEISHU_WEBHOOK`, `SMTP_*`, `ALIYUN_SMS_*`
-- MySQL must be running locally with `quant_db` database
-- Python 3.12+ recommended (macOS Framework build at `/Library/Frameworks/Python.framework/Versions/3.12/`)
-
-## 易错点备忘录（从调试经验总结）
+## 项目易错点
 
 ### 前端 JS
-- **TDZ（暂时性死区）**：`let`/`const` 声明必须在 IIFE 之前，否则 IIFE 调用函数里引用该变量会报 `Cannot access before initialization`。验证JS语法用 `node -e "new Function(jsCode)"`。
-- **登录跳转丢 hash**：`/dashboard#positions` → 未登录 → `/login` → 登录成功回 `/dashboard`，`#positions` 丢失。用 `sessionStorage` 保存和恢复 hash。
-- **调用未定义函数**：前端 JS 报 `ReferenceError`（如 `autoDetectMarket`），代码中有人调用但没人定义。检查 `showPanel` 里的所有函数名字都真实存在。
+- **TDZ 暂时性死区**：`let`/`const` 必须在 IIFE 之前声明。验证语法用 `node -e "new Function(jsCode)"`。
+- **登录跳转丢 hash**：登录后恢复 `#positions` 等 hash，用 `sessionStorage` 保存和恢复。
+- **API 字段映射**：写前端前先 `curl` 看实际 JSON 结构，不要猜字段名/类型/单位。
 
-### 后端 Python  
-- **SQL 注释中的 `%`**：`cursor.execute(sql, params)` 内部用 `%` 格式化参数。SQL 注释里写 `-- 放宽到-5%~10%` 会被 PyMySQL 解析为格式占位符报 `not enough arguments for format string`。注释中避免 `%`。
-- **import 链完整性**：删模块前先 `grep -rn "import.*模块名"` 确认零引用。重导出（re-export）时用 `from new_module import xxx as original_name` 保持老调用方的 import 路径不变。
-- **行情 fallback 链路**：已统一到 `quant_app/services/realtime_service.py`，所有实时数据读取必须走它。调用链：`缓存 → 腾讯(3s) → 东财(3s) → 阿里云(3s)`。外部超时统一3秒确保快速降级。
+### 后端 Python
+- **SQL 注释中的 `%`**：`cursor.execute(sql, params)` 内部用 `%` 格式化，注释里写 `%` 会报错。
+- **import 链**：删模块前 `grep -rn "import.*模块名"` 确认零引用。重导出时保持原名兼容。
+- **行情 fallback**：所有实时数据必须走 `realtime_service.py`，不要直接调用外部 API。
 
-## 待办事项
+## 注意事项
 
-- [ ] **Tushare `fina_indicator.yoy_sales` 字段名确认**：当前 `yoy_sales` 在 Tushare API 中返回全为 NULL，需在非限流时段确认正确的营收增速字段名。可能值为 `yoy_sales`、`yoy_revenue`、`q_yoy_sales` 等。确认后更新 `scripts/sync_fina_indicator.py` 和 `scripts/update_daily_price_cron.py` 中的字段名，并重新回填数据。
-
----
-
-## Karpathy 编码四原则（Andrej Karpathy 总结）⭐⭐⭐⭐⭐
-
-源自 Andrej Karpathy 关于 LLM 编码陷阱的观察：
-> "模型会代你做错误假设，不管理自身的困惑，不寻求澄清，堆砌抽象概念，100行能搞定的事实现成1000行的臃肿架构。"
-
-### 原则一：编码前思考
-不要假设。不要隐藏困惑。呈现权衡。
-- 明确说明假设 — 如果不确定，询问而不是猜测
-- 呈现多种解释 — 当存在歧义时，不要默默选择
-- 适时提出异议 — 如果存在更简单的方法，说出来
-- 困惑时停下来 — 指出不清楚的地方并要求澄清
-
-### 原则五：前后端联调——先看数据再写代码
-这一条是本项目多次踩坑后加上去的：
-- **写前端 JS 前，先 curl 看 API 返回的实际 JSON 结构**。字段名、数据类型（数组/对象）、值的单位（小数还是百分比）必须逐项确认，不能猜。
-- 典型错误：`p.code` 实际是 `p.ts_code`、`t.action` 值为 `BUY/SELL` 需转中文、收益值 0.0228 是小数需 `*100` 才显示百分比、`summary` 是数组不是对象。
-- 写完函数后对照 API 返回逐字段核对映射关系，不要只看浏览器能否渲染。
-
-### 原则二：简洁优先
-用最少的代码解决问题。不要过度推测。
-- 不要添加要求之外的功能
-- 不要为一次性代码创建抽象
-- 不要添加未要求的"灵活性"或"可配置性"
-- 如果 200 行可以写成 50 行，重写它
-- 检验标准：资深工程师会觉得过于复杂吗？如果是，简化
-
-### 原则三：精准修改
-只碰必须碰的。只清理自己造成的混乱。
-- 不要"改进"相邻的代码、注释或格式
-- 不要重构没坏的东西
-- 匹配现有风格，即使你更倾向于不同的写法
-- 如果注意到无关的死代码，提一下 —— 不要删除它
-- 每一行修改都应该能直接追溯到用户的请求
-
-### 原则四：目标驱动执行
-定义成功标准。循环验证直到达成。
-- "添加验证" → "为无效输入编写测试，然后让它们通过"
-- "修复 bug" → "编写重现 bug 的测试，然后让它通过"
-- 多步骤任务：说明计划 [步骤] → 验证: [检查]
-- 强有力的成功标准让你能独立循环执行
-
----
-
-## Behavioral Guidelines (English)
-
-### 1. Think Before Coding
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-- State assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
-
-### 2. Simplicity First
-**Minimum code that solves the problem. Nothing speculative.**
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- If you write 200 lines and it could be 50, rewrite it.
-- Ask: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-### 3. Surgical Changes
-**Touch only what you must. Clean up only your own mess.**
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-- Every changed line should trace directly to the user's request.
-
-### 4. Goal-Driven Execution
-**Define success criteria. Loop until verified.**
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-- For multi-step tasks: `[Step] → verify: [check]`
-
----
-
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+- `.env` 文件必须含 TUSHARE_TOKEN、MYSQL_*、ALIYUN_APP_CODE、FEISHU_WEBHOOK、SMTP_*、ALIYUN_SMS_*
+- 两个 CLAUDE.md 同时生效：本文件（项目级）和 `~/.claude/CLAUDE.md`（全局工作规范）
+- `index.html`（根目录，~60KB）为独立页面，与 `templates/index.html`（~134KB，内联 JS）不同，注意区分

@@ -16,6 +16,9 @@ _MODEL_REGISTRY = {
     "v6.3": MODELS_DIR / "ml_stock_model_v6_3.pkl",
     "v6.4": MODELS_DIR / "ml_stock_model_v6_4.pkl",
     "v6.5": MODELS_DIR / "ml_stock_model_v6_5.pkl",
+    "v6.6": MODELS_DIR / "ml_stock_model_v6_6.pkl",
+    "v6.7": MODELS_DIR / "ml_stock_model_v6_7.pkl",
+    "v8.0": MODELS_DIR / "ml_stock_model_v8_0.pkl",
 }
 
 

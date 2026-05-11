@@ -1863,7 +1863,6 @@ def scan_concept_trend():
             # 计算3日涨幅和5日涨幅
             close_3d = industry_close_3d.get(industry, 0)
             close_5d = industry_close_5d.get(industry, 0)
-            close_today = industry_close_5d.get(industry, 0)  # 需要重新获取今日的均价，简化处理：用3日涨幅近似
 
             # 用今日行业平均涨幅来估算趋势（更精确需要跨日JOIN）
             chg3_approx = avg_chg_today  # 简化：用今日涨幅代替趋势指标（实际应跨日计算）
@@ -1937,12 +1936,13 @@ def get_hot_concepts():
     return []
 
 
-# ========== V4 + ML 过滤选股（生产策略 2026-05-09） ==========
-# 架构：V4 规则初筛 → ML V6.5 负向过滤（自适应百分位阈值） → 按 V4 排序取 Top5
-# 回测（2025-10-01 ~ 2026-04-30）：收益 +20.25%，胜率 67.9%，回撤 9.64%，交易 56 次
-# 注：使用百分位而非绝对值阈值，适应市场强弱变化
+# ========== V4 + ML 混合选股（生产策略 2026-05-10） ==========
+# 架构：V4 规则初筛 → ML 百分位软过滤 → 混合评分(V4×90% + ML百分位×10%) 排序取 Top5
+# ML_PERCENTILE_THRESHOLD: 候选池内 ML 百分位低于此值过滤（按市场状态自适应）
+# ML_BLEND_WEIGHT: 混合评分中 ML 权重
 
-ML_FILTER_PERCENTILE = 0.40  # 保留 ML 排名前 60%（过滤底部 40%）
+ML_PERCENTILE_THRESHOLD = 0.10   # 候选池 ML 百分位低于此值过滤（range 状态默认值）
+ML_BLEND_WEIGHT = 0.10           # 混合评分中 ML 权重（0.10 = 10% ML + 90% V4）
 V4_CANDIDATE_LIMIT = 30
 V4_TOP_N = 5
 
@@ -2046,18 +2046,69 @@ def _dragon_holder_bonus(conn, ts_code, trade_date):
     return bonus
 
 
+def _block_trade_bonus(conn, ts_code, trade_date):
+    """大宗交易溢价加分"""
+    bonus = 0
+    cur = conn.cursor()
+    try:
+        td_30 = (datetime.strptime(str(trade_date)[:10], '%Y-%m-%d') - timedelta(days=30)).strftime('%Y-%m-%d')
+        cur.execute("""
+            SELECT COALESCE(AVG(premium_rate), 0), COALESCE(SUM(deal_amount), 0), COUNT(*)
+            FROM block_trade
+            WHERE ts_code = %s AND trade_date >= %s
+        """, (ts_code, td_30))
+        row = cur.fetchone()
+        avg_premium = float(row[0]) if row else 0
+        total_amount = float(row[1]) if row else 0
+        count = int(row[2]) if row else 0
+
+        if count == 0:
+            return 0
+
+        # 溢价率 > 0 且金额较大 = 机构看好信号
+        if avg_premium > 0 and total_amount > 50000000:
+            bonus += 12
+        elif avg_premium > 0 and total_amount > 10000000:
+            bonus += 8
+        elif avg_premium > 0:
+            bonus += 4
+
+        # 负溢价（折价）但机构买入活跃，也有信号意义
+        if avg_premium < -3 and total_amount > 50000000:
+            bonus += 5  # 大额折价可能是有意压低价格，仍有信号
+
+        # 机构席位买入加分
+        inst_keywords = ['机构', '证券', '资管', '基金']
+        for kw in inst_keywords:
+            cur.execute("""
+                SELECT COUNT(*) FROM block_trade
+                WHERE ts_code = %s AND trade_date >= %s AND buyer LIKE %s
+            """, (ts_code, td_30, f'%{kw}%'))
+            inst_count = int(cur.fetchone()[0])
+            if inst_count >= 3:
+                bonus += 8
+                break
+            elif inst_count >= 1:
+                bonus += 4
+                break
+    except Exception:
+        pass
+    finally:
+        cur.close()
+    return min(bonus, 20)  # 上限20分
+
+
 def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
     """
-    V4 + ML 过滤选股 — 通用候选生成器（支持市场/板块筛选）
-    
+    V4 + ML 混合选股 — 通用候选生成器（支持市场/板块筛选）
+
     1. 从 daily_price 取最新交易日数据，V4 规则初筛
-    2. V6.5 ML 模型打分，自适应百分位过滤
-    3. 按 V4 分数排序，返回完整列表
-    
-    返回: 按 V4 分数降序的候选列表（带 ML 评分）
+    2. 最佳 ML 模型打分，候选池内百分位转换
+    3. 按市场状态自适应百分位阈值过滤 + 混合评分排序
+
+    返回: 按混合评分降序的候选列表（带 ML 评分和百分位）
     """
-    import numpy as np
-    from ml_predict import _load_best_model, _build_features_for_stocks_v6_3, _ensemble_predict
+    from ml_predict import _load_best_model, _build_features_for_stocks_v6_3, _build_features_for_stocks_v6_6, _build_features_for_stocks_v8_0, _ensemble_predict, _scores_to_percentile
 
     cur = conn.cursor()
 
@@ -2098,7 +2149,7 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
 
     # 取当日数据
     cur.execute(f"""
-        SELECT d.ts_code, d.close, d.pct_chg, d.turnover_rate, d.volume_ratio,
+        SELECT d.ts_code, d.close, d.pct_chg, d.turnover_rate, d.volume_ratio, d.vol,
                d.ma5, d.ma10, d.ma20, d.rps_20, d.high_52w, d.low_52w,
                COALESCE(m.main_net, 0) as main_net,
                s.name, s.industry
@@ -2111,16 +2162,46 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
           AND s.name NOT LIKE '%%ST%%' AND s.name NOT LIKE '%%退%%'
           {market_clause}
           {block_clause}
+          -- 业绩预告负面过滤：排除最近一期预亏/续亏/预减
+          AND NOT EXISTS (
+              SELECT 1 FROM stock_forecast sf
+              WHERE sf.ts_code COLLATE utf8mb4_unicode_ci = d.ts_code COLLATE utf8mb4_unicode_ci
+                AND sf.end_date = (
+                    SELECT MAX(sf2.end_date) FROM stock_forecast sf2
+                    WHERE sf2.ts_code COLLATE utf8mb4_unicode_ci = sf.ts_code COLLATE utf8mb4_unicode_ci
+                )
+                AND sf.forecast_type IN ('首亏', '续亏', '预减')
+          )
     """, tuple(params))
 
-    cols = ['ts_code','close','pct_chg','turnover_rate','volume_ratio',
+    cols = ['ts_code','close','pct_chg','turnover_rate','volume_ratio','vol',
             'ma5','ma10','ma20','rps_20','high_52w','low_52w','main_net','name','industry']
     rows = cur.fetchall()
     cur.close()
 
     df = pd.DataFrame(rows, columns=cols)
-    for c in cols[1:12]:
+    for c in cols[1:13]:
         df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+
+    # 批查询成交量历史（过去 1-2 个月低量基准）
+    codes = df['ts_code'].tolist()
+    vol_base = {}
+    if codes:
+        placeholders = ','.join(['%s'] * len(codes))
+        try:
+            cur2 = conn.cursor()
+            lookback = (datetime.strptime(query_date, '%Y-%m-%d') - timedelta(days=60)).strftime('%Y%m%d')
+            cur2.execute(f"""
+                SELECT ts_code, AVG(vol) as avg_vol
+                FROM daily_price
+                WHERE ts_code IN ({placeholders})
+                  AND trade_date < %s AND trade_date >= %s
+                GROUP BY ts_code
+            """, codes + [date_str, lookback])
+            vol_base = {row[0]: float(row[1]) for row in cur2.fetchall() if row[1]}
+            cur2.close()
+        except Exception as e:
+            logger.warning(f"成交量历史查询失败: {e}")
 
     # V4 评分 + 龙虎榜/股东加分
     candidates = []
@@ -2130,6 +2211,21 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
             continue
         bonus = _dragon_holder_bonus(conn, row['ts_code'], display_date)
         v4sc += bonus
+
+        # 大宗交易溢价加分（V6.6 新增）
+        bt_bonus = _block_trade_bonus(conn, row['ts_code'], display_date)
+        v4sc += bt_bonus
+
+        # 量比放量苏醒加分（低量横盘后放量）
+        avg_vol = vol_base.get(row['ts_code'], 0)
+        current_vol = float(row.get('vol', 0) or 0)
+        vol_bonus = 0
+        if avg_vol > 0 and current_vol > avg_vol * 1.5:
+            vol_bonus = 10  # 从低量期醒来，放量 1.5 倍以上
+        elif avg_vol > 0 and current_vol > avg_vol:
+            vol_bonus = 5   # 放量但幅度不大
+        v4sc += vol_bonus
+
         candidates.append({
             'ts_code': row['ts_code'],
             'name': row['name'],
@@ -2141,6 +2237,7 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
             'rps_20': float(row['rps_20']),
             'main_net': float(row['main_net']),
             'v4_score': v4sc,
+            'vol_bonus': vol_bonus,
         })
 
     candidates.sort(key=lambda x: x['v4_score'], reverse=True)
@@ -2152,41 +2249,82 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
 
     logger.info(f"V4 初筛: {len(candidates)} 只候选")
 
-    # ML V6.5 过滤
+    # ML 过滤 + 市场状态自适应阈值
     bundle, version = _load_best_model()
     if not bundle:
         logger.warning("ML 模型不可用，降级为纯 V4")
         return candidates[:limit], display_date
 
+    # 市场状态自适应百分位阈值
+    try:
+        market_state_info = unified_market_state(conn)
+        market_state = market_state_info.get('state', 'range')
+        state_params = market_state_info.get('params', {})
+
+        # 各市场状态的 ML 百分位阈值（状态越差，阈值越高 = 过滤越严格）
+        state_percentile_thresholds = {
+            'trend_up': 0.05,      # 趋势好，放宽多选
+            'range': ML_PERCENTILE_THRESHOLD,  # 震荡，默认 0.10
+            'trend_down': 0.20,    # 趋势差，严格标准
+            'panic': 0.30,         # 恐慌，非常严格
+            'overheated': 0.20,    # 过热，防追高
+        }
+        pct_threshold = state_percentile_thresholds.get(market_state, ML_PERCENTILE_THRESHOLD)
+        blend_weight = ML_BLEND_WEIGHT
+        logger.info(f"市场状态: {market_state}, ML百分位阈值: {pct_threshold}, ML权重: {blend_weight}")
+    except Exception as e:
+        logger.warning(f"市场状态获取失败: {e}，使用默认值")
+        market_state = 'range'
+        pct_threshold = ML_PERCENTILE_THRESHOLD
+        blend_weight = ML_BLEND_WEIGHT
+
     cands_codes = [c['ts_code'] for c in candidates]
     try:
-        feat_df = _build_features_for_stocks_v6_3(conn, cands_codes, as_of_date=display_date)
+        # 按模型版本选择特征构建函数
+        if version == "v8.0":
+            feat_df = _build_features_for_stocks_v8_0(conn, cands_codes, as_of_date=display_date)
+        elif version == "v6.6":
+            feat_df = _build_features_for_stocks_v6_6(conn, cands_codes, as_of_date=display_date)
+        else:
+            feat_df = _build_features_for_stocks_v6_3(conn, cands_codes, as_of_date=display_date)
+
         if feat_df is not None and not feat_df.empty:
             preds = _ensemble_predict(feat_df, bundle)
             ml_scores = {}
             for i, (_, frow) in enumerate(feat_df.iterrows()):
                 ml_scores[frow['ts_code']] = float(preds[i])
 
-            # 自适应百分位过滤
-            ml_values = [ml_scores.get(c['ts_code'], 0.0) for c in candidates]
-            threshold = np.percentile(ml_values, ML_FILTER_PERCENTILE * 100) if ml_values else 0
+            # 将候选池原始 ML 预测值转为横截面百分位
+            all_scores = np.array([ml_scores.get(c['ts_code'], 0.0) for c in candidates])
+            all_pcts = _scores_to_percentile(all_scores)
 
+            # 百分位软过滤 + 混合评分
             passed = []
-            for c in candidates:
-                ml = ml_scores.get(c['ts_code'], 0.0)
-                c['ml_score'] = round(ml, 3)
-                if ml >= threshold:
+            for i, c in enumerate(candidates):
+                ml_raw = ml_scores.get(c['ts_code'], 0.0)
+                ml_pct = float(all_pcts[i])
+                c['ml_score'] = round(ml_raw, 3)
+                c['ml_percentile'] = round(ml_pct, 3)
+                c['market_state'] = market_state
+                if ml_pct >= pct_threshold:
+                    # 混合评分：V4(0-170) + ML百分位(0-100) 加权融合
+                    blend = c['v4_score'] * (1 - blend_weight) + ml_pct * 100 * blend_weight
+                    c['blended_score'] = round(blend, 2)
                     passed.append(c)
 
-            logger.info(f"ML 过滤: {len(candidates)} -> {len(passed)} 只 (百分位阈值 {threshold:.3f})")
+            logger.info(
+                f"ML百分位过滤: {len(candidates)} -> {len(passed)} 只 "
+                f"(pct_threshold={pct_threshold}, 市场={market_state}, ML权重={blend_weight})"
+            )
 
-            passed.sort(key=lambda x: x['v4_score'], reverse=True)
+            # 按混合评分排序
+            passed.sort(key=lambda x: x['blended_score'], reverse=True)
             return passed[:limit], display_date
         else:
             logger.warning("ML 特征构建为空，降级为纯 V4")
             return candidates[:limit], display_date
     except Exception as e:
-        logger.error(f"ML 过滤失败: {e}，降级为纯 V4")
+        logger.error(f"ML 混合评分失败: {e}，降级为纯 V4")
         return candidates[:limit], display_date
 
 
@@ -2205,14 +2343,275 @@ def generate_v4_ml_top5(conn, top_n=V4_TOP_N):
         s['rank'] = i + 1
         s['date'] = display_date
         s['price'] = f"{s['close']:.2f}"
-        s['total_score'] = s['v4_score']
+        s['total_score'] = s.get('blended_score', s['v4_score'])
         s['reasons'] = [f"V4评分{s['v4_score']}"]
+        if s.get('ml_percentile', 0) > 0:
+            s['reasons'].append(f"ML百分位{s['ml_percentile']:.0%}")
         if s.get('main_net', 0) > 1000:
             s['reasons'].append(f"主力净流入{s['main_net']:.0f}万")
         if s['volume_ratio'] > 2:
             s['reasons'].append(f"量比{s['volume_ratio']:.2f}")
         if s['rps_20'] >= 60:
             s['reasons'].append(f"RPS{s['rps_20']:.0f}")
+        if s.get('vol_bonus', 0) >= 10:
+            s['reasons'].append("低量苏醒")
+
+    return result
+
+
+# ========== 底部苏醒策略（独立于 V4） ==========
+
+def generate_bottom_awakening_candidates(conn, limit=50):
+    """
+    底部苏醒策略 — 筛选"底部低量横盘放量起步"的股票
+
+    筛选条件：
+    1. 底部：52周位置 pos < 50%（实时计算，不依赖预计算字段）
+    2. 低量苏醒：当日成交量 > 60日均量 × 2.0（候选<3 只时降级到 1.5 倍）
+    3. 基本面：非 ST、非 688/8/4/9、收盘价 > 5 元
+
+    评分公式：
+      vol_score       = min(current_vol / avg_vol, 10) × 10          # 0-100
+      position_score  = max(0, 50 - pos) × 2                        # 0-100
+      加分: 均线多头+20, 量比>1.5+15, 今日上涨+10, 52w_pos<30+10
+    """
+    cur = conn.cursor()
+
+    # 最新交易日
+    cur.execute("SELECT MAX(trade_date) FROM daily_price")
+    latest = cur.fetchone()[0]
+    if not latest:
+        cur.close()
+        return [], None
+
+    date_str = str(latest).replace('-', '')[:8] if '-' in str(latest) else str(latest)[:8]
+    display_date = str(latest)[:10] if '-' in str(latest) else f"{latest[:4]}-{latest[4:6]}-{latest[6:8]}"
+    query_date = str(latest)[:10] if '-' in str(latest) else f"{latest[:4]}-{latest[4:6]}-{latest[6:8]}"
+
+    # 核心查询：取当日行情 + 资金流 + 基本面
+    # 用子查询实时计算 52 周高低价，不依赖可能过期的预计算字段
+    cur.execute("""
+        SELECT d.ts_code, d.close, d.pct_chg, d.turnover_rate, d.volume_ratio, d.vol,
+               d.ma5, d.ma10, d.ma20, d.rps_20,
+               COALESCE(m.main_net, 0) as main_net,
+               s.name, s.industry
+        FROM daily_price d
+        LEFT JOIN moneyflow_daily m
+            ON d.ts_code COLLATE utf8mb4_unicode_ci = m.ts_code COLLATE utf8mb4_unicode_ci
+           AND d.trade_date = m.trade_date
+        JOIN stock_info s
+            ON d.ts_code COLLATE utf8mb4_unicode_ci = s.ts_code COLLATE utf8mb4_unicode_ci
+        WHERE d.trade_date = %s
+          AND d.ts_code NOT LIKE '688%%' AND d.ts_code NOT LIKE '8%%'
+          AND d.ts_code NOT LIKE '4%%' AND d.ts_code NOT LIKE '9%%'
+          AND s.name NOT LIKE '%%ST%%' AND s.name NOT LIKE '%%退%%'
+          AND d.close > 5
+    """, (query_date,))
+
+    cols = ['ts_code', 'close', 'pct_chg', 'turnover_rate', 'volume_ratio', 'vol',
+            'ma5', 'ma10', 'ma20', 'rps_20', 'main_net', 'name', 'industry']
+    rows = cur.fetchall()
+    cur.close()
+
+    df = pd.DataFrame(rows, columns=cols)
+    for c in cols[1:11]:
+        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+
+    # 实时查询 52 周高低价
+    codes = df['ts_code'].tolist()
+    range_52w = {}
+    if codes:
+        placeholders = ','.join(['%s'] * len(codes))
+        lookback_52w = (datetime.strptime(query_date, '%Y-%m-%d') - timedelta(days=365)).strftime('%Y%m%d')
+        try:
+            cur2 = conn.cursor()
+            cur2.execute(f"""
+                SELECT ts_code, MAX(high) as h52w, MIN(low) as l52w
+                FROM daily_price
+                WHERE ts_code IN ({placeholders})
+                  AND trade_date < %s AND trade_date >= %s
+                GROUP BY ts_code
+            """, codes + [date_str, lookback_52w])
+            range_52w = {
+                row[0]: (float(row[1]), float(row[2]))
+                for row in cur2.fetchall() if row[1] and row[2] and float(row[1]) > float(row[2]) > 0
+            }
+            cur2.close()
+        except Exception as e:
+            logger.warning(f"底部苏醒-52周范围查询失败: {e}")
+
+    # 计算 52 周位置，过滤 pos >= 50%
+    positions = []
+    keep_indices = []
+    for i, (_, row) in enumerate(df.iterrows()):
+        ts_code = row['ts_code']
+        close = float(row['close'])
+        r = range_52w.get(ts_code)
+        if r and r[1] > 0:
+            pos = max(0, (close - r[1]) / (r[0] - r[1]) * 100)  # 钳位到 0%
+        else:
+            pos = 100  # 数据异常，排除
+        positions.append(pos)
+        if pos < 50:
+            keep_indices.append(i)
+
+    df_clean = df.iloc[keep_indices].copy()
+    if df_clean.empty:
+        return [], display_date
+
+    df_clean['pos_52w'] = [positions[i] for i in keep_indices]
+    df_clean['high_52w'] = [range_52w.get(df.iloc[i]['ts_code'], (0, 0))[0] for i in keep_indices]
+    df_clean['low_52w'] = [range_52w.get(df.iloc[i]['ts_code'], (0, 0))[1] for i in keep_indices]
+
+    # 查询 60 日均量
+    codes = df_clean['ts_code'].tolist()
+    vol_base = {}
+    if codes:
+        placeholders = ','.join(['%s'] * len(codes))
+        try:
+            cur2 = conn.cursor()
+            lookback = (datetime.strptime(query_date, '%Y-%m-%d') - timedelta(days=60)).strftime('%Y%m%d')
+            cur2.execute(f"""
+                SELECT ts_code, AVG(vol) as avg_vol
+                FROM daily_price
+                WHERE ts_code IN ({placeholders})
+                  AND trade_date < %s AND trade_date >= %s
+                GROUP BY ts_code
+            """, codes + [date_str, lookback])
+            vol_base = {row[0]: float(row[1]) for row in cur2.fetchall() if row[1]}
+            cur2.close()
+        except Exception as e:
+            logger.warning(f"底部苏醒-成交量历史查询失败: {e}")
+
+    # 阈值降级：先用 2.0 倍筛选
+    candidates = _score_bottom_awakening(df_clean, vol_base, vol_threshold=2.0)
+
+    if len(candidates) < 3:
+        logger.info(f"底部苏醒-2.0倍阈值仅 {len(candidates)} 只，降级到 1.5 倍")
+        candidates = _score_bottom_awakening(df_clean, vol_base, vol_threshold=1.5)
+
+    candidates.sort(key=lambda x: x['awakening_score'], reverse=True)
+    candidates = candidates[:limit]
+    return candidates, display_date
+
+
+def _score_bottom_awakening(df, vol_base, vol_threshold=2.0):
+    """底部苏醒评分核心（独立评分，不依赖 V4 评分函数）"""
+    candidates = []
+    for _, row in df.iterrows():
+        close = float(row['close'])
+        pct = float(row['pct_chg'])
+        vr = float(row['volume_ratio'])
+        tr = float(row['turnover_rate'])
+        ma5 = float(row['ma5'])
+        ma10 = float(row['ma10'])
+        ma20 = float(row['ma20'])
+        h52w = float(row['high_52w'])
+        l52w = float(row['low_52w'])
+        rps = float(row['rps_20'])
+        main_net = float(row['main_net'])
+        current_vol = float(row.get('vol', 0) or 0)
+        ts_code = row['ts_code']
+        name = row['name']
+        industry = row['industry']
+
+        if close <= 0 or ma5 <= 0:
+            continue
+
+        # 52周位置
+        pos = 100
+        if h52w and l52w and h52w > l52w > 0:
+            pos = max(0, (close - l52w) / (h52w - l52w) * 100)  # 钳位到 0%
+        if pos >= 50:
+            continue
+
+        # 放量倍数检查（硬性条件）
+        avg_vol = vol_base.get(ts_code, 0)
+        if avg_vol <= 0 or current_vol <= 0:
+            continue
+
+        vol_expansion = current_vol / avg_vol
+        if vol_expansion < vol_threshold:
+            continue
+
+        # === 评分 ===
+        # 1. 放量评分 (0-100)
+        vol_expansion_capped = min(vol_expansion, 10)
+        vol_score = vol_expansion_capped * 10
+
+        # 2. 位置评分 (0-100)：离底部越近越高
+        position_score = max(0, 50 - pos) * 2
+
+        # 3. 加分项
+        bonus = 0
+        reasons = []
+
+        # 均线多头：ma5 > ma10 > ma20
+        if ma5 > ma10 > ma20:
+            bonus += 20
+            reasons.append("均线多头")
+
+        # 量比放大
+        if vr > 1.5:
+            bonus += 15
+            reasons.append(f"量比{vr:.2f}")
+
+        # 今日上涨
+        if pct > 0:
+            bonus += 10
+            reasons.append(f"上涨{pct:+.2f}%")
+
+        # 绝对底部
+        if pos < 30:
+            bonus += 10
+            reasons.append("绝对底部")
+
+        # 总得分
+        total_score = int(vol_score + position_score + bonus)
+
+        # 入选理由
+        entry_parts = [f"放量{vol_expansion:.1f}倍"]
+        if reasons:
+            entry_parts += reasons
+        entry_parts.append(f"底部{pos:.0f}%")
+        entry_reason = " | ".join(entry_parts)
+
+        candidates.append({
+            'ts_code': ts_code,
+            'name': name,
+            'industry': industry,
+            'close': close,
+            'pct_chg': pct,
+            'volume_ratio': vr,
+            'turnover_rate': tr,
+            'rps_20': rps,
+            'main_net': main_net,
+            'awakening_score': total_score,
+            'vol_expansion': round(vol_expansion, 2),
+            'position_52w': round(pos, 2),
+            'entry_reason': entry_reason,
+        })
+
+    return candidates
+
+
+def generate_bottom_awakening_top5(conn, top_n=5):
+    """
+    底部苏醒策略 — 格式化 Top N 输出
+    """
+    candidates, display_date = generate_bottom_awakening_candidates(conn, limit=max(top_n * 2, 20))
+
+    if not candidates:
+        return []
+
+    result = candidates[:top_n]
+    for i, s in enumerate(result):
+        s['rank'] = i + 1
+        s['date'] = display_date
+        s['price'] = f"{s['close']:.2f}"
+        s['total_score'] = s['awakening_score']
+        s['reasons'] = s['entry_reason']
+        s['vol_ratio'] = s['volume_ratio']
 
     return result
 

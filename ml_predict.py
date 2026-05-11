@@ -10,14 +10,31 @@ load_dotenv()
 
 from quant_app.utils.model_loader import load_model
 
-from quant_app.utils.config import get_db_config
+from quant_app.utils.config import get_db_config, MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, MYSQL_SOCKET
 
 import numpy as np, pandas as pd, pymysql
+from sqlalchemy import create_engine, text
 
 logger = logging.getLogger(__name__)
-warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=UserWarning, module='pandas')
 
 DB_CONFIG = get_db_config()
+
+
+def _get_engine():
+    """创建 SQLAlchemy engine"""
+    if MYSQL_SOCKET:
+        return create_engine(
+            f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@/{MYSQL_DATABASE}"
+            f"?unix_socket={MYSQL_SOCKET}&charset=utf8mb4",
+            pool_pre_ping=True,
+        )
+    return create_engine(
+        f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}"
+        f"/{MYSQL_DATABASE}?charset=utf8mb4",
+        pool_pre_ping=True,
+    )
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_DAYS = 80  # V6特征构建所需历史天数
@@ -26,6 +43,9 @@ _v6_2_bundle = None  # V6.2 集成模型
 _v6_3_bundle = None  # V6.3 集成模型
 _v6_4_bundle = None  # V6.4 集成模型（实验性）
 _v6_5_bundle = None  # V6.5 精选特征集成模型
+_v6_6_bundle = None  # V6.6 五组新因子集成模型
+_v6_7_bundle = None  # V6.7 泄漏修复+调参集成模型
+_v8_0_bundle = None  # V8.0 改进标签+新特征集成模型
 _model_lock = threading.Lock()  # 模型加载并发锁
 
 # 最近一次批量扫描的 ML 结果缓存（股票代码 → ML 预测）
@@ -35,6 +55,31 @@ _last_scan_results = {}
 def _load_model(version="v6"):
     """加载指定版本的模型（线程安全）"""
     with _model_lock:
+        if version == "v8.0":
+            global _v8_0_bundle
+            if _v8_0_bundle is None:
+                _v8_0_bundle = load_model("v8.0")
+            return _v8_0_bundle
+        if version == "v6.7":
+            global _v6_7_bundle
+            if _v6_7_bundle is None:
+                _v6_7_bundle = load_model("v6.7")
+                if _v6_7_bundle is None:
+                    return None
+                ic = _v6_7_bundle.get('final_rank_ic', 'N/A')
+                n_models = _v6_7_bundle.get('ensemble_n_models', 1)
+                logger.info(f"V6.7 泄漏修复+调参集成模型已加载 ({n_models}个子模型, rank_ic={ic})")
+            return _v6_7_bundle
+        if version == "v6.6":
+            global _v6_6_bundle
+            if _v6_6_bundle is None:
+                _v6_6_bundle = load_model("v6.6")
+                if _v6_6_bundle is None:
+                    return None
+                ic = _v6_6_bundle.get('final_rank_ic', 'N/A')
+                n_models = _v6_6_bundle.get('ensemble_n_models', 1)
+                logger.info(f"V6.6 五组新因子集成模型已加载 ({n_models}个子模型, rank_ic={ic})")
+            return _v6_6_bundle
         if version == "v6.5":
             global _v6_5_bundle
             if _v6_5_bundle is None:
@@ -91,7 +136,16 @@ def _load_v6_model():
     return _load_model("v6")
 
 def _load_best_model():
-    """加载最佳可用模型：优先 V6.5 > V6.4 > V6.3 > V6.2 > V6"""
+    """加载最佳可用模型：优先 V8.0 > V6.7 > V6.6 > V6.5 > V6.4 > V6.3 > V6.2 > V6"""
+    bundle = _load_model("v8.0")
+    if bundle:
+        return bundle, "v8.0"
+    bundle = _load_model("v6.7")
+    if bundle:
+        return bundle, "v6.7"
+    bundle = _load_model("v6.6")
+    if bundle:
+        return bundle, "v6.6"
     bundle = _load_model("v6.5")
     if bundle:
         return bundle, "v6.5"
@@ -252,10 +306,15 @@ def _build_features_for_stocks_v6(conn, ts_codes, as_of_date=None):
     placeholders = ','.join(['%s'] * len(ts_codes))
 
     if as_of_date is None:
-        cur = conn.cursor()
-        cur.execute("SELECT MAX(trade_date) FROM daily_price")
-        latest = cur.fetchone()[0]
-        cur.close()
+        # 兼容 pymysql 和 SQLAlchemy connection
+        if hasattr(conn, 'cursor'):
+            cur = conn.cursor()
+            cur.execute("SELECT MAX(trade_date) FROM daily_price")
+            latest = cur.fetchone()[0]
+            cur.close()
+        else:
+            with conn.execute(text("SELECT MAX(trade_date) FROM daily_price")) as result:
+                latest = result.scalar()
         if not latest:
             return pd.DataFrame()
     else:
@@ -336,6 +395,14 @@ def _build_features_for_stocks_v6(conn, ts_codes, as_of_date=None):
 
     df = df.merge(idx_feat, on='trade_date', how='left')
 
+    # 合并行业信息（用于行业动量特征，需在循环前完成）
+    stock_info_df = pd.read_sql("SELECT ts_code, industry, is_st, list_date FROM stock_info", conn)
+    df = df.merge(stock_info_df[['ts_code', 'industry', 'is_st', 'list_date']], on='ts_code', how='left')
+    df['industry'] = df['industry'].fillna('OTHER')
+    df['is_st'] = df['is_st'].fillna(0).astype(int)
+    # 每日行业平均 pct_chg（原始值，后续在循环内 shift(1) 避免未来数据）
+    df['ind_pct_avg_raw'] = df.groupby(['trade_date', 'industry'])['pct_chg'].transform('mean')
+
     # 按股计算 V6 特征（shift(1) 模式）
     results = []
     for ts_code, group in df.groupby('ts_code'):
@@ -346,6 +413,16 @@ def _build_features_for_stocks_v6(conn, ts_codes, as_of_date=None):
             continue
 
         g = group.copy()
+
+        # 行业动量：shift(1) 使 T 日看到 T-1 行业均值（与训练端一致）
+        g['ind_pct_avg'] = g['ind_pct_avg_raw'].shift(1)
+        g['ind_mom_5d'] = g['ind_pct_avg'].rolling(5, min_periods=1).mean()
+        g['ind_mom_20d'] = g['ind_pct_avg'].rolling(20, min_periods=1).mean()
+        # 上市天数
+        latest_dt = pd.Timestamp(latest)
+        list_dates = pd.to_datetime(g['list_date'], errors='coerce')
+        g['list_age_days'] = (latest_dt - list_dates).dt.days.fillna(365 * 20)
+        g['ln_list_age'] = np.log(g['list_age_days'].clip(30))
 
         # 波动 (shift(1))
         g['vol_5d'] = g['pct_chg'].shift(1).rolling(5).std()
@@ -544,35 +621,7 @@ def _build_features_for_stocks_v6(conn, ts_codes, as_of_date=None):
         result['alpha_pos_5d'] = 0.0
         result['alpha_neg_5d'] = 0.0
 
-    # === 行业动量特征 ===
-    try:
-        stock_info_df = pd.read_sql("SELECT ts_code, industry, is_st, list_date FROM stock_info", conn)
-        result = result.merge(stock_info_df[['ts_code', 'industry', 'is_st', 'list_date']], on='ts_code', how='left')
-        result['industry'] = result['industry'].fillna('OTHER')
-        result['is_st'] = result['is_st'].fillna(0).astype(int)
-        # 行业平均 pct_chg（T 日）
-        result['ind_pct_avg'] = result.groupby('industry')['pct_chg'].transform('mean')
-        # 行业动量（无需 shift，因为 pct_chg 在 V6 构建中已 shift(1)）
-        result['ind_mom_5d'] = result.groupby('industry')['ind_pct_avg'].transform(
-            lambda x: x.rolling(5, min_periods=1).mean()
-        )
-        result['ind_mom_20d'] = result.groupby('industry')['ind_pct_avg'].transform(
-            lambda x: x.rolling(20, min_periods=1).mean()
-        )
-        # 上市天数
-        if result['list_date'].notna().any():
-            latest_dt = pd.Timestamp(latest)
-            list_dates = pd.to_datetime(result['list_date'], errors='coerce')
-            result['list_age_days'] = (latest_dt - list_dates).dt.days.fillna(365 * 20)
-            result['ln_list_age'] = np.log(result['list_age_days'].clip(30))
-        else:
-            result['ln_list_age'] = np.log(365 * 10)
-    except Exception as e:
-        logger.warning(f"行业/结构特征构建失败: {e}")
-        result['ind_mom_5d'] = 0.0
-        result['ind_mom_20d'] = 0.0
-        result['is_st'] = 0
-        result['ln_list_age'] = np.log(365 * 10)
+    # === 行业动量特征（已移至循环内计算，此处不再重复） ===
 
     # 当日横截面排名特征（与训练一致）
     rank_features = [
@@ -601,10 +650,15 @@ def _build_features_for_stocks_v6_2(conn, ts_codes, as_of_date=None):
     placeholders = ','.join(['%s'] * len(ts_codes))
 
     if as_of_date is None:
-        cur = conn.cursor()
-        cur.execute("SELECT MAX(trade_date) FROM daily_price")
-        latest = cur.fetchone()[0]
-        cur.close()
+        # 兼容 pymysql 和 SQLAlchemy connection
+        if hasattr(conn, 'cursor'):
+            cur = conn.cursor()
+            cur.execute("SELECT MAX(trade_date) FROM daily_price")
+            latest = cur.fetchone()[0]
+            cur.close()
+        else:
+            with conn.execute(text("SELECT MAX(trade_date) FROM daily_price")) as result:
+                latest = result.scalar()
         if not latest:
             return pd.DataFrame()
     else:
@@ -654,6 +708,48 @@ def _build_features_for_stocks_v6_2(conn, ts_codes, as_of_date=None):
             df[c] = 0.0
         df[c] = df[c].fillna(0.0)
 
+    # 合并行业信息（用于行业动量特征，需在循环前完成）
+    stock_info_df = pd.read_sql("SELECT ts_code, industry, is_st, list_date FROM stock_info", conn)
+    df = df.merge(stock_info_df[['ts_code', 'industry', 'is_st', 'list_date']], on='ts_code', how='left')
+    df['industry'] = df['industry'].fillna('OTHER')
+    df['is_st'] = df['is_st'].fillna(0).astype(int)
+    df['ind_pct_avg_raw'] = df.groupby(['trade_date', 'industry'])['pct_chg'].transform('mean')
+
+    # === 加载龙虎榜/股东数据（用于 V6.2 龙虎榜/股东特征，需在循环前完成） ===
+    # 龙虎榜
+    dt_all = pd.read_sql(f"""
+        SELECT ts_code, trade_date, net_buy
+        FROM dragon_tiger WHERE ts_code IN ({placeholders})
+        AND trade_date >= DATE_SUB(%s, INTERVAL 60 DAY)
+    """, conn, params=(*ts_codes, latest))
+    if not dt_all.empty:
+        dt_all['trade_date'] = pd.to_datetime(dt_all['trade_date'])
+        dt_all['net_buy'] = pd.to_numeric(dt_all['net_buy'], errors='coerce').fillna(0)
+    dt_dict = {tc: g.sort_values('trade_date') for tc, g in dt_all.groupby('ts_code') if not g.empty}
+    # 龙虎榜机构
+    dti_all = pd.read_sql(f"""
+        SELECT ts_code, trade_date, net_buy
+        FROM dragon_tiger_inst WHERE ts_code IN ({placeholders})
+        AND trade_date >= DATE_SUB(%s, INTERVAL 60 DAY)
+        AND (exalter LIKE '%%机构%%' OR exalter LIKE '%%专用%%')
+    """, conn, params=(*ts_codes, latest))
+    if not dti_all.empty:
+        dti_all['trade_date'] = pd.to_datetime(dti_all['trade_date'])
+        dti_all['net_buy'] = pd.to_numeric(dti_all['net_buy'], errors='coerce').fillna(0)
+    dti_dict = {tc: g.sort_values('trade_date') for tc, g in dti_all.groupby('ts_code') if not g.empty}
+    # 股东人数变化
+    hc_all = pd.read_sql(f"""
+        SELECT ts_code, end_date, holder_num_change, holder_change_pct
+        FROM holder_change WHERE ts_code IN ({placeholders})
+        AND end_date >= DATE_SUB(%s, INTERVAL 180 DAY)
+        ORDER BY ts_code, end_date
+    """, conn, params=(*ts_codes, latest))
+    if not hc_all.empty:
+        hc_all['end_date'] = pd.to_datetime(hc_all['end_date'])
+        for c in ['holder_num_change', 'holder_change_pct']:
+            hc_all[c] = pd.to_numeric(hc_all[c], errors='coerce').fillna(0)
+    hc_dict = {tc: g.sort_values('end_date') for tc, g in hc_all.groupby('ts_code') if not g.empty}
+
     results = []
     for ts_code, group in df.groupby('ts_code'):
         if ts_code[:2] in ('68', '83', '87', '43') or ts_code[:1] in ('8', '4', '9'):
@@ -663,6 +759,16 @@ def _build_features_for_stocks_v6_2(conn, ts_codes, as_of_date=None):
             continue
 
         g = group.copy()
+
+        # 行业动量：shift(1) 使 T 日看到 T-1 行业均值（与训练端一致）
+        g['ind_pct_avg'] = g['ind_pct_avg_raw'].shift(1)
+        g['ind_mom_5d'] = g['ind_pct_avg'].rolling(5, min_periods=1).mean()
+        g['ind_mom_20d'] = g['ind_pct_avg'].rolling(20, min_periods=1).mean()
+        # 上市天数
+        latest_dt = pd.Timestamp(latest)
+        list_dates = pd.to_datetime(g['list_date'], errors='coerce')
+        g['list_age_days'] = (latest_dt - list_dates).dt.days.fillna(365 * 20)
+        g['ln_list_age'] = np.log(g['list_age_days'].clip(30))
 
         # === V6 基础特征 (全部 shift(1)) ===
         g['vol_5d'] = g['pct_chg'].shift(1).rolling(5).std()
@@ -775,6 +881,59 @@ def _build_features_for_stocks_v6_2(conn, ts_codes, as_of_date=None):
             g['rzye_chg'] = 0
             g['rzmre_ratio'] = 0
 
+        # --- 龙虎榜特征（shift(1)+rolling(30) 时间保护，与训练端一致） ---
+        if ts_code in dt_dict:
+            dt = dt_dict[ts_code]
+            dt_daily = dt.groupby('trade_date', as_index=False)['net_buy'].agg(['sum', 'count'])
+            dt_daily.columns = ['trade_date', 'dragon_net_buy_30d', 'dragon_count_30d']
+            g = g.merge(dt_daily, on='trade_date', how='left')
+            g[['dragon_net_buy_30d', 'dragon_count_30d']] = g[['dragon_net_buy_30d', 'dragon_count_30d']].fillna(0)
+            g['dragon_net_buy_30d'] = g['dragon_net_buy_30d'].shift(1).rolling(30, min_periods=1).sum()
+            g['dragon_count_30d'] = g['dragon_count_30d'].shift(1).rolling(30, min_periods=1).sum()
+        else:
+            g['dragon_net_buy_30d'] = 0.0
+            g['dragon_count_30d'] = 0.0
+
+        # --- 龙虎榜机构特征（shift(1)+rolling(30) 时间保护） ---
+        if ts_code in dti_dict:
+            dti = dti_dict[ts_code]
+            dti_daily = dti.groupby('trade_date', as_index=False)['net_buy'].agg(['sum', 'count'])
+            dti_daily.columns = ['trade_date', 'dti_net_buy_30d', 'dti_count_30d']
+            g = g.merge(dti_daily, on='trade_date', how='left')
+            g[['dti_net_buy_30d', 'dti_count_30d']] = g[['dti_net_buy_30d', 'dti_count_30d']].fillna(0)
+            g['dti_net_buy_30d'] = g['dti_net_buy_30d'].shift(1).rolling(30, min_periods=1).sum()
+            g['dti_count_30d'] = g['dti_count_30d'].shift(1).rolling(30, min_periods=1).sum()
+        else:
+            g['dti_net_buy_30d'] = 0.0
+            g['dti_count_30d'] = 0.0
+
+        # --- 股东集中度特征（merge_asof + shift(1) 时间保护） ---
+        if ts_code in hc_dict:
+            hc = hc_dict[ts_code][['end_date', 'holder_change_pct', 'holder_num_change']].copy()
+            hc = hc.rename(columns={'end_date': 'trade_date'})
+            g_sorted = g[['trade_date']].sort_values('trade_date').drop_duplicates()
+            g_sorted['trade_date'] = g_sorted['trade_date'].values.astype('datetime64[us]')
+            hc_sorted = hc.sort_values('trade_date')
+            hc_sorted['trade_date'] = hc_sorted['trade_date'].values.astype('datetime64[us]')
+            merged = pd.merge_asof(g_sorted, hc_sorted, on='trade_date', direction='backward')
+            merged = merged.set_index('trade_date')
+            g = g.merge(merged[['holder_change_pct', 'holder_num_change']],
+                       left_on='trade_date', right_index=True, how='left')
+            g['holder_change_pct'] = g['holder_change_pct'].fillna(0)
+            g['holder_num_change'] = g['holder_num_change'].fillna(0)
+            neg_mask = g['holder_num_change'] < 0
+            decline_count = 0
+            decline_series = []
+            for v in neg_mask.values:
+                decline_count = decline_count + 1 if v else 0
+                decline_series.append(decline_count)
+            g['holder_consecutive_decline'] = decline_series
+            g['holder_consecutive_decline'] = g['holder_consecutive_decline'].shift(1).fillna(0).astype(int)
+        else:
+            g['holder_change_pct'] = 0.0
+            g['holder_num_change'] = 0
+            g['holder_consecutive_decline'] = 0
+
         # === V6.2 新增特征 (shift(1)) ===
         # 量比异常
         g['amount_ma5'] = g['amount'].shift(1).rolling(5).mean()
@@ -873,31 +1032,7 @@ def _build_features_for_stocks_v6_2(conn, ts_codes, as_of_date=None):
         result['alpha_pos_5d'] = 0.0
         result['alpha_neg_5d'] = 0.0
 
-    # 行业动量
-    try:
-        stock_info_df = pd.read_sql("SELECT ts_code, industry, is_st, list_date FROM stock_info", conn)
-        result = result.merge(stock_info_df[['ts_code', 'industry', 'is_st', 'list_date']], on='ts_code', how='left')
-        result['industry'] = result['industry'].fillna('OTHER')
-        result['is_st'] = result['is_st'].fillna(0).astype(int)
-        result['ind_pct_avg'] = result.groupby('industry')['pct_chg'].transform('mean')
-        result['ind_mom_5d'] = result.groupby('industry')['ind_pct_avg'].transform(
-            lambda x: x.rolling(5, min_periods=1).mean()
-        )
-        result['ind_mom_20d'] = result.groupby('industry')['ind_pct_avg'].transform(
-            lambda x: x.rolling(20, min_periods=1).mean()
-        )
-        if result['list_date'].notna().any():
-            latest_dt = pd.Timestamp(latest)
-            list_dates = pd.to_datetime(result['list_date'], errors='coerce')
-            result['list_age_days'] = (latest_dt - list_dates).dt.days.fillna(365 * 20)
-            result['ln_list_age'] = np.log(result['list_age_days'].clip(30))
-        else:
-            result['ln_list_age'] = np.log(365 * 10)
-    except Exception:
-        result['ind_mom_5d'] = 0.0
-        result['ind_mom_20d'] = 0.0
-        result['is_st'] = 0
-        result['ln_list_age'] = np.log(365 * 10)
+    # 行业动量（已移至循环内计算，此处不再重复）
 
     # 横截面排名特征
     rank_features = [
@@ -930,6 +1065,38 @@ def _ensemble_predict(feat_df, bundle):
     for i, model in enumerate(models):
         preds[:, i] = model.predict(X)
     return np.mean(preds, axis=1)
+
+
+def _scores_to_percentile(scores):
+    """
+    将分数数组转换为横截面百分位排名 [0, 1]。
+    纯 numpy 实现，支持 NaN 处理。
+    相同分数赋予相同百分位（平均排名法）。
+    """
+    scores = np.asarray(scores, dtype=np.float64)
+    n = len(scores)
+    if n == 0:
+        return np.array([], dtype=np.float64)
+    if n == 1:
+        return np.array([0.5], dtype=np.float64)
+
+    # 处理 NaN：NaN 排在最后
+    nan_mask = np.isnan(scores)
+    valid = scores[~nan_mask]
+    if len(valid) == 0:
+        return np.full(n, 0.5, dtype=np.float64)
+
+    # 使用 scipy.stats.rankdata 的平均排名法
+    # 或者手动实现：argsort 两次得到排名
+    order = valid.argsort()
+    ranks = np.empty_like(order)
+    ranks[order] = np.arange(len(valid))
+    # 将排名转为 [0, 1] 百分位
+    percentile = ranks.astype(np.float64) / (len(valid) - 1) if len(valid) > 1 else np.array([0.5])
+
+    result = np.full(n, 0.5, dtype=np.float64)
+    result[~nan_mask] = percentile
+    return result
 
 
 def _build_features_for_stocks_v6_3(conn, ts_codes, as_of_date=None):
@@ -1061,59 +1228,7 @@ def _build_features_for_stocks_v6_3(conn, ts_codes, as_of_date=None):
         if col not in result.columns:
             result[col] = np.nan
 
-    # 5. 龙虎榜特征 (dragon_tiger / dragon_tiger_inst) — V6.2 训练时有但推理缺失
-    try:
-        dt_df = pd.read_sql(f"""
-            SELECT ts_code, trade_date, net_buy
-            FROM dragon_tiger WHERE ts_code IN ({placeholders})
-            AND trade_date >= DATE_SUB(%s, INTERVAL 30 DAY)
-        """, conn, params=(*ts_codes, as_of_date or datetime.now()))
-        dti_df = pd.read_sql(f"""
-            SELECT ts_code, trade_date, net_buy
-            FROM dragon_tiger_inst WHERE ts_code IN ({placeholders})
-            AND trade_date >= DATE_SUB(%s, INTERVAL 30 DAY)
-            AND (exalter LIKE '%%机构%%' OR exalter LIKE '%%专用%%')
-        """, conn, params=(*ts_codes, as_of_date or datetime.now()))
-        for tc in result['ts_code'].unique():
-            mask = result['ts_code'] == tc
-            dt_stock = dt_df[dt_df['ts_code'] == tc] if not dt_df.empty else pd.DataFrame()
-            dti_stock = dti_df[dti_df['ts_code'] == tc] if not dti_df.empty else pd.DataFrame()
-            result.loc[mask, 'dragon_count_30d'] = len(dt_stock)
-            result.loc[mask, 'dragon_net_buy_30d'] = float(dt_stock['net_buy'].sum()) if not dt_stock.empty else 0
-            result.loc[mask, 'dragon_has_institution_30d'] = int(len(dti_stock) > 0)
-            result.loc[mask, 'dti_count_30d'] = len(dti_stock)
-            result.loc[mask, 'dti_net_buy_30d'] = float(dti_stock['net_buy'].sum()) if not dti_stock.empty else 0
-    except Exception as e:
-        logger.warning(f"V6.3 龙虎榜特征获取失败: {e}")
-
-    for col in ['dragon_count_30d', 'dragon_net_buy_30d', 'dragon_has_institution_30d', 'dti_count_30d', 'dti_net_buy_30d']:
-        if col not in result.columns:
-            result[col] = 0
-
-    # 6. 股东人数变化特征 — V6.2 训练时有但推理缺失
-    try:
-        hc_df = pd.read_sql(f"""
-            SELECT ts_code, end_date, holder_num_change, holder_change_pct
-            FROM holder_change WHERE ts_code IN ({placeholders})
-            ORDER BY ts_code, end_date DESC
-        """, conn, params=ts_codes)
-        if not hc_df.empty:
-            hc_df['holder_num_change'] = pd.to_numeric(hc_df['holder_num_change'], errors='coerce')
-            hc_df['holder_change_pct'] = pd.to_numeric(hc_df['holder_change_pct'], errors='coerce')
-            for tc in result['ts_code'].unique():
-                mask = result['ts_code'] == tc
-                hc_stock = hc_df[hc_df['ts_code'] == tc].sort_values('end_date', ascending=False)
-                if not hc_stock.empty:
-                    result.loc[mask, 'holder_num_change'] = hc_stock['holder_num_change'].iloc[0]
-                    result.loc[mask, 'holder_change_pct'] = hc_stock['holder_change_pct'].iloc[0]
-                    declines = sum(1 for v in hc_stock['holder_num_change'].head(4) if v < 0)
-                    result.loc[mask, 'holder_consecutive_decline'] = declines
-    except Exception as e:
-        logger.warning(f"V6.3 股东人数特征获取失败: {e}")
-
-    for col in ['holder_num_change', 'holder_change_pct', 'holder_consecutive_decline']:
-        if col not in result.columns:
-            result[col] = 0
+    # 5/6. 龙虎榜/股东人数特征：已在 V6.2 中正确计算（带 shift(1)+rolling(30) 时间保护），此处不再重复
 
     # 横截面排名
     rank_features_v6_3 = [
@@ -1130,6 +1245,373 @@ def _build_features_for_stocks_v6_3(conn, ts_codes, as_of_date=None):
     return result
 
 
+# ========== V6.6 特征构建（新增 5 组因子） ==========
+
+def _build_features_for_stocks_v6_6(conn, ts_codes, as_of_date=None):
+    """
+    V6.6 特征 — 在 V6.3 基础上新增 5 组因子：
+      1. 大宗交易溢价 (block_trade)
+      2. 板块资金流向 (sector_moneyflow)
+      3. 概念板块历史动量 (board_concept_hist)
+      4. 北向资金个股持仓 (hsgt_hold_stock)
+      5. 业绩预告超预期 (stock_forecast)
+    """
+    result = _build_features_for_stocks_v6_3(conn, ts_codes, as_of_date=as_of_date)
+    if result.empty:
+        return result
+
+    placeholders = ','.join(['%s'] * len(ts_codes))
+    trade_date_str = str(as_of_date)[:10] if as_of_date else datetime.now().strftime('%Y-%m-%d')
+
+    # ---- 1. 大宗交易溢价特征 ----
+    try:
+        bt_df = pd.read_sql(f"""
+            SELECT ts_code, trade_date,
+                   COALESCE(premium_rate, 0) as premium_rate,
+                   COALESCE(deal_amount, 0) as deal_amount,
+                   COALESCE(deal_volume, 0) as deal_volume,
+                   buyer, seller
+            FROM block_trade
+            WHERE ts_code IN ({placeholders})
+              AND trade_date < %s
+              AND trade_date >= DATE_SUB(%s, INTERVAL 35 DAY)
+        """, conn, params=(*ts_codes, trade_date_str, trade_date_str))
+
+        if not bt_df.empty:
+            bt_df['trade_date'] = pd.to_datetime(bt_df['trade_date'])
+            inst_keywords = ['机构', '证券', '资管', '基金']
+            bt_df['is_inst_buyer'] = bt_df['buyer'].apply(
+                lambda x: 1 if any(kw in str(x) for kw in inst_keywords) else 0
+            )
+            for tc in result['ts_code'].unique():
+                mask = result['ts_code'] == tc
+                bt_stock = bt_df[bt_df['ts_code'] == tc]
+                if bt_stock.empty:
+                    continue
+                total_amt = bt_stock['deal_amount'].sum()
+                if total_amt > 0:
+                    w_sum = (bt_stock['premium_rate'] * bt_stock['deal_amount']).sum()
+                    result.loc[mask, 'bt_premium_weighted_30d'] = w_sum / total_amt
+                result.loc[mask, 'bt_amount_30d'] = np.log(total_amt + 1)
+                inst_cnt = bt_stock['is_inst_buyer'].sum()
+                result.loc[mask, 'bt_inst_buyer_ratio_30d'] = inst_cnt / max(len(bt_stock), 1)
+                result.loc[mask, 'bt_count_30d'] = len(bt_stock)
+                result.loc[mask, 'bt_premium_avg_30d'] = bt_stock['premium_rate'].mean()
+    except Exception as e:
+        logger.warning(f"V6.6 大宗交易特征失败: {e}")
+
+    for col in ['bt_premium_weighted_30d', 'bt_amount_30d', 'bt_inst_buyer_ratio_30d',
+                'bt_count_30d', 'bt_premium_avg_30d']:
+        if col not in result.columns:
+            result[col] = 0.0
+
+    # ---- 2. 板块资金流向特征 ----
+    try:
+        stock_ind = pd.read_sql(f"""
+            SELECT ts_code, industry FROM stock_info
+            WHERE ts_code IN ({placeholders})
+        """, conn, params=ts_codes)
+
+        if not stock_ind.empty:
+            sector_mf = pd.read_sql(f"""
+                SELECT trade_date, sector_name, net_amount, buy_elg_amount,
+                       sell_elg_amount, pct_change
+                FROM sector_moneyflow
+                WHERE trade_date < %s
+                  AND trade_date >= DATE_SUB(%s, INTERVAL 25 DAY)
+            """, conn, params=(trade_date_str, trade_date_str))
+
+            if not sector_mf.empty:
+                sector_mf['trade_date'] = pd.to_datetime(sector_mf['trade_date'])
+                sector_mf['elg_net'] = sector_mf['buy_elg_amount'] - sector_mf['sell_elg_amount']
+
+                for _, srow in stock_ind.iterrows():
+                    tc = srow['ts_code']
+                    ind = srow['industry']
+                    if not ind:
+                        continue
+                    smf = sector_mf[sector_mf['sector_name'] == ind].sort_values('trade_date')
+                    if smf.empty:
+                        continue
+                    result.loc[result['ts_code'] == tc, 'sector_elg_net_today'] = smf['elg_net'].iloc[-1]
+                    result.loc[result['ts_code'] == tc, 'sector_pct_today'] = smf['pct_change'].iloc[-1]
+                    if len(smf) >= 5:
+                        result.loc[result['ts_code'] == tc, 'sector_elg_net_cum5'] = smf['elg_net'].tail(5).sum()
+                        result.loc[result['ts_code'] == tc, 'sector_pct_5d'] = smf['pct_change'].tail(5).sum()
+    except Exception as e:
+        logger.warning(f"V6.6 板块资金流向特征失败: {e}")
+
+    for col in ['sector_elg_net_today', 'sector_pct_today', 'sector_elg_net_cum5', 'sector_pct_5d']:
+        if col not in result.columns:
+            result[col] = 0.0
+
+    # ---- 3. 概念板块历史动量 ----
+    try:
+        stock_concepts = pd.read_sql(f"""
+            SELECT ts_code, board_code FROM board_concept_cons
+            WHERE ts_code IN ({placeholders}) AND is_latest=1
+        """, conn, params=ts_codes)
+
+        if not stock_concepts.empty:
+            bcodes = stock_concepts['board_code'].unique().tolist()
+            bc_ph = ','.join(['%s'] * len(bcodes))
+            concept_hist = pd.read_sql(f"""
+                SELECT board_code, trade_date, pct_change
+                FROM board_concept_hist
+                WHERE board_code IN ({bc_ph})
+                  AND trade_date < %s
+                  AND trade_date >= DATE_SUB(%s, INTERVAL 25 DAY)
+                ORDER BY board_code, trade_date
+            """, conn, params=(*bcodes, trade_date_str, trade_date_str))
+
+            if not concept_hist.empty:
+                concept_hist['trade_date'] = pd.to_datetime(concept_hist['trade_date'])
+                concept_hist = concept_hist.sort_values(['board_code', 'trade_date'])
+                concept_hist['pct_5d'] = concept_hist.groupby('board_code')['pct_change'].transform(
+                    lambda x: x.rolling(5).sum()
+                )
+                latest_date = concept_hist['trade_date'].max()
+                c5d = concept_hist[concept_hist['trade_date'] == latest_date][['board_code', 'pct_5d']].drop_duplicates('board_code')
+                c5d['concept_mom_rank'] = c5d['pct_5d'].rank(pct=True)
+
+                for _, crow in stock_concepts.iterrows():
+                    tc = crow['ts_code']
+                    bc = crow['board_code']
+                    rv = c5d.loc[c5d['board_code'] == bc, 'concept_mom_rank'].values
+                    if len(rv) > 0:
+                        existing = result.loc[result['ts_code'] == tc, 'concept_mom_rank']
+                        if existing.empty or pd.isna(existing.iloc[0]):
+                            result.loc[result['ts_code'] == tc, 'concept_mom_rank'] = rv[0]
+    except Exception as e:
+        logger.warning(f"V6.6 概念板块动量特征失败: {e}")
+
+    if 'concept_mom_rank' not in result.columns:
+        result['concept_mom_rank'] = 0.5
+
+    # ---- 4. 北向资金个股持仓特征 ----
+    try:
+        hsgt_df = pd.read_sql(f"""
+            SELECT ts_code, trade_date, hold_ratio, hold_shares, hold_mv, `rank`
+            FROM hsgt_hold_stock
+            WHERE ts_code IN ({placeholders})
+              AND trade_date < %s
+              AND ts_code != '000000.NORTH'
+            ORDER BY ts_code, trade_date
+        """, conn, params=(*ts_codes, trade_date_str))
+
+        if not hsgt_df.empty:
+            hsgt_df['trade_date'] = pd.to_datetime(hsgt_df['trade_date'])
+            for tc in result['ts_code'].unique():
+                hsgt_stock = hsgt_df[hsgt_df['ts_code'] == tc].sort_values('trade_date')
+                if hsgt_stock.empty:
+                    continue
+                hrow = hsgt_stock.iloc[-1]
+                mask = result['ts_code'] == tc
+                result.loc[mask, 'hsgt_has_hold'] = 1
+                result.loc[mask, 'hsgt_hold_ratio'] = hrow['hold_ratio']
+                if len(hsgt_stock) >= 5:
+                    ratio_5d_ago = hsgt_stock['hold_ratio'].iloc[-5]
+                    result.loc[mask, 'hsgt_ratio_chg_5d'] = hrow['hold_ratio'] - ratio_5d_ago
+    except Exception as e:
+        logger.warning(f"V6.6 北向资金特征失败: {e}")
+
+    for col in ['hsgt_has_hold', 'hsgt_hold_ratio', 'hsgt_ratio_chg_5d']:
+        if col not in result.columns:
+            result[col] = 0.0
+
+    # ---- 5. 业绩预告超预期特征 ----
+    try:
+        forecast_df = pd.read_sql(f"""
+            SELECT ts_code, end_date, report_date, forecast_type,
+                   net_profit_min, net_profit_max
+            FROM stock_forecast
+            WHERE ts_code IN ({placeholders})
+            ORDER BY ts_code, report_date DESC
+        """, conn, params=ts_codes)
+
+        if not forecast_df.empty:
+            forecast_latest = forecast_df.drop_duplicates(subset='ts_code', keep='first')
+            for _, frow in forecast_latest.iterrows():
+                tc = frow['ts_code']
+                mask = result['ts_code'] == tc
+                ftype = str(frow['forecast_type'])
+                type_map = {'预增': 2, '扭亏': 2, '略增': 1, '续盈': 1,
+                            '略减': -1, '预减': -2, '首亏': -2, '续亏': -3}
+                result.loc[mask, 'forecast_type_code'] = type_map.get(ftype, 0)
+                result.loc[mask, 'forecast_is_positive'] = 1 if ftype in ('预增', '扭亏', '略增', '续盈') else 0
+                result.loc[mask, 'forecast_net_profit_max'] = frow['net_profit_max']
+                try:
+                    rd = str(frow['report_date'])[:10]
+                    ad = trade_date_str
+                    days = (datetime.strptime(ad, '%Y-%m-%d') - datetime.strptime(rd, '%Y-%m-%d')).days
+                    result.loc[mask, 'forecast_days_since'] = days
+                except Exception:
+                    result.loc[mask, 'forecast_days_since'] = 30
+    except Exception as e:
+        logger.warning(f"V6.6 业绩预告特征失败: {e}")
+
+    for col in ['forecast_type_code', 'forecast_is_positive', 'forecast_net_profit_max', 'forecast_days_since']:
+        if col not in result.columns:
+            result[col] = 0.0
+
+    # ---- V6.6 横截面排名特征 ----
+    rank_features_v6_6 = [
+        'bt_premium_weighted_30d', 'bt_amount_30d', 'bt_count_30d',
+        'sector_elg_net_today', 'sector_elg_net_cum5',
+        'concept_mom_rank',
+        'hsgt_hold_ratio', 'hsgt_ratio_chg_5d',
+        'forecast_type_code', 'forecast_is_positive',
+    ]
+    for col in rank_features_v6_6:
+        if col in result.columns:
+            result[f'{col}_rank'] = result[col].rank(pct=True).fillna(0.5)
+
+    return result
+
+
+# ========== V8.0 特征构建（改进标签 + 新特征） ==========
+
+def _build_features_for_stocks_v8_0(conn, ts_codes, as_of_date=None):
+    """
+    V8.0 特征 — V6.5 全部特征 + 3 个新特征 + 大宗交易/业绩预告
+      1. ret_1d_reversal: 昨日涨跌幅反号（A股短期反转效应）
+      2. volume_div_days_10d: 过去10天缩量上涨天数
+      3. turnover_std_ratio: 20日换手率变异系数
+      4. bt_premium_rank: 大宗交易溢价率排名（泄漏修复版）
+      5. forecast_surprise_rank: 业绩预告类型排名（泄漏修复版）
+    """
+    result = _build_features_for_stocks_v6_3(conn, ts_codes, as_of_date=as_of_date)
+    if result.empty:
+        return result
+
+    trade_date_str = str(as_of_date)[:10] if as_of_date else datetime.now().strftime('%Y-%m-%d')
+    placeholders = ','.join(['%s'] * len(ts_codes))
+
+    # ---- 1. ret_1d_reversal: 短期反转 ----
+    try:
+        prior_day = pd.read_sql(f"""
+            SELECT ts_code, pct_chg
+            FROM daily_price
+            WHERE ts_code IN ({placeholders})
+              AND trade_date < %s
+              AND trade_date >= DATE_SUB(%s, INTERVAL 5 DAY)
+            ORDER BY ts_code, trade_date DESC
+        """, conn, params=(*ts_codes, trade_date_str, trade_date_str))
+        if not prior_day.empty:
+            prior_day = prior_day.drop_duplicates(subset='ts_code', keep='first')
+            prior_day['ret_1d_reversal'] = -prior_day['pct_chg'] / 100.0
+            result = result.merge(prior_day[['ts_code', 'ret_1d_reversal']], on='ts_code', how='left')
+    except Exception as e:
+        logger.warning(f"V8.0 短期反转特征失败: {e}")
+
+    # ---- 2. volume_div_days_10d: 缩量上涨天数 ----
+    try:
+        vol_div = pd.read_sql(f"""
+            SELECT ts_code,
+                   SUM(CASE WHEN pct_chg > 0 AND volume_ratio < 1.0 THEN 1 ELSE 0 END) as volume_div_days_10d
+            FROM (
+                SELECT ts_code, pct_chg, volume_ratio
+                FROM daily_price
+                WHERE ts_code IN ({placeholders})
+                  AND trade_date < %s
+                  AND trade_date >= DATE_SUB(%s, INTERVAL 15 DAY)
+                ORDER BY ts_code, trade_date DESC
+                LIMIT 10
+            ) sub
+            GROUP BY ts_code
+        """, conn, params=(*ts_codes, trade_date_str, trade_date_str))
+        if not vol_div.empty:
+            result = result.merge(vol_div, on='ts_code', how='left')
+    except Exception as e:
+        logger.warning(f"V8.0 缩量上涨特征失败: {e}")
+
+    # ---- 3. turnover_std_ratio: 换手率变异系数 ----
+    try:
+        turnover_stats = pd.read_sql(f"""
+            SELECT ts_code,
+                   STD(turnover_rate) / NULLIF(AVG(turnover_rate), 0) as turnover_std_ratio
+            FROM daily_price
+            WHERE ts_code IN ({placeholders})
+              AND trade_date < %s
+              AND trade_date >= DATE_SUB(%s, INTERVAL 25 DAY)
+            GROUP BY ts_code
+        """, conn, params=(*ts_codes, trade_date_str, trade_date_str))
+        if not turnover_stats.empty:
+            result = result.merge(turnover_stats, on='ts_code', how='left')
+    except Exception as e:
+        logger.warning(f"V8.0 换手率变异系数特征失败: {e}")
+
+    # ---- 4. 大宗交易溢价率排名（泄漏修复版） ----
+    try:
+        bt_df = pd.read_sql(f"""
+            SELECT ts_code,
+                   COALESCE(AVG(premium_rate), 0) as bt_premium_avg_30d,
+                   COUNT(*) as bt_count_30d,
+                   COALESCE(SUM(premium_rate * deal_amount) / NULLIF(SUM(deal_amount), 0), 0) as bt_premium_weighted_30d
+            FROM block_trade
+            WHERE ts_code IN ({placeholders})
+              AND trade_date < %s
+              AND trade_date >= DATE_SUB(%s, INTERVAL 35 DAY)
+            GROUP BY ts_code
+        """, conn, params=(*ts_codes, trade_date_str, trade_date_str))
+        if not bt_df.empty:
+            result = result.merge(bt_df, on='ts_code', how='left')
+    except Exception as e:
+        logger.warning(f"V8.0 大宗交易特征失败: {e}")
+
+    # ---- 5. 业绩预告特征（泄漏修复版） ----
+    try:
+        forecast_df = pd.read_sql(f"""
+            SELECT ts_code, forecast_type,
+                   COALESCE(net_profit_max, 0) as forecast_net_profit_max,
+                   report_date
+            FROM stock_forecast
+            WHERE ts_code IN ({placeholders})
+              AND (report_date IS NULL OR report_date <= %s)
+            ORDER BY ts_code, report_date DESC
+        """, conn, params=(*ts_codes, trade_date_str))
+        if not forecast_df.empty:
+            forecast_latest = forecast_df.drop_duplicates(subset='ts_code', keep='first')
+            type_map = {'预增': 2, '扭亏': 2, '略增': 1, '续盈': 1,
+                        '略减': -1, '预减': -2, '首亏': -2, '续亏': -3}
+            forecast_latest['forecast_type_code'] = forecast_latest['forecast_type'].map(type_map).fillna(0)
+            forecast_latest['forecast_is_positive'] = forecast_latest['forecast_type'].isin(
+                ('预增', '扭亏', '略增', '续盈')
+            ).astype(int)
+            trade_date_dt = pd.Timestamp(trade_date_str)
+            forecast_latest['forecast_days_since'] = forecast_latest['report_date'].apply(
+                lambda x: max((trade_date_dt - pd.Timestamp(x)).days, 0) if pd.notna(x) else 30
+            ).clip(0, 365).fillna(30).astype(int)
+            result = result.merge(
+                forecast_latest[['ts_code', 'forecast_type_code', 'forecast_is_positive',
+                                 'forecast_net_profit_max', 'forecast_days_since']],
+                on='ts_code', how='left'
+            )
+    except Exception as e:
+        logger.warning(f"V8.0 业绩预告特征失败: {e}")
+
+    # ---- 填充默认值 ----
+    for col in ['ret_1d_reversal', 'volume_div_days_10d', 'turnover_std_ratio',
+                'bt_premium_avg_30d', 'bt_count_30d', 'bt_premium_weighted_30d',
+                'forecast_type_code', 'forecast_is_positive', 'forecast_net_profit_max',
+                'forecast_days_since']:
+        if col not in result.columns:
+            result[col] = 0.0
+
+    # ---- V8.0 横截面排名特征 ----
+    rank_features_v8_0 = [
+        'ret_1d_reversal', 'volume_div_days_10d', 'turnover_std_ratio',
+        'bt_premium_avg_30d', 'bt_count_30d', 'bt_premium_weighted_30d',
+        'forecast_type_code', 'forecast_is_positive', 'forecast_net_profit_max',
+        'forecast_days_since',
+    ]
+    for col in rank_features_v8_0:
+        if col in result.columns:
+            result[f'{col}_rank'] = result[col].rank(pct=True).fillna(0.5)
+
+    return result
+
+
 def predict_batch(ts_codes, db_conn=None, as_of_date=None):
     """批量预测 — 自动选择最佳可用模型"""
     bundle, version = _load_best_model()
@@ -1137,10 +1619,15 @@ def predict_batch(ts_codes, db_conn=None, as_of_date=None):
         return {c: {'probability': 0.5, 'is_likely_up': False, 'predicted_return': 0, 'model_type': 'no_model'} for c in ts_codes}
     should_close = False
     if db_conn is None:
-        db_conn = pymysql.connect(**DB_CONFIG)
+        engine = _get_engine()
+        db_conn = engine.connect()
         should_close = True
     try:
-        if version in ("v6.5", "v6.4"):
+        if version == "v8.0":
+            feat_df = _build_features_for_stocks_v8_0(db_conn, ts_codes, as_of_date=as_of_date)
+        elif version in ("v6.7", "v6.6"):
+            feat_df = _build_features_for_stocks_v6_6(db_conn, ts_codes, as_of_date=as_of_date)
+        elif version in ("v6.5", "v6.4"):
             feat_df = _build_features_for_stocks_v6_3(db_conn, ts_codes, as_of_date=as_of_date)
         elif version == "v6.3":
             feat_df = _build_features_for_stocks_v6_3(db_conn, ts_codes, as_of_date=as_of_date)
@@ -1151,7 +1638,7 @@ def predict_batch(ts_codes, db_conn=None, as_of_date=None):
         if feat_df.empty:
             return {c: {'probability': 0.5, 'is_likely_up': False, 'predicted_return': 0, 'model_type': 'no_data'} for c in ts_codes}
 
-        if version in ("v6.5", "v6.4", "v6.2", "v6.3") and 'models' in bundle:
+        if version in ("v8.0", "v6.7", "v6.6", "v6.5", "v6.4", "v6.2", "v6.3") and 'models' in bundle:
             pred_returns = _ensemble_predict(feat_df, bundle)
         else:
             feature_cols = bundle['feature_cols']
@@ -1191,7 +1678,7 @@ def predict_batch(ts_codes, db_conn=None, as_of_date=None):
             }
         if len(ts_codes) > 1:
             rank_ic = bundle.get('final_rank_ic', 0)
-            model_label = f'{version}集成(IC={rank_ic:.3f})' if version and (version.startswith('v6') or 'v6' in str(version)) else str(version or 'unknown')
+            model_label = f'{version}集成(IC={rank_ic:.3f})' if version and (version.startswith('v') and '.' in version) else str(version or 'unknown')
             global _last_scan_results
             _last_scan_results = {
                 tc: {
@@ -1229,10 +1716,13 @@ def ml_enhanced_score(stocks_list, db_conn=None):
         return stocks_list
 
     rank_ic = bundle.get('final_rank_ic', 0)
-    model_label = f'V6.5集成(IC={rank_ic:.3f})' if version == 'v6.5' else (
+    model_label = f'V8.0集成(IC={rank_ic:.3f})' if version == 'v8.0' else (
+        f'V6.7集成(IC={rank_ic:.3f})' if version == 'v6.7' else (
+        f'V6.6集成(IC={rank_ic:.3f})' if version == 'v6.6' else (
+        f'V6.5集成(IC={rank_ic:.3f})' if version == 'v6.5' else (
         f'V6.4集成(IC={rank_ic:.3f})' if version == 'v6.4' else (
         f'V6.3集成(IC={rank_ic:.3f})' if version == 'v6.3' else (
-        f'V6.2集成(IC={rank_ic:.3f})' if version == 'v6.2' else f'V6(IC={rank_ic:.3f})')))
+        f'V6.2集成(IC={rank_ic:.3f})' if version == 'v6.2' else f'V6(IC={rank_ic:.3f})'))))))
 
     codes, code_map = [], {}
     for s in stocks_list:

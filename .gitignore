@@ -46,3 +46,12 @@ data/*.json
 # 备份
 *.bak
 *.backup
+
+# ML 模型文件（体积大，在服务器上训练生成）
+data/*.pkl
+
+# 备份目录
+static.backup_*/
+
+# macOS
+.DS_Store
