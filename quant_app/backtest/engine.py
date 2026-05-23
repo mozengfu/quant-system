@@ -207,7 +207,7 @@ class BacktestEngine:
         import pandas as pd
         df = pd.read_sql(
             "SELECT DISTINCT trade_date FROM daily_price "
-            "WHERE trade_date >= %s AND trade_date <= %s ORDER BY trade_date",
+            "WHERE trade_date >= %(start)s AND trade_date <= %(end)s ORDER BY trade_date",
             conn,
             params={"start": start, "end": end},
         )
@@ -218,7 +218,7 @@ class BacktestEngine:
         import pandas as pd
         df = pd.read_sql(
             "SELECT ts_code, trade_date, close FROM daily_price "
-            "WHERE trade_date >= %s AND trade_date <= %s",
+            "WHERE trade_date >= %(start)s AND trade_date <= %(end)s",
             conn,
             params={"start": trade_dates[0], "end": trade_dates[-1]},
         )

@@ -20,14 +20,17 @@ sys.path.insert(0, BASE_DIR)
 
 from quant_app.utils.model_loader import load_model
 from quant_app.utils.config import get_db_config
-from ml_predict import _ensemble_predict, _build_features_for_stocks_v8_0
+from ml_predict import _ensemble_predict, _ensemble_scores, _build_features_for_stocks_v8_0
 from quant_app.services.strategy_service import _v4_score_single
+from quant_app.risk.filters import apply_risk_filters
+from quant_app.risk.sector import apply_sector_diversification
 
 DB_CONFIG = get_db_config()
 START_DATE, END_DATE = "2024-11-01", "2026-05-08"
 SAMPLE_INTERVAL = 5
 TOP_N = int(os.environ.get('TOP_N', '3'))
 HOLD_DAYS = 5
+POOL_SIZE = int(os.environ.get('POOL_SIZE', '300'))
 
 OUT_PATH = os.path.join(BASE_DIR, 'data', 'backtest_pure_ml_12m.json')
 
@@ -106,6 +109,7 @@ def main():
 
     v4ml_results = []
     pure_ml_results = []
+    pure_ml_risk_results = []
     ics = []
 
     for di, buy_date in enumerate(sample_dates):
@@ -164,8 +168,51 @@ def main():
         except Exception:
             pass
 
+        # ===== 纯ML + 风控过滤（生产管线） =====
+        pure_ml_risk_top = []
+        try:
+            scores_df = _ensemble_scores(feat, bundle)
+            # 对齐 index：scores_df 的 index 是 0..N-1，feat 有 ts_code 列
+            scores_df.index = feat['ts_code'].values
+            feat_indexed = feat.set_index('ts_code')
+            for col in ['ml_score', 'z_score', 'probability', 'rank_pct']:
+                feat_indexed[col] = scores_df[col]
+            feat_indexed = feat_indexed.reset_index()
+
+            # ML 百分位过滤
+            top_codes = feat_indexed.nlargest(POOL_SIZE, 'ml_score')['ts_code'].tolist()
+            ml_filtered = feat_indexed[feat_indexed['ts_code'].isin(top_codes)]
+            ml_filtered = ml_filtered[ml_filtered['rank_pct'] > 0.50]
+
+            if len(ml_filtered) >= TOP_N:
+                cands = []
+                for _, row in ml_filtered.iterrows():
+                    cands.append({
+                        'ts_code': row['ts_code'],
+                        'close': float(row.get('close', 0)),
+                        'pct_chg': float(row.get('pct_chg', 0)),
+                        'turnover_rate': float(row.get('turnover_rate', 0)),
+                        'volume_ratio': float(row.get('volume_ratio', 0)),
+                        'rps_20': float(row.get('rps_20', 0)),
+                        'position_52w': 50,
+                        'industry': str(row.get('industry', '')),
+                        'ml_score': float(row['ml_score']),
+                        'blended_score': float(row['ml_score']),
+                    })
+                filtered = apply_risk_filters(cands, risk_state='normal')
+                if len(filtered) >= TOP_N:
+                    filtered = apply_sector_diversification(filtered, max_per_sector=2)
+                    filtered.sort(key=lambda x: -x.get('ml_score', 0))
+                    pure_ml_risk_top = [c['ts_code'] for c in filtered[:TOP_N]]
+        except Exception:
+            pass
+
         # ===== 前向收益（从次日开始） =====
-        for label, top, store in [('V4+ML', v4ml_top, v4ml_results), ('纯ML', pure_ml_top, pure_ml_results)]:
+        for label, top, store in [
+            ('V4+ML', v4ml_top, v4ml_results),
+            ('纯ML', pure_ml_top, pure_ml_results),
+            ('纯ML+风控', pure_ml_risk_top, pure_ml_risk_results),
+        ]:
             rets = []
             for tc in top:
                 fr = forward_return_clean(conn, tc, buy_date, HOLD_DAYS)
@@ -193,7 +240,7 @@ def main():
     print(f"模型: {version}, 采样: {SAMPLE_INTERVAL}天, 持仓: {HOLD_DAYS}天, Top{TOP_N}")
     print()
 
-    for label, store in [('V4+ML', v4ml_results), ('纯ML', pure_ml_results)]:
+    for label, store in [('V4+ML', v4ml_results), ('纯ML', pure_ml_results), ('纯ML+风控', pure_ml_risk_results)]:
         if not store:
             print(f"  {label}: 无有效交易")
             continue
@@ -228,6 +275,7 @@ def main():
         'params': {'start': START_DATE, 'end': END_DATE, 'interval': SAMPLE_INTERVAL, 'top_n': TOP_N, 'hold_days': HOLD_DAYS},
         'v4ml': v4ml_results,
         'pure_ml': pure_ml_results,
+        'pure_ml_risk': pure_ml_risk_results,
     }
     with open(OUT_PATH, 'w') as f:
         json.dump(output, f, indent=2, default=str)
