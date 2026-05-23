@@ -67,9 +67,9 @@ python3 sector_rotation.py          # 行业轮动
 
 # 生产模式: PURE_ML=1 (纯ML模式，回测证明显著优于V4+ML混合)
 # 纯ML管线: 成交额Top300 → V11.0排序(11子模型等权融合) → ML百分位过滤(>0.50) → 风控过滤 → 游资评分 → 业绩过滤 → 行业分散 → Top3
-# V11.0 模型结构: 7个LambdaRank(lgb_seed_*) + 1个XGBoost回归(xgb_reg) + 3个特征子集模型(momentum/flow/quality)
+# V11.0 模型结构: 7个纯LightGBM LambdaRank（seed=42,49,56,63,70,77,84），无XGBoost/特征子集
 # 模型加载优先级(quant_app/utils/model_loader.py): V11.0 > V10.0 > V8.1 > V8.0 > ...
-# 当前主模型: V11.0 三层堆叠集成 (11子模型, 117特征)
+# 当前主模型: V11.0 7-LGBM集成 (117特征, 训练数据2024-2025, 204万样本)
 # 标签: alpha_5d (行业中性化vol-adjusted 5d return)
 # 特征: 日频量价/资金流/融资融券/龙虎榜/涨停板/行业动量/概念热度/业绩/大宗交易
 #       + fina_indicator/sector_moneyflow/north_moneyflow/ml_predictions
@@ -334,12 +334,12 @@ requirements.txt 保留作向后兼容，依赖以 pyproject.toml 为准。
 
 ## V11.0 模型详情
 
-- **架构**: 三层堆叠集成（11子模型，117特征）
-- **算法**: 7个 LambdaRank (lgb_seed_*) + 1个 XGBoost 回归 (xgb_reg) + 3个特征子集模型 (momentum/flow/quality)
-- **标签**: alpha_5d（行业中性化 vol-adjusted 5d return）
-- **特征**: 日频量价/资金流/融资融券/龙虎榜/涨停板/行业动量/概念热度/业绩/大宗交易 + fina_indicator/sector_moneyflow/north_moneyflow/ml_predictions
-- **训练**: 1000 交易日窗口，Expanding window walk-forward
-- **推理入口**: `ml_predict.py`（_load_model + _build_features），特征构建约需 80 天历史数据
+- **架构**: 7子模型纯LightGBM LambdaRank集成（23MB），无XGBoost/特征子集
+- **算法**: 7个 LambdaRank (lgb_seed_42/49/56/63/70/77/84)，等权融合
+- **标签**: alpha_5d（行业中性化 5d return），训练时按交易日 qcut 为10级整数
+- **特征**: 117个，日频量价/资金流/融资融券/龙虎榜/涨停板/行业动量/概念热度/业绩/大宗交易 + fina_indicator/sector_moneyflow/north_moneyflow/ml_predictions
+- **训练**: 单期全量训练 2024-01~2026-05，Top3000成交额，~204万样本
+- **推理入口**: `ml_predict.py`（_ensemble_scores → 4列输出: ml_score/z_score/probability/rank_pct）
 - **滚动训练**: `scripts/rolling_train.sh` 每周六 3:00 重训，成功后覆盖 OOS 备份
 
 ## 部署
