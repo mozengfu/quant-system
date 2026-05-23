@@ -2108,11 +2108,10 @@ def predict_batch(ts_codes, db_conn=None, as_of_date=None):
             feat_df["__raw__"] = pred_returns
             scores_df = _ensemble_scores(feat_df, bundle)
 
+        codes_list = feat_df['ts_code'].tolist()
         results = {}
-        for idx, row in scores_df.iterrows():
-            code = str(idx)
-            if code in feat_df.index and 'ts_code' in feat_df.columns:
-                code = str(feat_df.loc[code, 'ts_code'])
+        for i, (_, row) in enumerate(scores_df.iterrows()):
+            code = codes_list[i] if i < len(codes_list) else str(i)
             z_score = float(row['z_score'])
             prob = round(float(row['probability']), 3)
             results[code] = {
