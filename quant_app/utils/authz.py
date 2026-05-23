@@ -7,13 +7,12 @@
 """
 from fastapi import HTTPException
 
-from quant_app.routes.auth import _load_users
-
 
 def is_admin(username):
     """检查用户是否为管理员"""
     if not username:
         return False
+    from quant_app.routes.auth import _load_users  # 惰性导入避免循环依赖
     users = _load_users()
     user_data = users.get(username, {})
     return user_data.get("role") == "admin"

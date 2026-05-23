@@ -22,10 +22,11 @@ logger = logging.getLogger(__name__)
 EASTMONEY_HOST = "http://push2.eastmoney.com"
 
 
-# ========== 行情数据（从 market_service 导入） ==========
+# ========== 行情数据 ==========
+from quant_app.services.realtime_service import _code_to_secid, _try_tencent
 from quant_app.services.market_service import (
-    _code_to_secid, _try_tencent, get_stock_realtime,
-    get_tushare_pro, get_recent_trade_dates, get_recent_trade_dates_fallback,
+    get_stock_realtime, get_tushare_pro,
+    get_recent_trade_dates, get_recent_trade_dates_fallback,
     get_latest_rps_from_db, calculate_rps,
     sync_positions, add_to_positions,
     get_stock_history_from_db, get_technical_buy_sell_signals,
