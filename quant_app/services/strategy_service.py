@@ -2184,10 +2184,10 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
     if block_val:
         params.append(block_val)
 
-    # 取当日数据（纯ML模式按成交额排序取前300，否则用V4扫描）
+    # 取当日数据（纯ML模式按成交额排序，池子大小由市场状态决定最大500）
     if PURE_ML_MODE:
         order_clause = "ORDER BY d.amount DESC"
-        limit_clause = "LIMIT 300"
+        limit_clause = "LIMIT 500"
         amount_col = ", d.amount"
     else:
         order_clause = ""
@@ -2296,10 +2296,20 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
     candidates.sort(key=lambda x: x['v4_score'], reverse=True)
     candidates = candidates[:limit * 2]  # 初筛放宽，ML过滤后截断
 
-    # 纯 ML 模式：跳过 V4 评分，直接用成交额前 300 只
+    # 纯 ML 模式：跳过 V4 评分，直接按成交额取候选池
+    # 市场状态自适应：弱市放小池子（保守），强市放大池子（积极）
     if PURE_ML_MODE:
+        # 先获取市场状态来决定池子大小
+        try:
+            _ms = unified_market_state(conn)
+            _state = _ms.get('state', 'range')
+        except Exception:
+            _state = 'range'
+        _pool_sizes = {'trend_up': 500, 'range': 400, 'trend_down': 300, 'panic': 200, 'overheated': 300}
+        _pool_size = _pool_sizes.get(_state, 400)
+
         pure_ml_cands = []
-        for _, row in df.iterrows():
+        for _, row in df.head(_pool_size).iterrows():
             pure_ml_cands.append({
                 'ts_code': row['ts_code'], 'name': row['name'],
                 'industry': row['industry'], 'close': float(row['close']),
@@ -2310,7 +2320,7 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
                 'low_52w': float(row.get('low_52w', 0) or 0),
             })
         candidates = pure_ml_cands
-        logger.info(f"纯 ML 模式: {len(candidates)} 只候选（成交额Top300）")
+        logger.info(f"纯 ML 模式: {len(candidates)} 只候选（成交额Top{_pool_size}, 市场={_state}）")
     else:
         if not candidates:
             logger.info("V4 初筛无候选")
@@ -2392,24 +2402,27 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
                 c['ml_percentile'] = ml_pct
                 c['ml_probability'] = s.get('ml_probability', 0.5)
                 c['market_state'] = market_state
-                if ml_pct >= pct_threshold:
-                    # 混合评分：V4(0-170) + ML百分位(0-100) 加权融合
-                    blend = c['v4_score'] * (1 - blend_weight) + ml_pct * 100 * blend_weight
-                    c['blended_score'] = round(blend, 2)
+                # _scores_to_percentile(-raw): ml越高 → pct越小 → 越好
+                # 用 1-pct 转为正向分数（越大越好）
+                ml_score_forward = 1.0 - ml_pct
+                if ml_score_forward >= pct_threshold or PURE_ML_MODE:
+                    if PURE_ML_MODE:
+                        c['blended_score'] = round(ml_raw, 3)
+                    else:
+                        blend = c['v4_score'] * (1 - blend_weight) + ml_score_forward * 100 * blend_weight
+                        c['blended_score'] = round(blend, 2)
                     passed.append(c)
 
             logger.info(
-                f"ML百分位过滤: {len(candidates)} -> {len(passed)} 只 "
+                f"ML过滤: {len(candidates)} -> {len(passed)} 只 "
                 f"(pct_threshold={pct_threshold}, 市场={market_state}, ML权重={blend_weight})"
             )
 
-            # 纯ML模式：不再使用 ml_score > 0 绝对值过滤（LambdaRank 输出为 raw margin，
-            # 大部分自然为负），改用百分位中位数过滤（pct_threshold=0.50）
+            # 按 ml_score 降序排列（lh 方案：LambdaRank 原始分越大越好）
             if PURE_ML_MODE:
-                pass  # 百分位过滤已在上方完成
-
-            # 按混合评分排序
-            passed.sort(key=lambda x: x['blended_score'], reverse=True)
+                passed.sort(key=lambda x: x['ml_score'], reverse=True)
+            else:
+                passed.sort(key=lambda x: x['blended_score'], reverse=True)
 
             # ===== 主力资金信息记录（仅供参考，不拦截）=====
             # 回测确认：5日主力累计过滤会误杀好票（夏普2.44→0.01），故仅记录不拦截
@@ -2682,13 +2695,13 @@ def generate_v4_ml_top5(conn, top_n=V4_TOP_N):
         s['price'] = f"{s['close']:.2f}"
         s['total_score'] = s.get('blended_score', s['v4_score'])
         if PURE_ML_MODE:
-            s['reasons'] = [f"ML排序分{s.get('ml_score', 0):.4f}"]
+            s['reasons'] = [f"ML得分{s.get('ml_score', 0):+.3f}"]
             if s.get('risk_filtered'):
                 s['reasons'].append(f"⚠️ {s.get('risk_reason', '风控过滤')}")
         else:
             s['reasons'] = [f"V4评分{s['v4_score']}"]
         if s.get('ml_percentile', 0) > 0:
-            s['reasons'].append(f"ML百分位{s['ml_percentile']:.0%}")
+            s['reasons'].append(f"ML概率{s.get('ml_probability', 0):.1%}")
         if s.get('main_net', 0) > 1000:
             s['reasons'].append(f"主力净流入{s['main_net']:.0f}万")
         if s['volume_ratio'] > 2:

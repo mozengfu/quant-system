@@ -83,7 +83,9 @@ def get_recommend(force_refresh: bool = False, token: str = Cookie(None)):
 
         if top3:
             for s in top3:
-                ml_pct = s.get('ml_percentile', 0)
+                ml_pct = s.get('ml_percentile', 0.5)
+                ml_forward = 1.0 - ml_pct  # rank_pct越小越好，反转为正向
+                ml_prob = s.get('ml_probability', 0.5)
                 price = float(s.get('close', s.get('price', 0)))
                 recommendations.append({
                     '代码': s['ts_code'].split('.')[0],
@@ -94,8 +96,8 @@ def get_recommend(force_refresh: bool = False, token: str = Cookie(None)):
                     '评分': int(s.get('blended_score', s.get('v4_score', 0))),
                     '综合评分': int(s.get('blended_score', s.get('v4_score', 0))),
                     'ML得分': f"{s.get('ml_score', 0):.3f}",
-                    '排序强度': round(ml_pct * 100, 0),
-                    'ml概率': round(ml_pct, 4),
+                    '排序强度': round(ml_forward * 100, 0),
+                    'ml概率': round(ml_prob, 4),
                     '量比': float(s.get('volume_ratio', 0)),
                     '换手率': float(s.get('turnover_rate', 0)),
                     '入选理由': ' | '.join(s.get('reasons', [])),
