@@ -2644,6 +2644,8 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
 
             # 行业分散约束（V11.0 新增）：限制单一行业集中度
             try:
+                for c in passed:
+                    c['blend'] = c.get('blended_score', 0)  # 行业分散按此字段排序
                 from scripts.sector_rotation_filter import apply_sector_diversification
                 passed = apply_sector_diversification(passed, conn, display_date)
             except Exception as e:
