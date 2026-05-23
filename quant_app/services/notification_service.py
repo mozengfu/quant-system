@@ -7,8 +7,15 @@ import uuid
 from datetime import datetime
 
 from quant_app.utils.config import (
-    FEISHU_WEBHOOK, WECOM_WEBHOOK, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS,
-    ALIYUN_SMS_ACCESS_KEY, ALIYUN_SMS_ACCESS_SECRET, ALIYUN_SMS_SIGN_NAME
+    ALIYUN_SMS_ACCESS_KEY,
+    ALIYUN_SMS_ACCESS_SECRET,
+    ALIYUN_SMS_SIGN_NAME,
+    FEISHU_WEBHOOK,
+    SMTP_HOST,
+    SMTP_PASS,
+    SMTP_PORT,
+    SMTP_USER,
+    WECOM_WEBHOOK,
 )
 
 logger = logging.getLogger(__name__)
@@ -17,11 +24,11 @@ logger = logging.getLogger(__name__)
 def send_sms(phone, template_code, template_param):
     """发送阿里云短信"""
     try:
-        import urllib.request
-        import urllib.parse
-        import hmac
-        import hashlib
         import base64
+        import hashlib
+        import hmac
+        import urllib.parse
+        import urllib.request
 
         url = "https://dysmsapi.aliyuncs.com"
 
@@ -90,13 +97,9 @@ def send_feishu(message):
     """发送飞书文本消息"""
     try:
         import urllib.request
-        import ssl
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
         data = json.dumps({"msg_type": "text", "content": {"text": message}}).encode('utf-8')
         req = urllib.request.Request(FEISHU_WEBHOOK, data=data, headers={"Content-Type": "application/json"})
-        resp = urllib.request.urlopen(req, timeout=5, context=ctx)
+        resp = urllib.request.urlopen(req, timeout=5)
         result = json.loads(resp.read().decode())
         if result.get("StatusCode") == 0 or result.get("code") == 0:
             logger.info("飞书消息已发送")
@@ -112,13 +115,9 @@ def send_wecom(message):
     """发送企业微信消息（通过群机器人 webhook）"""
     try:
         import urllib.request
-        import ssl
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
         data = json.dumps({"msgtype": "text", "text": {"content": message}}).encode('utf-8')
         req = urllib.request.Request(WECOM_WEBHOOK, data=data, headers={"Content-Type": "application/json"})
-        resp = urllib.request.urlopen(req, timeout=5, context=ctx)
+        resp = urllib.request.urlopen(req, timeout=5)
         result = json.loads(resp.read().decode())
         if result.get("errcode") == 0:
             logger.info("企业微信消息已发送")

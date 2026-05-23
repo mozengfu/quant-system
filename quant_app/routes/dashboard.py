@@ -1,23 +1,32 @@
-# -*- coding: utf-8 -*-
 """
 持仓、回测、追踪相关 API 路由
 """
-import os, json, time, logging, sys, math, asyncio
-from datetime import datetime, timedelta
+import asyncio
+import json
+import logging
+import os
+import sys
+from datetime import datetime
 from pathlib import Path
-from fastapi import APIRouter, Cookie, Request as FastAPIRequest, HTTPException
-from fastapi.responses import JSONResponse
+
+from fastapi import APIRouter, Cookie, HTTPException
+from fastapi import Request as FastAPIRequest
+
 from app_core import (
-    get_stock_realtime, get_tushare_pro, get_recent_trade_dates,
-    get_stock_history_from_db, get_technical_buy_sell_signals,
-    backtest_stock_enhanced, backtest_stock, backtest_stock_v4,
-    get_current_user, require_auth, get_db_config,
-    load_track_data, save_track_data, record_recommendation, update_stock_results,
-    calculate_rps, get_latest_rps_from_db,
-    send_feishu, save_access_log, get_client_ip,
+    backtest_stock_enhanced,
+    backtest_stock_v4,
+    get_client_ip,
+    get_current_user,
+    get_db_config,
+    get_stock_realtime,
+    get_technical_buy_sell_signals,
+    load_track_data,
+    save_access_log,
+    send_feishu,
+    update_stock_results,
 )
-from quant_app.utils.authz import require_admin, is_admin
 from market_state import get_market_state
+from quant_app.utils.authz import require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -29,19 +38,19 @@ router = APIRouter(tags=["dashboard"])
 # ========== 绩效看板 ==========
 
 @router.get("/api/sim/nav_history")
-async def get_nav_history(request: FastAPIRequest, token: str = Cookie(None)):
+def get_nav_history(request: FastAPIRequest, token: str = Cookie(None)):
     """返回净值历史数据"""
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")
     nav_path = os.path.join(DATA_DIR, "nav_history.json")
     if os.path.exists(nav_path):
-        with open(nav_path, 'r') as f:
+        with open(nav_path) as f:
             return json.load(f)
     return []
 
 
 @router.get("/api/sim/performance_summary")
-async def get_performance_summary(request: FastAPIRequest, token: str = Cookie(None)):
+def get_performance_summary(request: FastAPIRequest, token: str = Cookie(None)):
     """返回绩效汇总指标"""
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")
@@ -49,7 +58,7 @@ async def get_performance_summary(request: FastAPIRequest, token: str = Cookie(N
     if not os.path.exists(nav_path):
         return {"error": "No NAV history"}
 
-    with open(nav_path, 'r') as f:
+    with open(nav_path) as f:
         history = json.load(f)
 
     if not history:
@@ -100,7 +109,7 @@ async def get_performance_summary(request: FastAPIRequest, token: str = Cookie(N
 # ========== 跟单建议 ==========
 
 @router.get("/api/sim/today_signals")
-async def get_today_signals(token: str = Cookie(None)):
+def get_today_signals(token: str = Cookie(None)):
     """返回今日模拟交易实际操作（买入/卖出），供实盘跟单参考"""
     user = get_current_user(token)
     if not user:
@@ -108,6 +117,7 @@ async def get_today_signals(token: str = Cookie(None)):
     today = datetime.now().strftime("%Y-%m-%d")
     try:
         import pymysql
+
         from quant_app.utils.config import get_db_config
         conn = pymysql.connect(**get_db_config())
         cur = conn.cursor()
@@ -210,7 +220,7 @@ def get_positions_data():
     try:
         positions_file = DATA_DIR / "positions.json"
         if positions_file.exists():
-            with open(positions_file, 'r', encoding='utf-8') as f:
+            with open(positions_file, encoding='utf-8') as f:
                 data = json.load(f)
             positions_list = data.get("positions", [])
             mapped = []
@@ -241,6 +251,7 @@ def calculate_atr_for_stock(ts_code):
     """Calculate ATR stop-loss reference for a stock"""
     try:
         import pymysql
+
         from app_core import calculate_atr
         conn = pymysql.connect(**get_db_config())
         cur = conn.cursor()
@@ -413,7 +424,7 @@ async def get_positions(request: FastAPIRequest, token: str = Cookie(None)):
 # ========== 回测 ==========
 
 @router.get("/api/backtest")
-async def backtest(request: FastAPIRequest, code: str = "", market: str = "sz", start: str = "", end: str = "", token: str = Cookie(None)):
+def backtest(request: FastAPIRequest, code: str = "", market: str = "sz", start: str = "", end: str = "", token: str = Cookie(None)):
     user = get_current_user(token)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
@@ -426,7 +437,7 @@ async def backtest(request: FastAPIRequest, code: str = "", market: str = "sz", 
 
 
 @router.get("/api/backtest_bottom")
-async def backtest_bottom_api(request: FastAPIRequest, code: str = "", market: str = "sz", start: str = "", end: str = "", token: str = Cookie(None)):
+def backtest_bottom_api(request: FastAPIRequest, code: str = "", market: str = "sz", start: str = "", end: str = "", token: str = Cookie(None)):
     """底部起步条件回测"""
     user = get_current_user(token)
     if not user: raise HTTPException(status_code=401, detail="未登录")
@@ -436,7 +447,7 @@ async def backtest_bottom_api(request: FastAPIRequest, code: str = "", market: s
 
 
 @router.get("/api/backtest_strong")
-async def backtest_strong_api(request: FastAPIRequest, code: str = "", market: str = "sz", start: str = "", end: str = "", token: str = Cookie(None)):
+def backtest_strong_api(request: FastAPIRequest, code: str = "", market: str = "sz", start: str = "", end: str = "", token: str = Cookie(None)):
     """强势活跃条件回测"""
     user = get_current_user(token)
     if not user: raise HTTPException(status_code=401, detail="未登录")
@@ -446,7 +457,7 @@ async def backtest_strong_api(request: FastAPIRequest, code: str = "", market: s
 
 
 @router.get("/api/backtest_combo")
-async def backtest_combo_api(request: FastAPIRequest, code: str = "", market: str = "sz", start: str = "", end: str = "", token: str = Cookie(None)):
+def backtest_combo_api(request: FastAPIRequest, code: str = "", market: str = "sz", start: str = "", end: str = "", token: str = Cookie(None)):
     """组合策略条件回测"""
     user = get_current_user(token)
     if not user: raise HTTPException(status_code=401, detail="未登录")
@@ -456,7 +467,7 @@ async def backtest_combo_api(request: FastAPIRequest, code: str = "", market: st
 
 
 @router.get("/api/backtest_enhanced")
-async def backtest_enhanced(request: FastAPIRequest, code: str = "", market: str = "sz", start: str = "", end: str = "", token: str = Cookie(None)):
+def backtest_enhanced(request: FastAPIRequest, code: str = "", market: str = "sz", start: str = "", end: str = "", token: str = Cookie(None)):
     """增强版回测 - MACD+KDJ+布林带+止盈止损+风控指标"""
     user = get_current_user(token)
     if not user:
@@ -470,7 +481,7 @@ async def backtest_enhanced(request: FastAPIRequest, code: str = "", market: str
 
 
 @router.get("/api/technical_signals")
-async def technical_signals(request: FastAPIRequest, code: str = "", market: str = "sz", token: str = Cookie(None)):
+def technical_signals(request: FastAPIRequest, code: str = "", market: str = "sz", token: str = Cookie(None)):
     """技术面买卖点建议分析"""
     user = get_current_user(token)
     if not user:
@@ -501,7 +512,7 @@ async def get_track_stats(token: str = Cookie(None)):
 
 
 @router.get("/api/track/history")
-async def get_track_history(token: str = Cookie(None)):
+def get_track_history(token: str = Cookie(None)):
     """获取追踪历史"""
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")
@@ -512,7 +523,7 @@ async def get_track_history(token: str = Cookie(None)):
 # ========== 模拟交易 ==========
 
 @router.get("/api/sim_account")
-async def get_sim_account(request: FastAPIRequest, token: str = Cookie(None)):
+def get_sim_account(request: FastAPIRequest, token: str = Cookie(None)):
     """获取模拟账户状态（收益率、持仓、交易记录）"""
     user = get_current_user(token)
     if not user:

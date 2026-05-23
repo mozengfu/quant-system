@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""底部苏醒策略 — 收盘后扫描（cron）
-- 调用 generate_bottom_awakening_candidates
-- 输出 Top10 到 stdout
-- 写入 stock_pool_awakening 表
-- 保存 data/bottom_awakening.json
+"""底部苏醒策略 — 收盘后扫描（cron wrapper）
+调用 strategy_service.generate_bottom_awakening_candidates
+输出 Top10 → 写入 stock_pool_awakening 表 → 保存 JSON
 """
 import os, sys, json, logging
 from pathlib import Path
@@ -28,6 +26,7 @@ from quant_app.services.strategy_service import generate_bottom_awakening_candid
 LIMIT = 20
 TOP_N = 10
 
+
 def main():
     conn = pymysql.connect(**get_db_config())
     try:
@@ -40,32 +39,24 @@ def main():
 
         top10 = candidates[:TOP_N]
 
-        # stdout 输出
         sep = "=" * 60
         print(f"\n{sep}")
         print(f"  底部苏醒策略 — {display_date}")
         print(f"  候选总数: {len(candidates)}")
         print(sep)
         for i, s in enumerate(top10):
-            reasons = s.get('entry_reason', '')
             rank = i + 1
             print(f"  #{rank} {s['name']} ({s['ts_code']})")
             print(f"      得分={s['awakening_score']}  放量={s['vol_expansion']}x  位置={s['position_52w']}%")
             print(f"      涨跌={s['pct_chg']:+.2f}%  量比={s['volume_ratio']:.2f}  换手={s['turnover_rate']:.2f}%")
-            if s.get('rps_20', 0): print(f"      RPS={s['rps_20']:.0f}  主力净流={s.get('main_net', 0):.0f}万")
-            print(f"      理由: {reasons}")
+            if s.get('rps_20', 0):
+                print(f"      RPS={s['rps_20']:.0f}  主力净流={s.get('main_net', 0):.0f}万")
+            print(f"      理由: {s.get('entry_reason', '')}")
             print()
 
         # 写入 stock_pool_awakening 表
         cur = conn.cursor()
         for i, s in enumerate(candidates):
-            code_clean = s['ts_code'].split('.')[0]
-            reason = s.get('entry_reason', '')
-            pos_52w = float(s.get('position_52w', 0))
-            vol_exp = float(s.get('vol_expansion', 0))
-            main_net = float(s.get('main_net', 0))
-            rps = float(s.get('rps_20', 0))
-
             sql = """
                 INSERT INTO stock_pool_awakening
                     (snap_date, ts_code, name, industry, price, change_pct,
@@ -84,14 +75,15 @@ def main():
                 display_date, s['ts_code'], s['name'], s.get('industry', ''),
                 float(s['close']), float(s['pct_chg']),
                 float(s['turnover_rate']), float(s['volume_ratio']),
-                int(s['awakening_score']), vol_exp, pos_52w,
-                rps, main_net, reason, i + 1
+                int(s['awakening_score']), float(s.get('vol_expansion', 0)),
+                float(s.get('position_52w', 0)),
+                float(s.get('rps_20', 0)), float(s.get('main_net', 0)),
+                s.get('entry_reason', ''), i + 1
             ))
         conn.commit()
         cur.close()
         logger.info(f"底部苏醒-写入DB: {len(candidates)} 条")
 
-        # 保存 data/bottom_awakening.json
         output = {
             "date": display_date,
             "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

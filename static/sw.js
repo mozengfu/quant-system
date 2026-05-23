@@ -1,4 +1,4 @@
-const CACHE_NAME = 'quant-system-v1';
+const CACHE_NAME = 'quant-system-v2';
 const urlsToCache = [
   '/',
   '/static/manifest.json',

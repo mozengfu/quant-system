@@ -1,80 +1,122 @@
+"""配置模块 — 统一 Config 单例
+
+用法:
+    from quant_app.utils.config import config
+    db_params = config.mysql.get_connection_params()
+    engine = create_engine(config.mysql.url)
+    webhook = config.notification.feishu_webhook
+
+旧式模块级常量仍可用作向后兼容别名。
 """
-配置模块 - 集中管理配置和常量
-"""
+
 import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
-
-# ========== 应用基础路径 ==========
-BASE_DIR = Path(__file__).parent.parent.parent  # quant-system/
-DATA_DIR = BASE_DIR / "data"
-
-# ========== 阿里云实时行情 ==========
-ALIYUN_HOST = "http://alirmcom2.market.alicloudapi.com"
-ALIYUN_CODE = os.environ.get('ALIYUN_APP_CODE', '')
-
-# ========== 行情 API 地址 ==========
-TENCENT_QUOTE_URL = "http://qt.gtimg.cn/q="
-EASTMONEY_QUOTE_URL = "http://push2.eastmoney.com"
-SINA_HQ_URL = "http://hq.sinajs.cn/list="
-SINA_MIX_URL = "https://feed.mix.sina.com.cn/api/roll/get"
-
-# ========== 飞书推送配置 ==========
-FEISHU_WEBHOOK = os.environ.get('FEISHU_WEBHOOK', '')
-
-# ========== 企业微信推送配置 ==========
-WECOM_WEBHOOK = os.environ.get('WECOM_WEBHOOK', '')
-
-# ========== QQ邮箱SMTP配置 ==========
-SMTP_HOST = os.environ.get('SMTP_HOST', 'smtp.qq.com')
-SMTP_PORT = int(os.environ.get('SMTP_PORT', '465'))
-SMTP_USER = os.environ.get('SMTP_USER', '')
-SMTP_PASS = os.environ.get('SMTP_PASS', '')
-
-# ========== 阿里云短信配置 ==========
-ALIYUN_SMS_ACCESS_KEY = os.environ.get('ALIYUN_SMS_ACCESS_KEY', '')
-ALIYUN_SMS_ACCESS_SECRET = os.environ.get('ALIYUN_SMS_ACCESS_SECRET', '')
-ALIYUN_SMS_SIGN_NAME = os.environ.get('ALIYUN_SMS_SIGN_NAME', '智能量化')
-ALIYUN_SMS_TEMPLATE_CODE = os.environ.get('ALIYUN_SMS_TEMPLATE_CODE', 'SMS_xxx')
-
-# ========== Tushare 配置 ==========
-TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
-
-# ========== MySQL 数据库配置 ==========
-MYSQL_HOST = os.environ.get('MYSQL_HOST', '127.0.0.1')
-MYSQL_PORT = int(os.environ.get('MYSQL_PORT', '3306'))
-MYSQL_USER = os.environ.get('MYSQL_USER', 'root')
-MYSQL_PASSWORD = os.environ.get('MYSQL_PASSWORD', '')
-MYSQL_DATABASE = os.environ.get('MYSQL_DATABASE', 'quant_db')
-MYSQL_SOCKET = os.environ.get('MYSQL_SOCKET', '/tmp/mysql.sock')
-
-def get_db_config(**kwargs):
-    """获取 MySQL 连接配置字典
-
-    根据环境变量自动选择 socket 或 TCP 连接。
-    可通过 kwargs 覆盖或扩展配置（如 autocommit=True）。
-
-    返回的 dict 可直接用于 pymysql.connect(**config)。
-    """
-    config = {
-        'user': MYSQL_USER,
-        'password': MYSQL_PASSWORD,
-        'database': MYSQL_DATABASE,
-        'charset': 'utf8mb4',
-        'connect_timeout': 5,
-    }
-    if MYSQL_SOCKET:
-        config['unix_socket'] = MYSQL_SOCKET
-    else:
-        config['host'] = MYSQL_HOST
-        config['port'] = MYSQL_PORT
-    config.update(kwargs)
-    return config
+ROOT = Path(__file__).resolve().parent.parent.parent
+load_dotenv(dotenv_path=ROOT / ".env")
 
 
-# ========== 数据文件路径 ==========
+class MySQLConfig:
+    host = os.getenv("MYSQL_HOST", "127.0.0.1")
+    port = int(os.getenv("MYSQL_PORT", "3306"))
+    user = os.getenv("MYSQL_USER", "root")
+    password = os.getenv("MYSQL_PASSWORD", "")
+    database = os.getenv("MYSQL_DATABASE", "quant_db")
+    socket = os.getenv("MYSQL_SOCKET", "/tmp/mysql.sock")
+
+    @property
+    def url(self) -> str:
+        return f"mysql+pymysql://{self.user}:{self.password}@{self.host}:{self.port}/{self.database}"
+
+    @property
+    def url_with_socket(self) -> str:
+        return f"mysql+pymysql://{self.user}:{self.password}@localhost/{self.database}?unix_socket={self.socket}"
+
+    def get_connection_params(self, **kwargs):
+        """pymysql 连接参数字典（兼容旧 get_db_config()）"""
+        params = {
+            "user": self.user,
+            "password": self.password,
+            "database": self.database,
+            "charset": "utf8mb4",
+            "connect_timeout": 5,
+        }
+        if self.socket:
+            params["unix_socket"] = self.socket
+        else:
+            params["host"] = self.host
+            params["port"] = self.port
+        params.update(kwargs)
+        return params
+
+
+class TushareConfig:
+    token = os.getenv("TUSHARE_TOKEN", "")
+
+
+class NotificationConfig:
+    feishu_webhook = os.getenv("FEISHU_WEBHOOK", "")
+    wecom_webhook = os.getenv("WECOM_WEBHOOK", "")
+    smtp_host = os.getenv("SMTP_HOST", "smtp.qq.com")
+    smtp_port = int(os.getenv("SMTP_PORT", "465"))
+    smtp_user = os.getenv("SMTP_USER", "")
+    smtp_pass = os.getenv("SMTP_PASS", "")
+    sms_access_key = os.getenv("ALIYUN_SMS_ACCESS_KEY", "")
+    sms_access_secret = os.getenv("ALIYUN_SMS_ACCESS_SECRET", "")
+    sms_sign_name = os.getenv("ALIYUN_SMS_SIGN_NAME", "智能量化")
+    sms_template_code = os.getenv("ALIYUN_SMS_TEMPLATE_CODE", "SMS_xxx")
+
+
+class AliyunMarketConfig:
+    host = "http://alirmcom2.market.alicloudapi.com"
+    app_code = os.getenv("ALIYUN_APP_CODE", "")
+
+
+class Config:
+    mysql = MySQLConfig()
+    tushare = TushareConfig()
+    notification = NotificationConfig()
+    aliyun_market = AliyunMarketConfig()
+    log_level = os.getenv("LOG_LEVEL", "INFO")
+    data_dir = ROOT / "data"
+
+
+config = Config()
+
+# ========== 向后兼容别名（旧代码仍可使用这些模块级名称） ==========
+
+BASE_DIR = ROOT
+DATA_DIR = config.data_dir
+
+# MySQL
+MYSQL_HOST = config.mysql.host
+MYSQL_PORT = config.mysql.port
+MYSQL_USER = config.mysql.user
+MYSQL_PASSWORD = config.mysql.password
+MYSQL_DATABASE = config.mysql.database
+MYSQL_SOCKET = config.mysql.socket
+
+# Tushare
+TUSHARE_TOKEN = config.tushare.token
+
+# 阿里云行情
+ALIYUN_HOST = config.aliyun_market.host
+ALIYUN_CODE = config.aliyun_market.app_code
+
+# 通知
+FEISHU_WEBHOOK = config.notification.feishu_webhook
+WECOM_WEBHOOK = config.notification.wecom_webhook
+SMTP_HOST = config.notification.smtp_host
+SMTP_PORT = config.notification.smtp_port
+SMTP_USER = config.notification.smtp_user
+SMTP_PASS = config.notification.smtp_pass
+ALIYUN_SMS_ACCESS_KEY = config.notification.sms_access_key
+ALIYUN_SMS_ACCESS_SECRET = config.notification.sms_access_secret
+ALIYUN_SMS_SIGN_NAME = config.notification.sms_sign_name
+ALIYUN_SMS_TEMPLATE_CODE = config.notification.sms_template_code
+
+# 数据文件路径
 USERS_FILE = DATA_DIR / "users.json"
 PENDING_USERS_FILE = DATA_DIR / "pending_users.json"
 SESSIONS_FILE = DATA_DIR / "sessions.json"
@@ -88,3 +130,8 @@ RESET_TOKENS_FILE = DATA_DIR / "reset_tokens.json"
 # 确保数据目录存在
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 (DATA_DIR / "track").mkdir(parents=True, exist_ok=True)
+
+
+def get_db_config(**kwargs):
+    """pymysql 连接参数字典（向后兼容旧代码）"""
+    return config.mysql.get_connection_params(**kwargs)

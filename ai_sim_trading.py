@@ -257,10 +257,16 @@ def record_daily_top5(conn):
 
         # 模拟买入（如果账户有足够资金且当前无此持仓）
         cur.execute("SELECT COUNT(*) FROM ai_sim_positions WHERE ts_code=%s AND status='holding'", (ts_code,))
-        if cur.fetchone()[0] == 0:
+        already_holding = cur.fetchone()[0] > 0
+        if not already_holding:
             price = float(s['price'])
             if price and price > 0:
-                buy_amount = INITIAL_CAPITAL * POSITION_PER_STOCK  # 固定每只18%初始资金
+                # 动态计算：剩余可用现金均分给未买的候选股
+                remaining_slots = 5 - buy_count
+                if remaining_slots > 0:
+                    buy_amount = cash / remaining_slots  # 均分剩余现金
+                else:
+                    buy_amount = 0
                 shares = int(buy_amount / price / 100) * 100  # 向下取整到100的倍数
                 if shares > 0:
                     cost = shares * price

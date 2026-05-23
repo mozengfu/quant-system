@@ -27,8 +27,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
-def ak_retry(func, *args, max_retries=2, delay=1, **kwargs):
-    """带指数退避重试的 akshare 调用包装器"""
+def ak_retry(func, *args, max_retries=5, delay=5, **kwargs):
+    """带指数退避重试的 akshare 调用包装器
+    默认 5 次重试，延迟 5/10/20/40/80 秒指数退避，应对东财频率限制
+    """
     for attempt in range(max_retries + 1):
         try:
             return func(*args, **kwargs)
@@ -38,7 +40,7 @@ def ak_retry(func, *args, max_retries=2, delay=1, **kwargs):
                 ConnectionResetError,
                 BrokenPipeError) as e:
             if attempt < max_retries:
-                wait = delay * (2 ** attempt)
+                wait = min(delay * (2 ** attempt), 120)  # 最长 120s
                 logger.warning(f"  网络异常 ({type(e).__name__}), {wait}s后重试 ({attempt+1}/{max_retries})")
                 time.sleep(wait)
             else:
@@ -430,7 +432,7 @@ def sync_zt_pool(trade_date: str, dry_run=False):
 
 
 def sync_board_lists():
-    """P0: 概念/行业板块列表"""
+    """P0: 概念/行业板块列表 — 返回 (concept_ok, industry_ok)"""
     logger.info("同步板块列表")
     
     # 确保 is_latest 列存在
@@ -445,6 +447,7 @@ def sync_board_lists():
     cursor.close()
     conn.close()
     
+    concept_ok = False
     # 概念板块
     try:
         df = ak_retry(ak.stock_board_concept_name_em)
@@ -473,9 +476,11 @@ def sync_board_lists():
         cursor.close()
         conn.close()
         logger.info(f"  概念板块: {len(df)}个")
+        concept_ok = True
     except Exception as e:
         logger.error(f"  概念板块列表同步失败: {e}")
     
+    industry_ok = False
     # 行业板块
     try:
         df = ak_retry(ak.stock_board_industry_name_em)
@@ -504,8 +509,11 @@ def sync_board_lists():
         cursor.close()
         conn.close()
         logger.info(f"  行业板块: {len(df)}个")
+        industry_ok = True
     except Exception as e:
         logger.error(f"  行业板块列表同步失败: {e}")
+    
+    return concept_ok, industry_ok
 
 
 def sync_board_hist(board_type: str, days: int = 120):
@@ -576,6 +584,10 @@ def sync_board_hist(board_type: str, days: int = 120):
                 logger.info(f"  {board_type} hist: {i+1}/{len(boards)} boards, {total} rows")
             
             time.sleep(0.1)  # 降低限频
+            
+            # 每 10 个板块冷却 2 秒，避免触发东财频率限制
+            if (i + 1) % 10 == 0:
+                time.sleep(2)
         except Exception as e:
             failed += 1
             if failed <= 3:
@@ -1031,7 +1043,7 @@ def main():
     
     # 2. 板块列表
     logger.info("\n[Step 2] 同步板块列表")
-    sync_board_lists()
+    concept_ok, industry_ok = sync_board_lists()
     
     today = datetime.now()
     
@@ -1046,12 +1058,14 @@ def main():
         sync_zt_pool(day_name)
         time.sleep(0.5)
     
-    # 4. 板块历史行情（每日增量同步）
+    # 4. 板块历史行情（每日增量同步）— 依赖 Step 2 成功
     is_workday = today.weekday() < 5
-    if is_workday:
+    if is_workday and concept_ok and industry_ok:
         logger.info("\n[Step 4] 同步板块历史行情")
         sync_board_hist('concept', days=120)
         sync_board_hist('industry', days=120)
+    elif not concept_ok or not industry_ok:
+        logger.warning("\n[Step 4] 跳过板块历史行情（板块列表未成功同步，避免空列表级联报错）")
     else:
         logger.info("\n[Step 4] 非交易日,跳过板块历史行情")
 

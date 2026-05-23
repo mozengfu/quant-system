@@ -4,98 +4,19 @@
 包含 V3 C3.0 / V4 / 增强版（MACD+KDJ+布林带）回测函数。
 V4 规则回测保留，新增 V6 ML 预测信号验证回测。
 """
-import os
-import json
-import time
 import logging
-import math
 from datetime import datetime, timedelta
-from pathlib import Path
 
-import pandas as pd
 import numpy as np
 
-from app_core import get_tushare_pro, get_stock_realtime, get_recent_trade_dates
+from app_core import get_stock_realtime
 from quant_app.utils.config import get_db_config
 
 logger = logging.getLogger(__name__)
 
 
-# ========== 技术指标计算（移植自 app_core.py，返回完整时间序列） ==========
 
-
-def calculate_ema(closes, period):
-    if len(closes) < period:
-        return [sum(closes) / len(closes)] * len(closes)
-    ema = [sum(closes[:period]) / period]
-    multiplier = 2 / (period + 1)
-    for price in closes[period:]:
-        ema.append((price - ema[-1]) * multiplier + ema[-1])
-    return [None] * (period - 1) + ema
-
-
-def calculate_macd(closes, fast=12, slow=26, signal=9):
-    if len(closes) < slow:
-        return [], [], []
-    ema_fast = calculate_ema(closes, fast)
-    ema_slow = calculate_ema(closes, slow)
-    dif = []
-    for f, s in zip(ema_fast, ema_slow):
-        if f is None or s is None: dif.append(None)
-        else: dif.append(f - s)
-    valid_dif = [d for d in dif if d is not None]
-    dea_full = calculate_ema(valid_dif, signal)
-    none_count = sum(1 for d in dif if d is None)
-    dea = [None] * none_count + dea_full
-    macd_hist = []
-    for d, de in zip(dif, dea):
-        if d is None or de is None: macd_hist.append(None)
-        else: macd_hist.append((d - de) * 2)
-    return dif, dea, macd_hist
-
-
-def calculate_kdj(highs, lows, closes, n=9, m1=3, m2=3):
-    if len(closes) < n: return [], [], []
-    k_list, d_list, j_list, rsv_list = [], [], [], []
-    for i in range(len(closes)):
-        if i < n - 1: rsv_list.append(None); continue
-        low_n = min(lows[i-n+1:i+1]); high_n = max(highs[i-n+1:i+1])
-        rsv = 50 if high_n == low_n else (closes[i] - low_n) / (high_n - low_n) * 100
-        rsv_list.append(rsv)
-    for i in range(len(rsv_list)):
-        if rsv_list[i] is None: k_list.append(None); d_list.append(None); j_list.append(None)
-        elif i == n - 1:
-            k, d = rsv_list[i], rsv_list[i]
-            k_list.append(k); d_list.append(d); j_list.append(3*k - 2*d)
-        else:
-            pk = k_list[-1] if k_list[-1] is not None else 50
-            pd_ = d_list[-1] if d_list[-1] is not None else 50
-            k = (pk * (m1-1) + rsv_list[i]) / m1
-            d = (pd_ * (m2-1) + k) / m2
-            k_list.append(k); d_list.append(d); j_list.append(3*k - 2*d)
-    return k_list, d_list, j_list
-
-
-def calculate_bollinger_bands(closes, period=20, std_dev=2):
-    upper, middle, lower = [], [], []
-    for i in range(len(closes)):
-        if i < period - 1: upper.append(None); middle.append(None); lower.append(None)
-        else:
-            window = closes[i-period+1:i+1]
-            ma = sum(window) / period
-            variance = sum((x - ma) ** 2 for x in window) / period
-            std = variance ** 0.5
-            middle.append(ma); upper.append(ma + std_dev * std); lower.append(ma - std_dev * std)
-    return upper, middle, lower
-
-
-def calculate_atr(highs, lows, closes, period=14):
-    if len(closes) < period + 1: return 14
-    trs = []
-    for i in range(1, len(closes)):
-        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
-        trs.append(tr)
-    return sum(trs[-period:]) / period if len(trs) >= period else 14
+# ========== 技术指标计算（统一委托 indicators.py）=========
 
 
 # ========== 旧版回测兼容（指向 V4）=========
@@ -230,8 +151,8 @@ def backtest_stock_v4(code, market="sz", start_date="", end_date=""):
 
 def _run_strategy_backtest(code, market, start_date, end_date, strategy_name, condition_fn):
     from datetime import datetime, timedelta
+
     import pymysql
-    import numpy as np
     try:
         db_config = get_db_config(connect_timeout=5)
         ts_code = "%s.%s" % (code, "SZ" if market == "sz" else "SH")

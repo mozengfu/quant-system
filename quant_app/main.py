@@ -10,18 +10,28 @@ quant_app - 量化系统主包
 - quant_app.routes: API路由
 """
 
+from quant_app.services.notification_service import send_email, send_feishu, send_sms
+from quant_app.utils.auth import hash_pw, make_token, verify_pw
 from quant_app.utils.config import (
-    BASE_DIR, DATA_DIR,
-    ALIYUN_HOST, ALIYUN_CODE,
+    ALIYUN_CODE,
+    ALIYUN_HOST,
+    ALIYUN_SMS_ACCESS_KEY,
+    ALIYUN_SMS_ACCESS_SECRET,
+    BASE_DIR,
+    DATA_DIR,
     FEISHU_WEBHOOK,
-    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS,
-    ALIYUN_SMS_ACCESS_KEY, ALIYUN_SMS_ACCESS_SECRET,
+    MYSQL_DATABASE,
+    MYSQL_HOST,
+    MYSQL_PASSWORD,
+    MYSQL_PORT,
+    MYSQL_USER,
+    SMTP_HOST,
+    SMTP_PASS,
+    SMTP_PORT,
+    SMTP_USER,
     TUSHARE_TOKEN,
-    MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
 )
 
-from quant_app.utils.auth import hash_pw, verify_pw, make_token
-from quant_app.services.notification_service import send_sms, send_email, send_feishu
 __all__ = [
     # config
     'BASE_DIR', 'DATA_DIR', 'ALIYUN_HOST', 'ALIYUN_CODE', 'FEISHU_WEBHOOK',

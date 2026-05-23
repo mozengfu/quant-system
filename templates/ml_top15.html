@@ -57,8 +57,8 @@
         <button class="refresh-btn" onclick="refreshData()" id="refreshBtn">🔄 刷新数据</button>
 
         <div class="notice">
-            <strong>ML V6.5 模型</strong>：LightGBM + LambdaRank 集成学习，107维精选特征（技术+资金+涨停+行业动量+财务+龙虎榜）。
-            回测验证：3日胜率 <strong>72.6%</strong>，中位数收益 <strong>+4.82%</strong>，与V4.1互补性极强（99.4%零重叠）。
+            <strong>ML V8.1 模型</strong>：LightGBM + LambdaRank + 市场状态感知，115维特征（技术+资金+涨停+行业动量+财务+龙虎榜+市场状态）。
+            回测验证：纯ML排序选股（成交额Top300候选池），夏普4.23，胜率74.6%。
         </div>
 
         <div class="stats-grid" id="statsGrid"></div>
@@ -75,7 +75,7 @@
                             <th>代码</th>
                             <th>行业</th>
                             <th>ML概率</th>
-                            <th>预测收益</th>
+                            <th>排序强度</th>
                             <th>现价</th>
                             <th>涨跌幅</th>
                             <th>量比</th>
@@ -110,9 +110,9 @@
                         <td>短线进攻型，量价配合</td>
                     </tr>
                     <tr>
-                        <td><span class="badge badge-ml">ML V6.5</span> 120维特征</td>
-                        <td>72.6%</td>
-                        <td>+6.29%</td>
+                        <td><span class="badge badge-ml">ML V8.1</span> 115维特征+市场状态</td>
+                        <td>74.6%</td>
+                        <td>+6.43%（5日）</td>
                         <td>大盘强势股</td>
                         <td>高胜率稳定型，RPS极高</td>
                     </tr>
@@ -206,7 +206,7 @@
                         <td><a href="${ecUrl}" target="_blank">${escapeHtml(s.ts_code || '')}</a></td>
                         <td>${escapeHtml(s.industry || '')}</td>
                         <td>${formatProb(s.ml_prob)}</td>
-                        <td>${formatPct(s.ml_pred_return)}</td>
+                        <td>${s.ml_pred_return != null ? s.ml_pred_return.toFixed(2) : '--'}</td>
                         <td>${s.close ? s.close.toFixed(2) : '-'}</td>
                         <td>${formatPct(s.pct_chg)}</td>
                         <td>${s.volume_ratio ? s.volume_ratio.toFixed(2) : '-'}</td>

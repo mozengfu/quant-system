@@ -45,7 +45,12 @@ _v6_4_bundle = None  # V6.4 集成模型（实验性）
 _v6_5_bundle = None  # V6.5 精选特征集成模型
 _v6_6_bundle = None  # V6.6 五组新因子集成模型
 _v6_7_bundle = None  # V6.7 泄漏修复+调参集成模型
+_v8_1_bundle = None  # V8.1 市场状态感知模型
 _v8_0_bundle = None  # V8.0 改进标签+新特征集成模型
+_v8_6_bundle = None  # V8.6 V6核心精简集(52+10特征, WF IC=0.058, 超越原版v8.0)
+_v9_0_bundle = None  # V9.0 V6.5超参回归+波动率截断+去rank特征集成模型
+_v11_0_bundle = None  # V11.0 三层堆叠集成模型
+_v10_0_bundle = None  # V10.0 Regime-Aware 多周期集成模型 (12 models)
 _model_lock = threading.Lock()  # 模型加载并发锁
 
 # 最近一次批量扫描的 ML 结果缓存（股票代码 → ML 预测）
@@ -55,11 +60,65 @@ _last_scan_results = {}
 def _load_model(version="v6"):
     """加载指定版本的模型（线程安全）"""
     with _model_lock:
+        if version == "v8.1":
+            global _v8_1_bundle
+            if _v8_1_bundle is None:
+                _v8_1_bundle = load_model("v8.1")
+                if _v8_1_bundle is None:
+                    return None
+                n_features = _v8_1_bundle.get('n_features', 0)
+                ic = _v8_1_bundle.get('final_rank_ic', 'N/A')
+                logger.info(f"V8.1 市场状态感知模型已加载 ({_v8_1_bundle.get('n_models', 5)}个子模型, {n_features}特征, rank_ic={ic})")
+            return _v8_1_bundle
         if version == "v8.0":
             global _v8_0_bundle
             if _v8_0_bundle is None:
                 _v8_0_bundle = load_model("v8.0")
             return _v8_0_bundle
+        if version == "v8.6":
+            global _v8_6_bundle
+            if _v8_6_bundle is None:
+                _v8_6_bundle = load_model("v8.6")
+                if _v8_6_bundle is None:
+                    return None
+                ic = _v8_6_bundle.get('final_rank_ic', 'N/A')
+                n_models = _v8_6_bundle.get('ensemble_n_models', 1)
+                n_features = _v8_6_bundle.get('n_features', 0)
+                logger.info(f"V8.6 V6核心精简模型已加载 ({n_models}个子模型, {n_features}特征, rank_ic={ic})")
+            return _v8_6_bundle
+        if version == "v9.0":
+            global _v9_0_bundle
+            if _v9_0_bundle is None:
+                _v9_0_bundle = load_model("v9.0")
+                if _v9_0_bundle is None:
+                    return None
+                ic = _v9_0_bundle.get('final_rank_ic', 'N/A')
+                n_models = _v9_0_bundle.get('ensemble_n_models', 1)
+                n_features = _v9_0_bundle.get('n_features', 0)
+                logger.info(f"V9.0 V6.5超参回归模型已加载 ({n_models}个子模型, {n_features}特征, rank_ic={ic})")
+            return _v9_0_bundle
+        if version == "v11.0":
+            global _v11_0_bundle
+            if _v11_0_bundle is None:
+                _v11_0_bundle = load_model("v11.0")
+                if _v11_0_bundle is None:
+                    return None
+                n_models = _v11_0_bundle.get('n_models', 9)
+                n_features = _v11_0_bundle.get('n_features', 0)
+                ic = _v11_0_bundle.get('final_rank_ic', 'N/A')
+                logger.info(f"V11.0 堆叠集成模型已加载 ({n_models}个子模型, {n_features}特征, rank_ic={ic})")
+            return _v11_0_bundle
+        if version == "v10.0":
+            global _v10_0_bundle
+            if _v10_0_bundle is None:
+                _v10_0_bundle = load_model("v10.0")
+                if _v10_0_bundle is None:
+                    return None
+                n_models = _v10_0_bundle.get('n_models', 0)
+                n_features = _v10_0_bundle.get('n_features', 0)
+                ic = _v10_0_bundle.get('final_rank_ic', 'N/A')
+                logger.info(f"V10.0 Regime-Aware 模型已加载 ({n_models}个子模型, {n_features}特征, rank_ic={ic})")
+            return _v10_0_bundle
         if version == "v6.7":
             global _v6_7_bundle
             if _v6_7_bundle is None:
@@ -136,10 +195,25 @@ def _load_v6_model():
     return _load_model("v6")
 
 def _load_best_model():
-    """加载最佳可用模型：优先 V8.0 > V6.7 > V6.6 > V6.5 > V6.4 > V6.3 > V6.2 > V6"""
+    """加载最佳可用模型：优先 V11.0 > V10.0 > V8.1 > ..."""
+    bundle = _load_model("v11.0")
+    if bundle:
+        return bundle, "v11.0"
+    bundle = _load_model("v10.0")
+    if bundle:
+        return bundle, "v10.0"
+    bundle = _load_model("v8.1")
+    if bundle:
+        return bundle, "v8.1"
     bundle = _load_model("v8.0")
     if bundle:
-        return bundle, "v8.0"
+        return bundle, "v10.0"
+    bundle = _load_model("v8.6")
+    if bundle:
+        return bundle, "v8.6"
+    bundle = _load_model("v9.0")
+    if bundle:
+        return bundle, "v9.0"
     bundle = _load_model("v6.7")
     if bundle:
         return bundle, "v6.7"
@@ -327,8 +401,9 @@ def _build_features_for_stocks_v6(conn, ts_codes, as_of_date=None):
                ma5, ma10, ma20, rps_20, low_52w, high_52w
         FROM daily_price WHERE ts_code IN ({placeholders})
         AND trade_date >= DATE_SUB(%s, INTERVAL {HISTORY_DAYS} DAY)
+        AND trade_date < %s
         ORDER BY ts_code, trade_date
-    """, conn, params=(*ts_codes, latest))
+    """, conn, params=(*ts_codes, latest, latest))
     for c in ['open', 'high', 'low', 'close', 'pre_close', 'pct_chg', 'turnover_rate',
               'volume_ratio', 'vol', 'ma5', 'ma10', 'ma20', 'rps_20', 'low_52w', 'high_52w']:
         df[c] = pd.to_numeric(df[c], errors='coerce')
@@ -339,7 +414,8 @@ def _build_features_for_stocks_v6(conn, ts_codes, as_of_date=None):
                buy_sm_amount, sell_sm_amount, buy_lg_amount, sell_lg_amount
         FROM moneyflow_daily WHERE ts_code IN ({placeholders})
         AND trade_date >= DATE_SUB(%s, INTERVAL {HISTORY_DAYS} DAY)
-    """, conn, params=(*ts_codes, latest))
+        AND trade_date < %s
+    """, conn, params=(*ts_codes, latest, latest))
     for c in ['main_net', 'net_mf_amount', 'buy_sm_amount', 'sell_sm_amount',
               'buy_lg_amount', 'sell_lg_amount']:
         if c in moneyflow.columns:
@@ -349,16 +425,20 @@ def _build_features_for_stocks_v6(conn, ts_codes, as_of_date=None):
     idx = pd.read_sql(f"""
         SELECT trade_date, change_pct, close_price FROM market_index_daily
         WHERE index_code='000001.SH' AND trade_date >= DATE_SUB(%s, INTERVAL {HISTORY_DAYS} DAY)
+          AND trade_date < %s
         ORDER BY trade_date
-    """, conn, params=(latest,))
+    """, conn, params=(latest, latest))
     idx['trade_date'] = pd.to_datetime(idx['trade_date'])
 
     # 基本面（当日数据）
     fundamentals = pd.read_sql(f"""
-        SELECT ts_code, pe_ttm, pb, total_mv
+        SELECT ts_code, trade_date, pe_ttm, pb, total_mv
         FROM daily_basic WHERE ts_code IN ({placeholders})
-        AND trade_date = %s
-    """, conn, params=(*ts_codes, latest))
+        AND trade_date < %s
+        AND trade_date >= DATE_SUB(%s, INTERVAL 30 DAY)
+    """, conn, params=(*ts_codes, latest, latest))
+    if not fundamentals.empty:
+        fundamentals = fundamentals.sort_values('trade_date').groupby('ts_code').last().reset_index()
     for c in ['pe_ttm', 'pb', 'total_mv']:
         if c in fundamentals.columns:
             fundamentals[c] = pd.to_numeric(fundamentals[c], errors='coerce')
@@ -525,8 +605,8 @@ def _build_features_for_stocks_v6(conn, ts_codes, as_of_date=None):
         try:
             margin_df = pd.read_sql("""
                 SELECT trade_date, rzye, rqye, rzmre FROM margin_daily
-                WHERE ts_code = %s ORDER BY trade_date
-            """, conn, params=(ts_code,))
+                WHERE ts_code = %s AND trade_date < %s ORDER BY trade_date
+            """, conn, params=(ts_code, latest))
             if not margin_df.empty:
                 margin_df['trade_date'] = pd.to_datetime(margin_df['trade_date'])
                 for c in ['rzye', 'rqye', 'rzmre']:
@@ -544,9 +624,14 @@ def _build_features_for_stocks_v6(conn, ts_codes, as_of_date=None):
             g['rzmre_ratio'] = 0
 
         # 取最新行
-        g_latest = g[g['trade_date'] == pd.Timestamp(latest)]
+        g_latest = g.iloc[[-1]]
         if not g_latest.empty:
             results.append(g_latest)
+
+    if not results:
+        return pd.DataFrame()
+
+    result = pd.concat(results, ignore_index=True)
 
     if not results:
         return pd.DataFrame()
@@ -671,8 +756,9 @@ def _build_features_for_stocks_v6_2(conn, ts_codes, as_of_date=None):
                ma5, ma10, ma20, rps_20, low_52w, high_52w
         FROM daily_price WHERE ts_code IN ({placeholders})
         AND trade_date >= DATE_SUB(%s, INTERVAL {HISTORY_DAYS} DAY)
+        AND trade_date < %s
         ORDER BY ts_code, trade_date
-    """, conn, params=(*ts_codes, latest))
+    """, conn, params=(*ts_codes, latest, latest))
     for c in ['open', 'high', 'low', 'close', 'pre_close', 'pct_chg', 'turnover_rate',
               'volume_ratio', 'vol', 'amount', 'ma5', 'ma10', 'ma20', 'rps_20', 'low_52w', 'high_52w']:
         df[c] = pd.to_numeric(df[c], errors='coerce')
@@ -683,7 +769,8 @@ def _build_features_for_stocks_v6_2(conn, ts_codes, as_of_date=None):
                buy_sm_amount, sell_sm_amount, buy_lg_amount, sell_lg_amount
         FROM moneyflow_daily WHERE ts_code IN ({placeholders})
         AND trade_date >= DATE_SUB(%s, INTERVAL {HISTORY_DAYS} DAY)
-    """, conn, params=(*ts_codes, latest))
+        AND trade_date < %s
+    """, conn, params=(*ts_codes, latest, latest))
     for c in ['main_net', 'net_mf_amount', 'buy_sm_amount', 'sell_sm_amount',
               'buy_lg_amount', 'sell_lg_amount']:
         if c in moneyflow.columns:
@@ -691,10 +778,13 @@ def _build_features_for_stocks_v6_2(conn, ts_codes, as_of_date=None):
 
     # 基本面（当日数据）
     fundamentals = pd.read_sql(f"""
-        SELECT ts_code, pe_ttm, pb, total_mv, circ_mv
+        SELECT ts_code, trade_date, pe_ttm, pb, total_mv, circ_mv
         FROM daily_basic WHERE ts_code IN ({placeholders})
-        AND trade_date = %s
-    """, conn, params=(*ts_codes, latest))
+        AND trade_date < %s
+        AND trade_date >= DATE_SUB(%s, INTERVAL 30 DAY)
+    """, conn, params=(*ts_codes, latest, latest))
+    if not fundamentals.empty:
+        fundamentals = fundamentals.sort_values('trade_date').groupby('ts_code').last().reset_index()
     for c in ['pe_ttm', 'pb', 'total_mv', 'circ_mv']:
         if c in fundamentals.columns:
             fundamentals[c] = pd.to_numeric(fundamentals[c], errors='coerce')
@@ -721,7 +811,8 @@ def _build_features_for_stocks_v6_2(conn, ts_codes, as_of_date=None):
         SELECT ts_code, trade_date, net_buy
         FROM dragon_tiger WHERE ts_code IN ({placeholders})
         AND trade_date >= DATE_SUB(%s, INTERVAL 60 DAY)
-    """, conn, params=(*ts_codes, latest))
+        AND trade_date < %s
+    """, conn, params=(*ts_codes, latest, latest))
     if not dt_all.empty:
         dt_all['trade_date'] = pd.to_datetime(dt_all['trade_date'])
         dt_all['net_buy'] = pd.to_numeric(dt_all['net_buy'], errors='coerce').fillna(0)
@@ -731,8 +822,9 @@ def _build_features_for_stocks_v6_2(conn, ts_codes, as_of_date=None):
         SELECT ts_code, trade_date, net_buy
         FROM dragon_tiger_inst WHERE ts_code IN ({placeholders})
         AND trade_date >= DATE_SUB(%s, INTERVAL 60 DAY)
+        AND trade_date < %s
         AND (exalter LIKE '%%机构%%' OR exalter LIKE '%%专用%%')
-    """, conn, params=(*ts_codes, latest))
+    """, conn, params=(*ts_codes, latest, latest))
     if not dti_all.empty:
         dti_all['trade_date'] = pd.to_datetime(dti_all['trade_date'])
         dti_all['net_buy'] = pd.to_numeric(dti_all['net_buy'], errors='coerce').fillna(0)
@@ -742,8 +834,9 @@ def _build_features_for_stocks_v6_2(conn, ts_codes, as_of_date=None):
         SELECT ts_code, end_date, holder_num_change, holder_change_pct
         FROM holder_change WHERE ts_code IN ({placeholders})
         AND end_date >= DATE_SUB(%s, INTERVAL 180 DAY)
+        AND end_date < %s
         ORDER BY ts_code, end_date
-    """, conn, params=(*ts_codes, latest))
+    """, conn, params=(*ts_codes, latest, latest))
     if not hc_all.empty:
         hc_all['end_date'] = pd.to_datetime(hc_all['end_date'])
         for c in ['holder_num_change', 'holder_change_pct']:
@@ -863,8 +956,8 @@ def _build_features_for_stocks_v6_2(conn, ts_codes, as_of_date=None):
         try:
             margin_df = pd.read_sql("""
                 SELECT trade_date, rzye, rqye, rzmre FROM margin_daily
-                WHERE ts_code = %s ORDER BY trade_date
-            """, conn, params=(ts_code,))
+                WHERE ts_code = %s AND trade_date < %s ORDER BY trade_date
+            """, conn, params=(ts_code, latest))
             if not margin_df.empty:
                 margin_df['trade_date'] = pd.to_datetime(margin_df['trade_date'])
                 for c in ['rzye', 'rqye', 'rzmre']:
@@ -962,7 +1055,7 @@ def _build_features_for_stocks_v6_2(conn, ts_codes, as_of_date=None):
         g['ln_circ_mv'] = np.nan
 
         # 取最新行
-        g_latest = g[g['trade_date'] == pd.Timestamp(latest)]
+        g_latest = g.iloc[[-1]]
         if not g_latest.empty:
             results.append(g_latest)
 
@@ -1050,7 +1143,10 @@ def _build_features_for_stocks_v6_2(conn, ts_codes, as_of_date=None):
 
 
 def _ensemble_predict(feat_df, bundle):
-    """集成模型预测：所有子模型取均值"""
+    """集成模型预测：支持 dict/list 两种模型结构，支持加权融合"""
+    import xgboost as xgb
+    import lightgbm as lgb
+
     feature_cols = bundle['feature_cols']
     medians = bundle.get('global_medians', {})
     for col in feature_cols:
@@ -1061,10 +1157,101 @@ def _ensemble_predict(feat_df, bundle):
     X = feat_df[feature_cols].values.astype(np.float32)
 
     models = bundle['models']
-    preds = np.zeros((len(X), len(models)))
-    for i, model in enumerate(models):
-        preds[:, i] = model.predict(X)
-    return np.mean(preds, axis=1)
+    weights = bundle.get('ensemble_weights', None)
+
+    if isinstance(models, dict):
+        # V10.0+ 风格：dict of models, 支持加权
+        preds = np.zeros(len(X))
+        weight_sum = 0.0
+        for name, m_list in models.items():
+            w = 1.0
+            if weights is not None:
+                w = weights.get(name, 0.0)
+                if w <= 0:
+                    continue
+
+            if isinstance(m_list, dict):
+                cols = m_list.get('feature_cols', feature_cols)
+                sub_X = feat_df[cols].values.astype(np.float32)
+                m = m_list['model']
+                if hasattr(m, '_Booster') or 'xgboost' in type(m).__module__:
+                    pred = m.predict(xgb.DMatrix(sub_X))
+                else:
+                    pred = m.predict(sub_X)
+            elif isinstance(m_list, list):
+                sub_preds = []
+                for m in m_list:
+                    if hasattr(m, '_Booster') or 'xgboost' in type(m).__module__:
+                        sub_preds.append(m.predict(xgb.DMatrix(X)))
+                    else:
+                        sub_preds.append(m.predict(X))
+                pred = np.mean(sub_preds, axis=0)
+            elif isinstance(m_list, (lgb.Booster, xgb.Booster)):
+                # V11.0 风格：raw Booster 对象（LambdaRank / XGBoost 回归）
+                if hasattr(m_list, '_Booster') or 'xgboost' in type(m_list).__module__:
+                    pred = m_list.predict(xgb.DMatrix(X))
+                else:
+                    pred = m_list.predict(X)
+            else:
+                logger.debug(f"跳过未知模型 {name}: {type(m_list).__name__}")
+                continue
+
+            preds += w * pred
+            weight_sum += w
+
+        if weight_sum > 0:
+            preds /= weight_sum
+        return preds
+    else:
+        # V8.0- 风格：list of boosters, 支持加权
+        w = None
+        if weights is not None:
+            w = np.array([weights.get(f'model_{i}', 1.0) for i in range(len(models))])
+        if w is not None and w.sum() > 0:
+            preds = np.zeros(len(X))
+            for i, model in enumerate(models):
+                if w[i] > 0:
+                    preds += w[i] * model.predict(X)
+            return preds / w.sum()
+        else:
+            preds = np.zeros((len(X), len(models)))
+            for i, model in enumerate(models):
+                preds[:, i] = model.predict(X)
+            return np.mean(preds, axis=1)
+
+
+def _ensemble_scores(feat_df, bundle):
+    """集成模型预测 + 后处理，返回 DataFrame（lh 方案）。
+
+    输出列: ml_score, z_score, probability, rank_pct
+    - ml_score: 子模型预测均值（LambdaRank 原始排序分数）
+    - z_score: 横截面 z-score 标准化
+    - probability: sigmoid(z_score * 1.5) 映射到 [0,1]
+    - rank_pct: 横截面百分位排名（值越小排名越高）
+    """
+    raw = _ensemble_predict(feat_df, bundle)
+    raw = np.asarray(raw, dtype=np.float64)
+
+    if len(raw) > 1:
+        z_scores = (raw - raw.mean()) / (raw.std() + 1e-9)
+    else:
+        z_scores = np.zeros_like(raw)
+
+    probabilities = 1 / (1 + np.exp(-z_scores * 1.5))
+    rank_pcts = _scores_to_percentile(-raw)
+
+    return pd.DataFrame({
+        "ml_score": raw,
+        "z_score": z_scores,
+        "probability": probabilities,
+        "rank_pct": rank_pcts,
+    }, index=feat_df.index)
+
+
+def _safe_last(series, default=0.0):
+    """安全获取 Series 最后一个非空值，空则返回 default"""
+    vals = series.dropna()
+    return vals.iloc[-1] if len(vals) > 0 else default
 
 
 def _scores_to_percentile(scores):
@@ -1111,6 +1298,7 @@ def _build_features_for_stocks_v6_3(conn, ts_codes, as_of_date=None):
 
     # 1. 涨停板特征 (zt_pool: seal_amount, open_count, last_board)
     try:
+        zt_as_of = as_of_date or datetime.now()
         zt_df = pd.read_sql(f"""
             SELECT ts_code, trade_date,
                    COALESCE(seal_amount, 0) as seal_amount,
@@ -1118,7 +1306,8 @@ def _build_features_for_stocks_v6_3(conn, ts_codes, as_of_date=None):
                    COALESCE(last_board, 0) as last_board
             FROM zt_pool WHERE ts_code IN ({placeholders})
             AND trade_date >= DATE_SUB(%s, INTERVAL 30 DAY)
-        """, conn, params=(*ts_codes, as_of_date or datetime.now()))
+            AND trade_date < %s
+        """, conn, params=(*ts_codes, zt_as_of, zt_as_of))
         if not zt_df.empty:
             zt_df['trade_date'] = pd.to_datetime(zt_df['trade_date'])
             for tc in result['ts_code'].unique():
@@ -1150,8 +1339,9 @@ def _build_features_for_stocks_v6_3(conn, ts_codes, as_of_date=None):
                 FROM board_industry_hist
                 WHERE board_code IN ({bc_placeholders})
                 AND trade_date >= DATE_SUB(%s, INTERVAL 25 DAY)
+                AND trade_date < %s
                 ORDER BY board_code, trade_date
-            """, conn, params=(*bcodes, as_of_date or datetime.now()))
+            """, conn, params=(*bcodes, as_of_date or datetime.now(), as_of_date or datetime.now()))
             if not ind_hist.empty:
                 ind_hist['trade_date'] = pd.to_datetime(ind_hist['trade_date'])
                 ind_hist = ind_hist.sort_values(['board_code', 'trade_date'])
@@ -1612,6 +1802,264 @@ def _build_features_for_stocks_v8_0(conn, ts_codes, as_of_date=None):
     return result
 
 
+def _build_features_for_stocks_v10_0(conn, ts_codes, as_of_date=None):
+    """
+    V10.0 特征构建 — V8.0 全部特征 + 26 个时序衍生特征
+
+    V10.0 新增特征分为三类：
+    A. 可从 V8.0 输出直接计算（无需历史数据）: 7 个
+    B. 需每日行情历史 SQL 计算（窗口/滚动）: 16 个
+    C. 需 Alpha 信号表: 3 个
+    """
+    import time
+    t0 = time.time()
+    logger = logging.getLogger(__name__)
+
+    result = _build_features_for_stocks_v8_0(conn, ts_codes, as_of_date=as_of_date)
+    if result.empty:
+        return result
+
+    trade_date_str = str(as_of_date)[:10] if as_of_date else datetime.now().strftime('%Y-%m-%d')
+
+    # ===== A. 从 V8.0 输出直接计算 =====
+    # money_flow_div_5d/10d
+    if 'main_cum5' in result.columns and 'chg_5d' in result.columns:
+        result['money_flow_div_5d'] = result['main_cum5'] - result['chg_5d']
+        result['money_flow_div_10d'] = (result.get('main_cum10', result['main_cum5'])
+                                        - result.get('chg_10d', result['chg_5d']))
+
+    # ma_fan_out
+    if all(c in result.columns for c in ['ma5', 'ma10', 'ma20', 'close']):
+        ma_std = np.std([result['ma5'].values, result['ma10'].values, result['ma20'].values], axis=0)
+        result['ma_fan_out'] = ma_std / result['close'].replace(0, np.nan)
+        result['ma_fan_out'] = result['ma_fan_out'].fillna(0)
+
+    # limit_proximity: 从 pos_52w 反推
+    if 'pos_52w' in result.columns:
+        result['limit_proximity'] = (result['pos_52w'] - 1).clip(-0.1, 0)
+
+    # range_ratio_20d, close_to_high_ratio, price_channel_pos
+    if all(c in result.columns for c in ['close', 'high_20d', 'low_20d']):
+        h20 = result['high_20d'].replace(0, np.nan)
+        l20 = result['low_20d']
+        result['range_ratio_20d'] = (h20 - l20) / result['close'].replace(0, np.nan)
+        denom = (h20 - l20).replace(0, np.nan)
+        result['close_to_high_ratio'] = (result['close'] - l20) / denom
+        result['price_channel_pos'] = result['close_to_high_ratio']
+        result[['range_ratio_20d', 'close_to_high_ratio', 'price_channel_pos']] = \
+            result[['range_ratio_20d', 'close_to_high_ratio', 'price_channel_pos']].fillna(0.5)
+
+    # ===== B. 需历史数据：提取过去交易日数据计算时序特征 =====
+    placeholders = ','.join(['%s'] * len(ts_codes))
+    lookback = trade_date_str
+
+    try:
+        hist = pd.read_sql(f"""
+            SELECT ts_code, trade_date, `open`, `close`, `high`, `low`, `pre_close`,
+                   pct_chg, vol, amount, turnover_rate, volume_ratio
+            FROM daily_price
+            WHERE ts_code IN ({placeholders})
+              AND trade_date < %s
+              AND trade_date >= DATE_SUB(%s, INTERVAL 80 DAY)
+            ORDER BY ts_code, trade_date
+        """, conn, params=(*ts_codes, lookback, lookback))
+
+        mf = pd.read_sql(f"""
+            SELECT ts_code, trade_date, main_net
+            FROM moneyflow_daily
+            WHERE ts_code IN ({placeholders})
+              AND trade_date < %s
+              AND trade_date >= DATE_SUB(%s, INTERVAL 80 DAY)
+            ORDER BY ts_code, trade_date
+        """, conn, params=(*ts_codes, lookback, lookback))
+
+        try:
+            alpha = pd.read_sql(f"""
+                SELECT ts_code, signal_date, max_boost
+                FROM alpha_signals
+                WHERE signal_date <= %s
+                  AND signal_date >= DATE_SUB(%s, INTERVAL 30 DAY)
+                ORDER BY ts_code, signal_date
+            """, conn, params=(lookback, lookback))
+        except Exception:
+            alpha = pd.DataFrame()
+
+        # 合并资金流
+        if not mf.empty:
+            hist = hist.merge(mf, on=['ts_code', 'trade_date'], how='left')
+
+        # 按股票分组计算时序特征
+        feature_dfs = []
+        for ts_code, grp in hist.groupby('ts_code'):
+            grp = grp.sort_values('trade_date').reset_index(drop=True)
+
+            grp['chg_5d'] = grp['pct_chg'].rolling(5).sum()
+            grp['chg_10d'] = grp['pct_chg'].rolling(10).sum()
+            grp['vol_5d'] = grp['vol'].rolling(5).mean()
+            grp['vol_20d'] = grp['vol'].rolling(20).mean()
+
+            # 资金流派生
+            if 'main_net' in grp.columns and grp['main_net'].notna().sum() > 5:
+                grp['amount_est'] = grp['vol'] * grp['close'] * 100
+                grp['main_net_ratio'] = grp['main_net'] / grp['amount_est'].replace(0, np.nan)
+                grp['main_net_ma5'] = grp['main_net_ratio'].rolling(5).mean()
+                grp['main_net_ma10'] = grp['main_net_ratio'].rolling(10).mean()
+                grp['main_cum5'] = grp['main_net_ratio'].rolling(5).sum()
+                grp['main_cum10'] = grp['main_net_ratio'].rolling(10).sum()
+            else:
+                for c in ['main_net_ratio', 'main_net_ma5', 'main_net_ma10', 'main_cum5', 'main_cum10']:
+                    grp[c] = 0
+
+            grp['gap_ratio'] = (grp['open'] - grp['pre_close']) / grp['pre_close'].replace(0, np.nan)
+            grp['high_52w'] = grp['close'].rolling(250).max()
+            grp['low_60d'] = grp['close'].rolling(60).min()
+            grp['high_60d'] = grp['close'].rolling(60).max()
+
+            delta = grp['close'].diff()
+            gain = delta.where(delta > 0, 0).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            grp['rsi_14'] = 100 - (100 / (1 + gain / loss.replace(0, np.nan)))
+
+            # MACD 近似
+            ema12 = grp['close'].ewm(span=12, adjust=False).mean()
+            ema26 = grp['close'].ewm(span=26, adjust=False).mean()
+            macd_diff = ema12 - ema26
+            macd_signal = macd_diff.ewm(span=9, adjust=False).mean()
+            grp['macd_hist'] = (macd_diff - macd_signal) / grp['close']
+
+            # ---- 计算 V10.0 特征 ----
+            pct = grp['pct_chg']
+            out = {'ts_code': ts_code}
+
+            out['mom_accel_5d'] = _safe_last(grp['chg_5d'] - grp['chg_5d'].shift(5), 0)
+            out['mom_accel_10d'] = _safe_last(grp['chg_10d'] - grp['chg_10d'].shift(10), 0)
+            out['vol_regime_change'] = _safe_last(grp['vol_20d'] / grp['vol_20d'].shift(20).replace(0, np.nan) - 1, 0)
+            out['vol_clustering_10d'] = _safe_last((grp['vol_5d'] > grp['vol_5d'].rolling(20).mean()).rolling(10).mean(), 0)
+            out['vol_mean_revert'] = _safe_last(
+                (grp['vol_20d'] - grp['vol_20d'].rolling(60).mean()) / grp['vol_20d'].rolling(60).std().replace(0, np.nan), 0)
+            out['turnover_accel'] = _safe_last(
+                (grp['turnover_rate'] / grp['turnover_rate'].rolling(20).mean().replace(0, np.nan)).diff(5), 0)
+            out['flow_accel_5d'] = _safe_last(grp['main_net_ma5'].diff(5), 0)
+            pos_rets = pct.clip(lower=0)
+            neg_rets = pct.clip(upper=0)
+            out['ret_asymmetry'] = _safe_last(
+                pos_rets.rolling(20).mean() / (neg_rets.rolling(20).mean().abs() + 1e-9), 1.0)
+            out['ret_autocorr_5d'] = pct.rolling(5).apply(
+                lambda x: x.autocorr() if len(x.dropna()) > 2 else 0).iloc[-1] if len(grp) > 5 else 0
+            out['gap_trend_10d'] = _safe_last((grp['gap_ratio'] > 0).rolling(10).mean(), 0.5)
+            ma5 = grp['close'].rolling(5).mean()
+            ma10 = grp['close'].rolling(10).mean()
+            ma_cross = (ma5 > ma10).astype(int)
+            out['ma_cross_signal'] = _safe_last(ma_cross - ma_cross.shift(5).fillna(0).astype(int), 0)
+            out['rsi_momentum'] = _safe_last(grp['rsi_14'] - grp['rsi_14'].shift(5), 0)
+            out['macd_cross_accel'] = _safe_last(grp['macd_hist'].diff(3), 0)
+            out['sharp_up_days'] = _safe_last((pct > 3.0).rolling(20).sum(), 0)
+            out['sharp_down_days'] = _safe_last((pct < -3.0).rolling(20).sum(), 0)
+            out['limit_proximity'] = _safe_last(
+                (grp['close'] / grp['high_52w'].replace(0, np.nan) - 1).clip(-0.1, 0), 0)
+            out['price_channel_pos'] = _safe_last(
+                (grp['close'] - grp['low_60d']) / (grp['high_60d'] - grp['low_60d'] + 1e-9), 0.5)
+
+            # vol_price_div_trend: 量价关系趋势
+            if len(grp) >= 10:
+                x_arr = np.arange(10)
+                vs = grp['vol'].iloc[-10:].values
+                ps = pct.iloc[-10:].values
+                valid = ~(np.isnan(vs) | np.isnan(ps))
+                if valid.sum() > 2:
+                    out['vol_price_div_trend'] = float(np.polyfit(x_arr[valid], ps[valid] * np.nanmean(vs), 1)[0])
+                else:
+                    out['vol_price_div_trend'] = 0
+            else:
+                out['vol_price_div_trend'] = 0
+
+            feature_dfs.append(out)
+
+        if feature_dfs:
+            v10_feats = pd.DataFrame(feature_dfs)
+            for col in v10_feats.columns:
+                if col != 'ts_code':
+                    v10_feats[col] = v10_feats[col].fillna(0).replace([np.inf, -np.inf], 0)
+            result = result.merge(v10_feats, on='ts_code', how='left')
+
+        # ===== C. Alpha 信号特征 =====
+        if not alpha.empty:
+            alpha = alpha.sort_values('signal_date')
+            alpha_pos = alpha.groupby('ts_code').apply(
+                lambda g: pd.Series({
+                    'alpha_pos_5d': g['max_boost'].clip(lower=0).rolling(5, min_periods=1).sum().iloc[-1],
+                    'alpha_neg_5d': g['max_boost'].clip(upper=0).abs().rolling(5, min_periods=1).sum().iloc[-1],
+                }), include_groups=False
+            ).reset_index()
+            result = result.merge(alpha_pos, on='ts_code', how='left')
+
+    except Exception as e:
+        logger.warning(f"V10.0 特征计算失败: {e}")
+        import traceback
+        logger.warning(traceback.format_exc())
+
+    # 确保所有 V10.0 特征列存在
+    v10_cols = [
+        'mom_accel_5d', 'mom_accel_10d',
+        'vol_regime_change', 'vol_clustering_10d', 'vol_mean_revert',
+        'vol_price_div_trend', 'turnover_accel',
+        'money_flow_div_5d', 'money_flow_div_10d', 'flow_accel_5d',
+        'ret_asymmetry', 'ret_autocorr_5d',
+        'gap_trend_10d', 'limit_proximity', 'price_channel_pos',
+        'ma_fan_out', 'ma_cross_signal', 'rsi_momentum', 'macd_cross_accel',
+        'sharp_up_days', 'sharp_down_days',
+        'range_ratio_20d', 'close_to_high_ratio',
+        'alpha_pos_5d', 'alpha_neg_5d',
+    ]
+    for col in v10_cols:
+        if col not in result.columns:
+            result[col] = 0.0
+
+    elapsed = time.time() - t0
+    logger.info(f"V10.0 特征构建完成: {result.shape}, 耗时 {elapsed:.1f}s")
+    return result
+
+
+def _build_features_for_stocks_v8_6(conn, ts_codes, as_of_date=None):
+    """V8.6 特征构建 — V6 核心特征 (52 base + 10 rank = 62 总特征)"""
+    result = _build_features_for_stocks_v6_3(conn, ts_codes, as_of_date=as_of_date)
+    if result.empty:
+        return result
+    # V8.6 uses only V6 base features + 10 core rank features
+    v86_features = [
+        'pct_chg', 'turnover_rate', 'volume_ratio', 'vol_5d', 'vol_10d', 'vol_20d',
+        'ma5_ma10_ratio', 'ma10_ma20_ratio', 'price_ma5_ratio', 'price_ma20_ratio',
+        'chg_3d', 'chg_5d', 'chg_10d', 'chg_20d', 'vol_trend', 'pos_52w',
+        'rps_20', 'rps_change', 'up_ratio_5d', 'up_ratio_10d', 'vol_pct_corr',
+        'ma_pattern', 'macd_diff', 'macd_signal_line', 'macd_hist',
+        'rsi_14', 'adx_14',
+        'main_net_ratio', 'main_net_ma5', 'main_net_ma10', 'main_trend',
+        'main_streak', 'main_vs_retail', 'lg_ratio', 'main_cum5', 'main_cum10',
+        'main_accel_3d', 'smart_div_count', 'main_inflow_ratio', 'main_flow_accel',
+        'vol_price_corr_10d', 'gap_ratio', 'gap_retention', 'amihud', 'amihud_ma5',
+        'vol_price_divergence', 'vol_price_div_10d', 'ma_spread_stock',
+        'rzye_chg', 'rzmre_ratio', 'ind_mom_5d', 'ind_mom_20d',
+        'pct_chg_rank', 'turnover_rate_rank', 'volume_ratio_rank', 'rps_20_rank',
+        'lg_ratio_rank', 'main_net_ratio_rank', 'pos_52w_rank',
+        'chg_5d_rank', 'chg_10d_rank', 'main_cum5_rank',
+    ]
+    keep = [f for f in ['ts_code'] + v86_features if f in result.columns]
+    result = result[keep]
+    return result
+
+
+def _build_features_for_stocks_v9_0(conn, ts_codes, as_of_date=None):
+    """V9.0 特征构建 — 复用 V8.0 构建器，移除所有 _rank 横截面排名特征"""
+    result = _build_features_for_stocks_v8_0(conn, ts_codes, as_of_date=as_of_date)
+    if result.empty:
+        return result
+    # V9.0: 移除所有 rank 特征（训练时已排除）
+    rank_cols = [c for c in result.columns if c.endswith('_rank')]
+    if rank_cols:
+        result = result.drop(columns=rank_cols)
+    return result
+
+
 def predict_batch(ts_codes, db_conn=None, as_of_date=None):
     """批量预测 — 自动选择最佳可用模型"""
     bundle, version = _load_best_model()
@@ -1623,7 +2071,14 @@ def predict_batch(ts_codes, db_conn=None, as_of_date=None):
         db_conn = engine.connect()
         should_close = True
     try:
-        if version == "v8.0":
+        if version == "v11.0":
+            from scripts.predict_v11 import build_features_v11_inference
+            feat_df = build_features_v11_inference(db_conn, ts_codes, as_of_date=as_of_date)
+        elif version == "v10.0":
+            feat_df = _build_features_for_stocks_v8_0(db_conn, ts_codes, as_of_date=as_of_date)
+        elif version == "v9.0":
+            feat_df = _build_features_for_stocks_v9_0(db_conn, ts_codes, as_of_date=as_of_date)
+        elif version in ("v8.1", "v8.6", "v8.0"):
             feat_df = _build_features_for_stocks_v8_0(db_conn, ts_codes, as_of_date=as_of_date)
         elif version in ("v6.7", "v6.6"):
             feat_df = _build_features_for_stocks_v6_6(db_conn, ts_codes, as_of_date=as_of_date)
@@ -1638,8 +2093,8 @@ def predict_batch(ts_codes, db_conn=None, as_of_date=None):
         if feat_df.empty:
             return {c: {'probability': 0.5, 'is_likely_up': False, 'predicted_return': 0, 'model_type': 'no_data'} for c in ts_codes}
 
-        if version in ("v8.0", "v6.7", "v6.6", "v6.5", "v6.4", "v6.2", "v6.3") and 'models' in bundle:
-            pred_returns = _ensemble_predict(feat_df, bundle)
+        if version in ("v11.0", "v8.1", "v10.0", "v8.6", "v9.0", "v8.0", "v6.7", "v6.6", "v6.5", "v6.4", "v6.2", "v6.3") and 'models' in bundle:
+            scores_df = _ensemble_scores(feat_df, bundle)
         else:
             feature_cols = bundle['feature_cols']
             medians = bundle.get('global_medians', {})
@@ -1650,29 +2105,20 @@ def predict_batch(ts_codes, db_conn=None, as_of_date=None):
                     feat_df[col] = feat_df[col].fillna(medians.get(col, 0.0))
             X = feat_df[feature_cols].values.astype(np.float32)
             pred_returns = bundle['model'].predict(X)
-
-        # LambdaRank 输出排序分数（无绝对标度），做 z-score 标准化再显示
-        if len(pred_returns) > 1:
-            pred_mean = np.mean(pred_returns)
-            pred_std = np.std(pred_returns) + 1e-9
-            pred_z = (pred_returns - pred_mean) / pred_std
-        else:
-            pred_z = np.zeros_like(pred_returns)  # N=1 时 rank 特征异常，退回中性
+            feat_df["__raw__"] = pred_returns
+            scores_df = _ensemble_scores(feat_df, bundle)
 
         results = {}
-        for i, (_, row) in enumerate(feat_df.iterrows()):
-            code = row['ts_code']
-            z_score = float(pred_z[i])
-            # is_likely_up: z-score > 0 意味着跑赢批次中位数
-            is_up = z_score > 0
-            # 概率映射：sigmoid(z_score * 1.5)，z=0→0.5, z=1→0.82, z=-1→0.18
-            prob = round(float(1 / (1 + np.exp(-z_score * 1.5))), 3)
-            # predicted_return 显示为 z-score（无量纲的排序强度）
-            display_ret = round(z_score, 2)
+        for idx, row in scores_df.iterrows():
+            code = str(idx)
+            if code in feat_df.index and 'ts_code' in feat_df.columns:
+                code = str(feat_df.loc[code, 'ts_code'])
+            z_score = float(row['z_score'])
+            prob = round(float(row['probability']), 3)
             results[code] = {
                 'probability': prob,
-                'predicted_return': display_ret,
-                'is_likely_up': is_up,
+                'predicted_return': round(z_score, 2),
+                'is_likely_up': z_score > 0,
                 'model_type': version,
                 'model_task': 'lambdarank',
             }
@@ -1683,7 +2129,7 @@ def predict_batch(ts_codes, db_conn=None, as_of_date=None):
             _last_scan_results = {
                 tc: {
                     'ml概率': float(r['probability']),
-                    '预测收益': float(r['predicted_return']),
+                    '排序强度': float(r['predicted_return']),
                     'ml看涨': bool(r['is_likely_up']),
                     '模型名称': model_label,
                 }
@@ -1754,11 +2200,11 @@ def ml_enhanced_score(stocks_list, db_conn=None):
         # ML 重排：predicted_return 为主排序依据，板块加分和资金流做微调
         enhanced = pred_ret * 10 + sector_bonus + flow['score']
         s['ml概率'] = round(prob, 3); s['ml看涨'] = is_up; s['增强评分'] = round(enhanced, 1)
-        s['预测收益'] = round(pred_ret, 2); s['热点板块'] = sector_name
+        s['排序强度'] = round(pred_ret, 2); s['热点板块'] = sector_name
         s['资金趋势'] = flow['trend']; s['资金连续'] = flow['continuous_inflow']
         s['市场状态'] = f'{model_label}'
         scan_cache[ts_code] = {
-            'ml概率': round(prob, 3), '预测收益': round(pred_ret, 2),
+            'ml概率': round(prob, 3), '排序强度': round(pred_ret, 2),
             'ml看涨': is_up, '资金趋势': flow['trend'],
             '模型名称': model_label,
         }

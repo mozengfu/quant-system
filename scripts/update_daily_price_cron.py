@@ -259,7 +259,7 @@ def update_rps_20():
     log(f"更新 rps_20 完成: {len(update_data)} 只（百分位排名）")
 
 def update_ma():
-    """更新当日MA均线"""
+    """更新当日MA均线（窗口函数批量计算，替代逐股N+1查询）"""
     log("=== 更新 MA均线 ===")
     latest = get_latest_trade_date()
     if not latest:
@@ -267,29 +267,36 @@ def update_ma():
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT DISTINCT ts_code FROM quant_db.daily_price WHERE trade_date = %s", [latest])
-    stocks = [r[0] for r in cur.fetchall()]
-
-    for ts_code in stocks:
-        try:
-            for n in [5, 10, 20]:
-                cur.execute(f"""
-                    SELECT close FROM quant_db.daily_price
-                    WHERE ts_code=%s AND trade_date <= %s
-                    ORDER BY trade_date DESC LIMIT {n}
-                """, [ts_code, latest])
-                rows = cur.fetchall()
-                if len(rows) == n:
-                    ma = sum(r[0] for r in rows) / n
-                    cur.execute(f"""
-                        UPDATE quant_db.daily_price SET ma{n}=%s
-                        WHERE ts_code=%s AND trade_date=%s
-                    """, [ma, ts_code, latest])
-        except Exception as _e:
-            print(f"Error in update_daily_price_cron.py: {_e}")
-    cur.close()
-    conn.close()
-    log(f"MA更新完成")
+    try:
+        cur.execute("""
+            UPDATE quant_db.daily_price d
+            JOIN (
+                SELECT ts_code, trade_date,
+                       AVG(close) OVER (
+                           PARTITION BY ts_code ORDER BY trade_date
+                           ROWS BETWEEN 4 PRECEDING AND CURRENT ROW
+                       ) AS ma5,
+                       AVG(close) OVER (
+                           PARTITION BY ts_code ORDER BY trade_date
+                           ROWS BETWEEN 9 PRECEDING AND CURRENT ROW
+                       ) AS ma10,
+                       AVG(close) OVER (
+                           PARTITION BY ts_code ORDER BY trade_date
+                           ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
+                       ) AS ma20
+                FROM quant_db.daily_price
+                WHERE trade_date <= %s
+            ) calc ON d.ts_code = calc.ts_code AND d.trade_date = calc.trade_date
+            SET d.ma5 = calc.ma5, d.ma10 = calc.ma10, d.ma20 = calc.ma20
+            WHERE d.trade_date = %s
+        """, [latest, latest])
+        conn.commit()
+        log(f"MA均线批量更新完成，影响行数: {cur.rowcount}")
+    except Exception as e:
+        log(f"MA更新失败: {e}")
+    finally:
+        cur.close()
+        conn.close()
 
 def update_stock_pool():
     """更新强势股票池到MySQL stock_pool_snap表"""
@@ -411,15 +418,16 @@ def update_positions():
     if not positions:
         return
 
+    latest = get_latest_trade_date()
+    if not latest:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+
     for pos in positions:
         code = pos.get("code", "")
         market = "sz" if code.startswith(("00", "30")) else "sh"
         ts_code = f"{code}.{'SZ' if market == 'sz' else 'SH'}"
-        latest = get_latest_trade_date()
-        if not latest:
-            continue
-        conn = get_conn()
-        cur = conn.cursor()
         try:
             cur.execute("SELECT close FROM quant_db.daily_price WHERE ts_code=%s AND trade_date=%s", [ts_code, latest])
             row = cur.fetchone()
@@ -430,10 +438,11 @@ def update_positions():
                     pos["当前价"] = current_price
                     pos["浮盈金额"] = round((current_price - cost) * int(pos.get("数量", 0)), 2)
                     pos["浮盈比例"] = round((current_price / cost - 1) * 100, 2)
-        except Exception as _e:
-            print(f"Error in update_daily_price_cron.py: {_e}")
-        cur.close()
-        conn.close()
+        except Exception as e:
+            log(f"持仓更新失败 {ts_code}: {e}")
+
+    cur.close()
+    conn.close()
 
     with open(positions_file, "w", encoding="utf-8") as f:
         json.dump({"positions": positions}, f, ensure_ascii=False, indent=2)
@@ -481,7 +490,7 @@ def update_bottom_pool(latest_date):
             SELECT d.ts_code, s.name, s.industry,
                    d.close, d.pct_chg,
                    d.turnover_rate, d.volume_ratio,
-                   d.ma5, d.ma10, d.ma20
+                   d.ma5, d.ma10, d.ma20, d.rps_20
             FROM quant_db.daily_price d
             JOIN quant_db.stock_info s ON d.ts_code = s.ts_code COLLATE utf8mb4_unicode_ci
             WHERE d.trade_date = %s
@@ -503,23 +512,12 @@ def update_bottom_pool(latest_date):
         for r in rows:
             ts_code = r[0]
             ma5, ma10, ma20 = float(r[7] or 0), float(r[8] or 0), float(r[9] or 0)
-            # 底部策略：均线多头排列 + MACD金叉附近 + 涨幅适中
+            rps20 = float(r[10] or 0) if r[10] else 0
             reasons = []
             if ma5 > ma10 > ma20 and float(r[3]) > ma5:
                 reasons.append("均线多头")
-            # RPS20 中等（30-60 区间）
-            try:
-                cur2 = get_conn().cursor()
-                cur2.execute("SELECT rps_20 FROM quant_db.daily_price WHERE ts_code=%s AND trade_date=%s", (ts_code, str(latest_date)))
-                rps_row = cur2.fetchone()
-                cur2.close()
-                get_conn().close()
-                if rps_row and rps_row[0]:
-                    rps20 = float(rps_row[0])
-                    if 30 <= rps20 <= 60:
-                        reasons.append(f"RPS={int(rps20)}")
-            except Exception as _e:
-                print(f"Error in update_daily_price_cron.py: {_e}")
+            if 30 <= rps20 <= 60:
+                reasons.append(f"RPS={int(rps20)}")
             if reasons:
                 code = ts_code.split(".")[0]
                 mkt = "sz" if ts_code.endswith(".SZ") else "sh"

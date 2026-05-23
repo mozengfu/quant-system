@@ -2,7 +2,7 @@
 """
 实时行情 API 封装模块 — 三级备选：阿里云 → 东方财富 → 腾讯
 """
-import os, json, logging, ssl
+import os, json, logging
 from urllib.request import urlopen, Request as UrlRequest
 from urllib.error import URLError
 
@@ -11,17 +11,13 @@ logger = logging.getLogger(__name__)
 ALIYUN_HOST = "http://alirmcom2.market.alicloudapi.com"
 ALIYUN_CODE = os.environ.get('ALIBABA_APP_CODE', '')
 
-_SSL_CTX = ssl.create_default_context()
-_SSL_CTX.check_hostname = False
-_SSL_CTX.verify_mode = ssl.CERT_NONE
-
 
 def _try_aliyun(code, market):
     """阿里云实时行情"""
     try:
         url = f"{ALIYUN_HOST}/query/com?symbol={market}{code}"
         req = UrlRequest(url, headers={"Authorization": f"APPCODE {ALIYUN_CODE}"})
-        with urlopen(req, timeout=8, context=_SSL_CTX) as resp:
+        with urlopen(req, timeout=8) as resp:
             raw = json.loads(resp.read().decode())
             if raw.get("Code") != 0:
                 logger.warning(f"阿里云API返回错误: {raw.get('Message', '')}")
@@ -57,7 +53,7 @@ def _try_eastmoney(code, market):
 
     try:
         req = UrlRequest(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urlopen(req, timeout=8, context=_SSL_CTX) as resp:
+        with urlopen(req, timeout=8) as resp:
             raw = json.loads(resp.read().decode())
             d = raw.get("data")
             if not d:

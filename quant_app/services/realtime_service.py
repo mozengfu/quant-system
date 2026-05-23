@@ -4,16 +4,23 @@
 
 调用链: 内存缓存 → 腾讯(主) → 东财 → 阿里云(兜底)
 """
-import os, json, time, logging, re, sys, threading
+import json
+import logging
+import os
+import re
+import sys
+import threading
+import time
 from datetime import datetime
-from urllib.request import urlopen, Request as UrlRequest
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 
 # 确保直接运行时能找到 quant_app
 _pkg_dir = os.path.join(os.path.dirname(__file__), "..", "..")
 if _pkg_dir not in sys.path:
     sys.path.insert(0, os.path.abspath(_pkg_dir))
 
-from quant_app.utils.config import ALIYUN_HOST, ALIYUN_CODE, get_db_config
+from quant_app.utils.config import ALIYUN_CODE, ALIYUN_HOST, get_db_config
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +122,8 @@ def _try_tencent(code, market):
             "涨跌幅": float(parts[32]),
             "涨跌额": round(price - prev_close, 2),
         }
-    except Exception:
+    except Exception as e:
+        logger.warning(f"腾讯行情失败 {market}{code}: {e}")
         return None
 
 
@@ -146,7 +154,8 @@ def _try_eastmoney(code, market):
             "市值": float(d.get("f116", 0) or 0),
             "涨跌幅": pct, "涨跌额": round(price - prev_close, 2),
         }
-    except Exception:
+    except Exception as e:
+        logger.warning(f"东财行情失败 {market}{code}: {e}")
         return None
 
 
@@ -194,7 +203,8 @@ def _try_tencent_index(symbol):
         prev_close = float(p[4])
         return {"最新价": round(price, 2), "涨跌幅": float(p[32]),
                 "涨跌额": round(price - prev_close, 2), "昨日收盘": round(prev_close, 2)}
-    except Exception:
+    except Exception as e:
+        logger.warning(f"腾讯指数行情失败: {e}")
         return None
 
 
@@ -214,7 +224,8 @@ def _try_eastmoney_index(secid, fields):
         return {"最新价": round(price, 2), "涨跌幅": round(pct, 2),
                 "涨跌额": round(price - prev_close, 2), "成交量": d.get("f47", 0),
                 "昨日收盘": round(prev_close, 2)}
-    except Exception:
+    except Exception as e:
+        logger.warning(f"东财指数行情失败: {e}")
         return None
 
 
@@ -234,7 +245,8 @@ def _try_aliyun_index(acode):
         prev_close = float(o.get("YC", 0) or 0)
         return {"最新价": round(price, 2), "涨跌幅": float(o.get("ZF", 0) or 0),
                 "涨跌额": float(o.get("ZD", 0) or 0), "昨日收盘": round(prev_close, 2)}
-    except Exception:
+    except Exception as e:
+        logger.warning(f"阿里云指数行情失败: {e}")
         return None
 
 
@@ -291,7 +303,8 @@ def _fetch_sse_change():
             parts = m.group(1).split("~")
             if len(parts) >= 33:
                 return float(parts[32])
-    except Exception:
+    except Exception as e:
+        logger.warning(f"获取上证指数涨跌幅失败: {e}")
         pass
     return 0.0
 

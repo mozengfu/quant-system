@@ -1,16 +1,20 @@
-# -*- coding: utf-8 -*-
 """
 策略选股相关 API 路由 — 分析 / 情绪 / 板块
 """
-import os, json, time, logging, sys, math
-from datetime import datetime, timedelta
+import logging
 from pathlib import Path
-from fastapi import APIRouter, Cookie, Request as FastAPIRequest, HTTPException
-from fastapi.responses import JSONResponse
+
+from fastapi import APIRouter, Cookie, HTTPException
+from fastapi import Request as FastAPIRequest
+
 from app_core import (
-    analyze_stock, ALL_BLOCKS,
-    get_tushare_pro, get_recent_trade_dates,
-    get_current_user, save_access_log, get_client_ip,
+    ALL_BLOCKS,
+    analyze_stock,
+    get_client_ip,
+    get_current_user,
+    get_recent_trade_dates,
+    get_tushare_pro,
+    save_access_log,
 )
 
 logger = logging.getLogger(__name__)
@@ -24,7 +28,7 @@ router = APIRouter(tags=["strategy"])
 # ========== 个股分析 ==========
 
 @router.get("/api/analysis/{market}/{code}")
-async def analyze(market: str, code: str, request: FastAPIRequest, token: str = Cookie(None)):
+def analyze(market: str, code: str, request: FastAPIRequest, token: str = Cookie(None)):
     user = get_current_user(token)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
@@ -44,7 +48,7 @@ def _get_limit_pct(ts_code):
 
 
 @router.get("/api/sentiment")
-async def get_sentiment(token: str = Cookie(None)):
+def get_sentiment(token: str = Cookie(None)):
     """市场情绪接口 - 涨停/跌停/涨跌家数比"""
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")
@@ -89,7 +93,7 @@ async def get_sentiment(token: str = Cookie(None)):
 
 
 @router.get("/api/blocks")
-async def get_blocks(token: str = Cookie(None)):
+def get_blocks(token: str = Cookie(None)):
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")
     return {"blocks": ALL_BLOCKS}

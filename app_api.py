@@ -7,7 +7,6 @@ import sys
 import json
 import time
 import logging
-import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from fastapi import FastAPI, Request as FastAPIRequest, Cookie, HTTPException
@@ -15,8 +14,6 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
-import pandas as pd
 from quant_app.utils.config import get_db_config
 
 # 基础路径和日志
@@ -38,13 +35,10 @@ from app_core import (
     calculate_ema, calculate_macd, calculate_kdj, calculate_bollinger_bands, calculate_atr,
     # 深度技术选股
     scan_daily_pool_technical, scan_concept_trend, get_hot_concepts,
-    scan_daily_pool_bottom_breakout, scan_daily_pool_ma_pullback,
     # 买卖点
     get_stock_history_from_db, get_technical_buy_sell_signals,
     # 回测
     backtest_stock_enhanced, backtest_stock, backtest_stock_v4,
-    # 认证
-    load_users, save_users,
     get_client_ip, _classify_module, _write_log_mysql, save_access_log,
     # 追踪
     load_track_data, save_track_data, record_recommendation, update_stock_results,

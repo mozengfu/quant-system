@@ -3,14 +3,13 @@ JSON 文件持久化模块 - 统一管理所有 JSON 数据文件的读写操作
 提供线程安全锁防止并发写入损坏
 """
 import json
+import logging
 import os
-import time
 import tempfile
 import threading
+import time
 from datetime import datetime
-from pathlib import Path
 
-import logging
 logger = logging.getLogger(__name__)
 
 
@@ -31,8 +30,13 @@ def _atomic_json_dump(data, filepath, **kwargs):
         raise
 
 from quant_app.utils.config import (
-    USERS_FILE, SESSIONS_FILE, ACCESS_LOG_FILE, TRACK_FILE,
-    RESET_TOKENS_FILE, PENDING_USERS_FILE, SIGNALS_FILE, DATA_DIR,
+    ACCESS_LOG_FILE,
+    PENDING_USERS_FILE,
+    RESET_TOKENS_FILE,
+    SESSIONS_FILE,
+    SIGNALS_FILE,
+    TRACK_FILE,
+    USERS_FILE,
 )
 
 # 线程安全锁，防止多请求并发写入 JSON 文件导致数据损坏
@@ -45,7 +49,7 @@ def load_users():
     with _write_lock:
         if not USERS_FILE.exists():
             return {}
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
+        with open(USERS_FILE, encoding="utf-8") as f:
             return json.load(f)
 
 
@@ -58,16 +62,17 @@ def save_users(users):
 
 def _load_sessions():
     """加载 sessions.json，过期自动清理"""
-    try:
-        if SESSIONS_FILE.exists():
-            with open(SESSIONS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            now = time.time()
-            valid = {k: v for k, v in data.get("tokens", {}).items()
-                     if v.get("expires", 0) > now}
-            return valid
-    except Exception as e:
-        logger.warning(f"Sessions 加载失败: {e}")
+    with _write_lock:
+        try:
+            if SESSIONS_FILE.exists():
+                with open(SESSIONS_FILE, encoding="utf-8") as f:
+                    data = json.load(f)
+                now = time.time()
+                valid = {k: v for k, v in data.get("tokens", {}).items()
+                         if v.get("expires", 0) > now}
+                return valid
+        except Exception as e:
+            logger.warning("Sessions 加载失败: %s", e)
     return {}
 
 
@@ -77,7 +82,7 @@ def _save_sessions(tokens):
         with _write_lock:
             _atomic_json_dump({"tokens": tokens}, SESSIONS_FILE, indent=2)
     except Exception as e:
-        logger.warning(f"Sessions 保存失败: {e}")
+        logger.warning("Sessions 保存失败: %s", e)
 
 
 # ========== 访问日志 ==========
@@ -115,14 +120,8 @@ def _write_log_mysql(username, ip, action, module, timestamp_str):
     import pymysql
     conn = None
     try:
-        conn = pymysql.connect(
-            host=os.environ.get('MYSQL_HOST', 'localhost'),
-            port=int(os.environ.get('MYSQL_PORT', 3306)),
-            user=os.environ.get('MYSQL_USER', 'root'),
-            password=os.environ.get('MYSQL_PASSWORD', ''),
-            database=os.environ.get('MYSQL_DATABASE', 'quant_db'),
-            charset='utf8mb4'
-        )
+        from quant_app.utils.config import get_db_config
+        conn = pymysql.connect(**get_db_config())
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO system_logs (username, ip, action, module, timestamp) VALUES (%s, %s, %s, %s, %s)",
@@ -131,7 +130,7 @@ def _write_log_mysql(username, ip, action, module, timestamp_str):
         conn.commit()
         return True
     except Exception as e:
-        logger.warning(f"MySQL日志写入失败: {e}")
+        logger.warning("MySQL日志写入失败: %s", e)
         return False
     finally:
         if conn:
@@ -154,7 +153,7 @@ def save_access_log(username, ip="unknown", action="login"):
         }
         with _write_lock:
             if ACCESS_LOG_FILE.exists():
-                with open(ACCESS_LOG_FILE, "r", encoding="utf-8") as f:
+                with open(ACCESS_LOG_FILE, encoding="utf-8") as f:
                     logs = json.load(f)
             else:
                 logs = []
@@ -163,19 +162,20 @@ def save_access_log(username, ip="unknown", action="login"):
             ACCESS_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
             _atomic_json_dump(logs, ACCESS_LOG_FILE, indent=2)
     except Exception as e:
-        logger.warning(f"日志保存失败: {e}")
+        logger.warning("日志保存失败: %s", e)
 
 
 # ========== 追踪/推荐 ==========
 
 def load_track_data():
     """加载追踪数据"""
-    try:
-        if TRACK_FILE.exists():
-            with open(TRACK_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as e:
-        logger.warning(f"追踪数据加载失败: {e}")
+    with _write_lock:
+        try:
+            if TRACK_FILE.exists():
+                with open(TRACK_FILE, encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.warning("追踪数据加载失败: %s", e)
     return {"recommendations": [], "stats": {"total": 0, "total_recommendations": 0}}
 
 
@@ -185,7 +185,7 @@ def save_track_data(data):
         with _write_lock:
             _atomic_json_dump(data, TRACK_FILE, indent=2)
     except Exception as e:
-        logger.warning(f"追踪数据保存失败: {e}")
+        logger.warning("追踪数据保存失败: %s", e)
 
 
 def record_recommendation(stocks, strategy="C3.0 V3"):
@@ -225,9 +225,9 @@ def record_recommendation(stocks, strategy="C3.0 V3"):
         data["stats"]["total_recommendations"] = data["stats"].get("total_recommendations", 0) + len(stocks)
 
         save_track_data(data)
-        logger.info(f"已记录 {len(stocks)} 只推荐股票")
+        logger.info("已记录 %s 只推荐股票", len(stocks))
     except Exception as e:
-        logger.warning(f"记录推荐失败: {e}")
+        logger.warning("记录推荐失败: %s", e)
 
 
 TRACK_UPDATE_CACHE = {"last_update": 0, "cooldown": 300}  # 5分钟缓存
@@ -272,7 +272,7 @@ def update_stock_results():
     # 先算一遍已有数据的统计（不依赖冷却，每次进来都算）
     data = _recalc_track_stats(data)
 
-    data["stats"]["total_recommendations"] = data["stats"].get("total_recommendations", len(data.get("recommendations", [])))
+    data["stats"]["total_recommendations"] = data["stats"].get("total_recommendations", sum(len(r.get("stocks", [])) for r in data.get("recommendations", [])))
     save_track_data(data)
 
     now = time.time()
@@ -368,12 +368,12 @@ def update_stock_results():
 
         # 新数据更新后再算一次统计
         data = _recalc_track_stats(data)
-        data["stats"]["total_recommendations"] = data["stats"].get("total_recommendations", len(data.get("recommendations", [])))
+        data["stats"]["total_recommendations"] = data["stats"].get("total_recommendations", sum(len(r.get("stocks", [])) for r in data.get("recommendations", [])))
 
         save_track_data(data)
         TRACK_UPDATE_CACHE["last_update"] = time.time()
     except Exception as e:
-        logger.warning(f"更新结果失败: {e}")
+        logger.warning("更新结果失败: %s", e)
 
 
 # ========== 待审批用户 ==========
@@ -381,10 +381,10 @@ def update_stock_results():
 def load_pending_users():
     try:
         if PENDING_USERS_FILE.exists():
-            with open(PENDING_USERS_FILE, "r", encoding="utf-8") as f:
+            with open(PENDING_USERS_FILE, encoding="utf-8") as f:
                 return json.load(f)
     except Exception as e:
-        logger.warning(f"待审批用户加载失败: {e}")
+        logger.warning("待审批用户加载失败: %s", e)
     return {}
 
 
@@ -393,7 +393,7 @@ def save_pending_users(data):
         with _write_lock:
             _atomic_json_dump(data, PENDING_USERS_FILE, indent=2)
     except Exception as e:
-        logger.warning(f"待审批用户保存失败: {e}")
+        logger.warning("待审批用户保存失败: %s", e)
 
 
 # ========== 密码重置令牌 ==========
@@ -401,10 +401,10 @@ def save_pending_users(data):
 def load_reset_tokens():
     try:
         if RESET_TOKENS_FILE.exists():
-            with open(RESET_TOKENS_FILE, "r", encoding="utf-8") as f:
+            with open(RESET_TOKENS_FILE, encoding="utf-8") as f:
                 return json.load(f)
     except Exception as e:
-        logger.warning(f"重置令牌加载失败: {e}")
+        logger.warning("重置令牌加载失败: %s", e)
     return {}
 
 
@@ -430,7 +430,7 @@ def get_signals_path():
 
 def read_signals():
     try:
-        with open(SIGNALS_FILE, "r", encoding="utf-8") as f:
+        with open(SIGNALS_FILE, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {"signals": []}
@@ -482,5 +482,5 @@ def get_positions_data():
             })
         return mapped
     except Exception as e:
-        logger.warning(f"MySQL持仓读取失败: {e}")
+        logger.warning("MySQL持仓读取失败: %s", e)
         return []

@@ -1,14 +1,17 @@
-# -*- coding: utf-8 -*-
 """
 交易信号 CRUD API 路由
 """
-import os, json, time, logging, sys
-from datetime import datetime, timedelta
+import logging
+from datetime import datetime
 from pathlib import Path
-from fastapi import APIRouter, Cookie, Request as FastAPIRequest, HTTPException
+
+from fastapi import APIRouter, Cookie, HTTPException
+from fastapi import Request as FastAPIRequest
+
 from app_core import (
-    get_current_user, save_access_log, get_client_ip,
-    generate_order_id, add_to_positions, sync_positions,
+    add_to_positions,
+    get_current_user,
+    sync_positions,
 )
 from quant_app.utils.authz import require_admin
 
@@ -23,7 +26,7 @@ router = APIRouter(tags=["signals"])
 # ========== 交易信号 API ==========
 
 @router.get("/api/signals")
-async def signals(token: str = Cookie(None)):
+def signals(token: str = Cookie(None)):
     user = get_current_user(token)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
@@ -31,6 +34,7 @@ async def signals(token: str = Cookie(None)):
 
     try:
         import pymysql
+
         from quant_app.utils.config import get_db_config
         conn = pymysql.connect(**get_db_config())
         cursor = conn.cursor()
@@ -112,6 +116,7 @@ async def add_signal(req: FastAPIRequest, token: str = Cookie(None)):
         raise HTTPException(status_code=401, detail="未登录")
     try:
         import pymysql
+
         from quant_app.utils.config import get_db_config
         body = await req.json()
         code = body.get("code", "")
@@ -173,6 +178,7 @@ async def close_signal(sig_id: str, req: FastAPIRequest, token: str = Cookie(Non
         raise HTTPException(status_code=401, detail="未登录")
     try:
         import pymysql
+
         from quant_app.utils.config import get_db_config
         body = await req.json()
         close_price = float(body.get("close_price", 0))
@@ -208,12 +214,13 @@ async def close_signal(sig_id: str, req: FastAPIRequest, token: str = Cookie(Non
 
 
 @router.delete("/api/signals/{sig_id}")
-async def delete_signal(sig_id: str, token: str = Cookie(None)):
+def delete_signal(sig_id: str, token: str = Cookie(None)):
     user = get_current_user(token)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
     try:
         import pymysql
+
         from quant_app.utils.config import get_db_config
         conn = pymysql.connect(**get_db_config())
         cursor = conn.cursor()

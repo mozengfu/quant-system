@@ -40,7 +40,6 @@ from quant_app.services.strategy_service import (
     detect_macd_crossover,
     scan_daily_pool, strategy_scan,
     scan_daily_pool_technical, scan_concept_trend, get_hot_concepts,
-    scan_daily_pool_bottom_breakout, scan_daily_pool_ma_pullback,
 )
 
 # ========== 回测（从 backtest_service 导入） ==========
@@ -72,11 +71,8 @@ def generate_order_id():
 
 # ========== 认证和会话管理（供 API 层使用） ==========
 from quant_app.utils.persistence import (
-    load_users, save_users, _load_sessions, _save_sessions,
     get_client_ip, _classify_module, _write_log_mysql, save_access_log,
     load_track_data, save_track_data, record_recommendation, update_stock_results,
-    load_pending_users, save_pending_users,
-    save_reset_tokens, load_reset_tokens,
     get_signals_path, read_signals, write_signals,
     get_positions_data,
 )

@@ -2,14 +2,15 @@
 风控参数配置管理
 优先级链：市场状态参数 > risk_config.json > 代码默认值
 """
-import os, json
+import json
+import os
 
 
 def load_risk_config():
     """加载 risk_config.json"""
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "risk_config.json")
     if os.path.exists(path):
-        with open(path, 'r') as f:
+        with open(path) as f:
             return json.load(f)
     return {"circuit_breaker": {"max_drawdown_pct": -15, "enabled": True}}
 

@@ -41,6 +41,7 @@ logs/
 
 # 数据文件（根据需要排除）
 data/*.json
+data/*.parquet
 !data/.gitkeep
 
 # 备份
@@ -49,6 +50,21 @@ data/*.json
 
 # ML 模型文件（体积大，在服务器上训练生成）
 data/*.pkl
+data/*.joblib
+*.pkl
+*.joblib
+
+# SQLite 数据库
+*.db
+
+# 脚本输出数据
+scripts/data/
+
+# Claude Code 内部文件
+.claude/
+
+# 临时进度文件
+scripts/*progress.json
 
 # 备份目录
 static.backup_*/

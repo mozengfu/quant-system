@@ -48,6 +48,7 @@ ML_BLEND_WEIGHT = 0.40           # 混合评分中 ML 权重
 FEATURE_BUILDERS = {
     'v6.5': '_build_features_for_stocks_v6_3',
     'v8.0': '_build_features_for_stocks_v8_0',
+    'v8.1': '_build_features_for_stocks_v8_0',
 }
 
 
@@ -815,7 +816,7 @@ def run_tune():
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='V4+ML V6.5 vs V8.0 回测对比')
-    parser.add_argument('--model', choices=['v6.5', 'v8.0', 'all'],
+    parser.add_argument('--model', choices=['v6.5', 'v8.0', 'v8.1', 'all'],
                        default='all', help='模型版本 (默认 all 对比运行)')
     parser.add_argument('--tune', action='store_true', help='调优模式：扫描参数空间')
     parser.add_argument('--tune-fine', action='store_true', help='细粒度调优：围绕最优值加密扫描')

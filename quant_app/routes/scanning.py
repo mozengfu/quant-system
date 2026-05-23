@@ -1,21 +1,23 @@
-# -*- coding: utf-8 -*-
 """
 策略选股 API 路由 — 扫描 / 筛选 / ML预测
 """
-import os, json, time, logging, sys, math
-from datetime import datetime, timedelta
+import json
+import logging
+import os
+import sys
+from datetime import datetime
 from pathlib import Path
-from fastapi import APIRouter, Cookie, Request as FastAPIRequest, HTTPException
-from fastapi.responses import JSONResponse
+
+from fastapi import APIRouter, Cookie, HTTPException
+from fastapi import Request as FastAPIRequest
+
 from app_core import (
-    strategy_scan, get_block_stocks, scan_daily_pool,
-    scan_daily_pool_bottom_breakout, scan_daily_pool_ma_pullback,
-    scan_daily_pool_technical,
-    get_stock_realtime, get_tushare_pro, get_recent_trade_dates,
-    analyze_stock, ALL_BLOCKS,
-    get_current_user, save_access_log, get_client_ip,
+    get_client_ip,
+    get_current_user,
+    save_access_log,
+    scan_daily_pool,
+    strategy_scan,
 )
-from quant_app.utils.authz import require_admin, is_admin
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +30,7 @@ router = APIRouter(tags=["scanning"])
 # ========== 策略选股 ==========
 
 @router.get("/api/scan")
-async def scan(request: FastAPIRequest, block: str = "", market: str = "", token: str = Cookie(None)):
+def scan(request: FastAPIRequest, block: str = "", market: str = "", token: str = Cookie(None)):
     user = get_current_user(token)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
@@ -40,7 +42,7 @@ async def scan(request: FastAPIRequest, block: str = "", market: str = "", token
 
 
 @router.get("/api/scan_pool")
-async def scan_pool(request: FastAPIRequest, token: str = Cookie(None)):
+def scan_pool(request: FastAPIRequest, token: str = Cookie(None)):
     """触发每日股票池扫描（17:00自动运行）"""
     user = get_current_user(token)
     if not user:
@@ -50,14 +52,8 @@ async def scan_pool(request: FastAPIRequest, token: str = Cookie(None)):
     return result
 
 
-@router.get("/api/scan_bottom")
-async def scan_bottom(request: FastAPIRequest, token: str = Cookie(None)):
-    """底部起步策略已下线（回测亏损，详见CLAUDE.md）"""
-    return {"error": "底部起步策略已下线，请使用V4组合策略", "scan_type": "底部起步策略", "stocks": []}
-
-
 @router.get("/api/scan/strong")
-async def scan_strong(request: FastAPIRequest, block: str = "", market: str = "", token: str = Cookie(None)):
+def scan_strong(request: FastAPIRequest, block: str = "", market: str = "", token: str = Cookie(None)):
     """获取强势活跃策略股票池（从MySQL stock_pool_snap表读取）"""
     user = get_current_user(token)
     if not user:
@@ -66,6 +62,7 @@ async def scan_strong(request: FastAPIRequest, block: str = "", market: str = ""
 
     try:
         import pymysql
+
         from quant_app.utils.config import get_db_config
         db_config = get_db_config(connect_timeout=3)
         conn = pymysql.connect(**db_config)
@@ -166,7 +163,7 @@ async def scan_strong(request: FastAPIRequest, block: str = "", market: str = ""
         concept_file = os.path.join(DATA_DIR, "concept_trend_v4.json")
         try:
             if os.path.exists(concept_file):
-                with open(concept_file, 'r') as _cf:
+                with open(concept_file) as _cf:
                     concept_data = json.load(_cf)
                 if "top5_concepts" in concept_data:
                     top5_concepts = concept_data["top5_concepts"]
@@ -197,7 +194,7 @@ async def scan_strong(request: FastAPIRequest, block: str = "", market: str = ""
 
 
 @router.get("/api/scan/aimodel")
-async def scan_aimodel(request: FastAPIRequest, block: str = "", market: str = "", token: str = Cookie(None)):
+def scan_aimodel(request: FastAPIRequest, block: str = "", market: str = "", token: str = Cookie(None)):
     """AI模型选股：V3 LightGBM横截面排序模型"""
     user = get_current_user(token)
     if not user:
@@ -205,16 +202,16 @@ async def scan_aimodel(request: FastAPIRequest, block: str = "", market: str = "
     save_access_log(user, get_client_ip(request), f"AI模型选股 {block or market or '全市场'}")
 
     try:
-        import pymysql
         import numpy as np
-        import pandas as pd
+        import pymysql
+
         from quant_app.utils.config import get_db_config
 
         db_config = get_db_config(connect_timeout=3)
         conn = pymysql.connect(**db_config)
 
         # ML模型选股 — 自动选择最佳模型(V6.2 > V6)
-        from ml_predict import _load_best_model, _build_features_for_stocks_v6_2, _build_features_for_stocks_v6
+        from ml_predict import _build_features_for_stocks_v6, _build_features_for_stocks_v6_2, _load_best_model
 
         bundle, version = _load_best_model()
         if bundle is None:
@@ -357,17 +354,17 @@ async def scan_aimodel(request: FastAPIRequest, block: str = "", market: str = "
 # ========== AI每日精选 TOP5 ==========
 
 @router.get("/api/scan/top5")
-async def scan_top5_daily(request: FastAPIRequest, token: str = Cookie(None)):
-    """AI每日精选TOP5：V4规则初筛 + ML V6.5负向过滤"""
+def scan_top5_daily(request: FastAPIRequest, token: str = Cookie(None)):
+    """AI每日精选TOP5：V11.0 V4+ML混合选股（V4初筛 → V11.0排序）"""
     user = get_current_user(token)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
     save_access_log(user, get_client_ip(request), "AI每日精选TOP5")
 
     try:
-        import json
-        from quant_app.services.strategy_service import generate_v4_ml_top5
         import pymysql
+
+        from quant_app.services.strategy_service import generate_v4_ml_top5
         from quant_app.utils.config import get_db_config
 
         db_config = get_db_config(connect_timeout=3)
@@ -379,7 +376,7 @@ async def scan_top5_daily(request: FastAPIRequest, token: str = Cookie(None)):
             "stocks": top5,
             "count": len(top5),
             "date": datetime.now().strftime("%Y-%m-%d"),
-            "strategy": "V4+ML Filter",
+            "strategy": "Pure ML Filter" if os.environ.get("PURE_ML", "0") == "1" else "V4+ML Filter",
         }
     except Exception as e:
         import traceback
@@ -390,7 +387,7 @@ async def scan_top5_daily(request: FastAPIRequest, token: str = Cookie(None)):
 # ========== AI模拟组合 API ==========
 
 @router.get("/api/ai_sim/performance")
-async def ai_sim_performance(request: FastAPIRequest, token: str = Cookie(None)):
+def ai_sim_performance(request: FastAPIRequest, token: str = Cookie(None)):
     """AI模拟组合性能报告"""
     user = get_current_user(token)
     if not user:
@@ -399,7 +396,8 @@ async def ai_sim_performance(request: FastAPIRequest, token: str = Cookie(None))
 
     try:
         import pymysql
-        from ai_sim_trading import get_performance_report, init_tables, update_performance, compute_summary
+
+        from ai_sim_trading import compute_summary, get_performance_report, init_tables, update_performance
         from quant_app.utils.config import get_db_config
 
         db_config = get_db_config(connect_timeout=3)
@@ -418,7 +416,7 @@ async def ai_sim_performance(request: FastAPIRequest, token: str = Cookie(None))
 
 
 @router.post("/api/ai_sim/run")
-async def ai_sim_run_today(request: FastAPIRequest, token: str = Cookie(None)):
+def ai_sim_run_today(request: FastAPIRequest, token: str = Cookie(None)):
     """手动运行今日AI模拟组合记录"""
     user = get_current_user(token)
     if not user:
@@ -427,7 +425,8 @@ async def ai_sim_run_today(request: FastAPIRequest, token: str = Cookie(None)):
 
     try:
         import pymysql
-        from ai_sim_trading import init_tables, record_daily_top5, update_performance, compute_summary
+
+        from ai_sim_trading import compute_summary, init_tables, record_daily_top5, update_performance
         from quant_app.utils.config import get_db_config
 
         db_config = get_db_config(connect_timeout=3)
@@ -448,7 +447,7 @@ async def ai_sim_run_today(request: FastAPIRequest, token: str = Cookie(None)):
 # ========== 底部起步 / 组合策略 ==========
 
 @router.get("/api/combo_scan")
-async def scan_combo(request: FastAPIRequest, block: str = "", market: str = "", token: str = Cookie(None)):
+def scan_combo(request: FastAPIRequest, block: str = "", market: str = "", token: str = Cookie(None)):
     """V4+ML 过滤策略扫描（2026-05-09 起）：V4 技术筛选 + ML 负向过滤"""
     user = get_current_user(token)
     if not user:
@@ -457,8 +456,9 @@ async def scan_combo(request: FastAPIRequest, block: str = "", market: str = "",
 
     try:
         import pymysql
-        from quant_app.utils.config import get_db_config
+
         from quant_app.services.strategy_service import generate_v4_ml_candidates
+        from quant_app.utils.config import get_db_config
         db_config = get_db_config(connect_timeout=3)
         conn = pymysql.connect(**db_config)
 
@@ -471,7 +471,7 @@ async def scan_combo(request: FastAPIRequest, block: str = "", market: str = "",
         if not candidates:
             return {
                 "stocks": [],
-                "scan_type": "V4+ML过滤策略",
+                "scan_type": "ML选股策略",
                 "scan_date": display_date or datetime.now().strftime('%Y-%m-%d'),
                 "error": "技术筛选无结果"
             }
@@ -483,7 +483,7 @@ async def scan_combo(request: FastAPIRequest, block: str = "", market: str = "",
             mkt = "sz" if ts_code.endswith(".SZ") else "sh"
             code_full = f"{mkt.upper()}{code_raw}"
 
-            # ML 得分 → 预测收益 / ml概率 映射
+            # ML 得分 → 排序强度 / ml概率 映射
             ml_score = c.get('ml_score', 0)
             # ml_score 为模型预测收益，概率用 sigmoid 简单映射
             import math
@@ -508,10 +508,11 @@ async def scan_combo(request: FastAPIRequest, block: str = "", market: str = "",
                 "涨跌幅": f"{c['pct_chg']:+.2f}%",
                 "换手率": f"{c['turnover_rate']:.2f}%",
                 "量比": f"{c['volume_ratio']:.2f}",
-                "V4评分": c['v4_score'],
+                "V4评分": c.get('v4_score', 0),
                 "ML得分": ml_score,
-                "综合评分": c['v4_score'],
+                "综合评分": c.get('blended_score', c.get('v4_score', 0)),
                 "预测收益": round(ml_score, 2),
+                "排序强度": round(ml_score, 2),
                 "ml概率": round(ml_prob, 4),
                 "主力评分": 0,
                 "阶段判断": "",
@@ -527,16 +528,16 @@ async def scan_combo(request: FastAPIRequest, block: str = "", market: str = "",
             "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "total_candidates": len(stocks),
             "stocks": stocks,
-            "scan_type": "V4+ML过滤策略",
+            "scan_type": "ML选股策略",
         }
     except Exception as e:
         import traceback
         logger.error(f"combo_scan error: {traceback.format_exc()}")
-        return {"stocks": [], "scan_type": "V4+ML过滤策略", "error": str(e)}
+        return {"stocks": [], "scan_type": "ML选股策略", "error": str(e)}
 
 
 @router.get("/api/scan/v5")
-async def scan_v5(request: FastAPIRequest, block: str = "", market: str = "", token: str = Cookie(None)):
+def scan_v5(request: FastAPIRequest, block: str = "", market: str = "", token: str = Cookie(None)):
     """V5 缩量回踩策略扫描"""
     user = get_current_user(token)
     if not user:
@@ -545,6 +546,7 @@ async def scan_v5(request: FastAPIRequest, block: str = "", market: str = "", to
 
     try:
         import pymysql
+
         from quant_app.utils.config import get_db_config
         db_config = get_db_config(connect_timeout=3)
         conn = pymysql.connect(**db_config)
@@ -629,7 +631,7 @@ async def scan_v5(request: FastAPIRequest, block: str = "", market: str = "", to
             codes = [r[0] for r in candidates]
             placeholders = ','.join(['%s'] * len(codes))
             # 获取近3个交易日数据
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT trade_date FROM quant_db.daily_price
                 WHERE trade_date <= %s ORDER BY trade_date DESC LIMIT 3
             """, (today_str,))
@@ -731,40 +733,11 @@ async def scan_v5(request: FastAPIRequest, block: str = "", market: str = "", to
         return {"stocks": [], "scan_type": "V5缩量回踩", "error": str(e)}
 
 
-@router.get("/api/pool_bottom")
-async def get_pool_bottom(token: str = Cookie(None)):
-    """底部起步策略已下线"""
-    return {"stocks": [], "scan_type": "底部起步策略", "error": "策略已下线，请使用V4组合策略"}
-
-
-@router.get("/api/pool_ma_pullback")
-async def get_pool_ma_pullback(token: str = Cookie(None)):
-    """获取均线回踩策略股票池"""
-    if not get_current_user(token):
-        raise HTTPException(status_code=401, detail="未登录")
-    pool_file = os.path.join(DATA_DIR, "stock_pool_ma_pullback.json")
-    if not os.path.exists(pool_file):
-        return {"stocks": [], "scan_type": "均线回踩策略", "error": "股票池为空"}
-    with open(pool_file, 'r') as f:
-        return json.load(f)
-
-
-@router.get("/api/scan_ma_pullback")
-async def scan_ma_pullback(request: FastAPIRequest, token: str = Cookie(None)):
-    """触发均线回踩策略扫描"""
-    user = get_current_user(token)
-    if not user:
-        raise HTTPException(status_code=401, detail="未登录")
-    save_access_log(user, get_client_ip(request), "触发均线回踩扫描")
-    result = scan_daily_pool_ma_pullback()
-    return result
-
-
 # ========== 大盘状态 ==========
 
 @router.get("/api/market_state")
 @router.get("/api/market/state")
-async def api_market_state(token: str = Cookie(None)):
+def api_market_state(token: str = Cookie(None)):
     """返回当前大盘状态（统一5状态模型 + 实时快照）"""
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")
@@ -794,7 +767,7 @@ async def api_market_state(token: str = Cookie(None)):
 # ========== 合并后的选股 API（P0）==========
 
 @router.get("/api/scan/rule")
-async def scan_rule(request: FastAPIRequest, mode: str = "bottom", block: str = "", market: str = "", token: str = Cookie(None)):
+def scan_rule(request: FastAPIRequest, mode: str = "bottom", block: str = "", market: str = "", token: str = Cookie(None)):
     """
     统一规则选股 API — 合并底部起步/强势活跃/组合策略
     mode: bottom | strong | combo
@@ -804,20 +777,20 @@ async def scan_rule(request: FastAPIRequest, mode: str = "bottom", block: str = 
         raise HTTPException(status_code=401, detail="未登录")
     save_access_log(user, get_client_ip(request), f"规则选股({mode}) {block or market}")
 
-    if mode in ("bottom", "strong"):
+    if mode == "bottom":
         return {"error": f"该策略已下线（{mode}），请使用 V4 组合策略", "mode": mode}
     elif mode == "combo":
-        return await scan_combo(request, block=block, market=market, token=token)
+        return scan_combo(request, block=block, market=market, token=token)
     elif mode == "v5":
-        return await scan_v5(request, block=block, market=market, token=token)
+        return scan_v5(request, block=block, market=market, token=token)
     elif mode == "awakening":
-        return await scan_bottom_awakening(request, token=token)
+        return scan_bottom_awakening(request, token=token)
     else:
-        return await scan_strong(request, block=block, market=market, token=token)
+        return scan_strong(request, block=block, market=market, token=token)
 
 
 @router.get("/api/scan/ml")
-async def scan_ml(request: FastAPIRequest, mode: str = "all", block: str = "", market: str = "", token: str = Cookie(None)):
+def scan_ml(request: FastAPIRequest, mode: str = "all", block: str = "", market: str = "", token: str = Cookie(None)):
     """
     统一 AI 选股 API — 合并 AI模型选股/AI精选TOP5
     mode: all | top10 | top5
@@ -829,8 +802,9 @@ async def scan_ml(request: FastAPIRequest, mode: str = "all", block: str = "", m
 
     if mode == "top5":
         import pymysql
-        from quant_app.utils.config import get_db_config
+
         from quant_app.services.strategy_service import generate_v4_ml_top5
+        from quant_app.utils.config import get_db_config
         _conn = pymysql.connect(**get_db_config())
         top5 = generate_v4_ml_top5(_conn)
         _conn.close()
@@ -853,11 +827,11 @@ async def scan_ml(request: FastAPIRequest, mode: str = "all", block: str = "", m
         return {"stocks": stocks, "date": top5[0].get('date', datetime.now().strftime('%Y-%m-%d')) if top5 else ''}
     else:
         # 复用 AI模型选股管道，取 top 10 或 top 50
-        return await scan_aimodel(request, block=block, market=market, token=token)
+        return scan_aimodel(request, block=block, market=market, token=token)
 
 
 @router.get("/api/scan/bottom-awakening")
-async def scan_bottom_awakening(request: FastAPIRequest, token: str = Cookie(None)):
+def scan_bottom_awakening(request: FastAPIRequest, token: str = Cookie(None)):
     """底部苏醒策略 — 底部低量横盘放量起步"""
     user = get_current_user(token)
     if not user:
@@ -866,8 +840,9 @@ async def scan_bottom_awakening(request: FastAPIRequest, token: str = Cookie(Non
 
     try:
         import pymysql
-        from quant_app.utils.config import get_db_config
+
         from quant_app.services.strategy_service import generate_bottom_awakening_top5
+        from quant_app.utils.config import get_db_config
 
         db_config = get_db_config(connect_timeout=3)
         conn = pymysql.connect(**db_config)
@@ -992,18 +967,18 @@ def _pick_best_from_combo(db_config, conn, latest_date):
         except Exception:
             for s in stocks:
                 s['ml概率'] = 0.5
-                s['预测收益'] = 0.0
+                s['排序强度'] = 0.0
                 s['增强评分'] = round(s.get('综合评分', 0), 1)
                 s['热点板块'] = ''
                 s['资金趋势'] = ''
 
-        # V4.1筛选 → V6.5 ML排序：按预测收益降序
-        stocks.sort(key=lambda x: x.get('预测收益', 0), reverse=True)
+        # V11.0 ML排序：按排序强度降序
+        stocks.sort(key=lambda x: x.get('排序强度', 0), reverse=True)
         top3 = stocks[:3]
 
         result = []
         for best in top3:
-            pred_ret = best.get('预测收益', 0)
+            pred_ret = best.get('排序强度', 0)
             if pred_ret > 0:
                 signal = '强'
             elif pred_ret > -1:
@@ -1021,7 +996,7 @@ def _pick_best_from_combo(db_config, conn, latest_date):
                 "换手率": best.get('换手率', ''),
                 "量比": best.get('量比', ''),
                 "综合评分": best.get('综合评分', 0),
-                "预测收益": best.get('预测收益', 0),
+                "预测收益": best.get('排序强度', 0),
                 "ml概率": best.get('ml概率', 0.5),
                 "热点板块": best.get('热点板块', ''),
                 "资金趋势": best.get('资金趋势', ''),
@@ -1038,19 +1013,19 @@ def _pick_best_from_combo(db_config, conn, latest_date):
 # ========== 股票池管理 ==========
 
 @router.get("/api/pool")
-async def get_pool(token: str = Cookie(None)):
+def get_pool(token: str = Cookie(None)):
     """获取已保存的选股池"""
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")
     pool_file = os.path.join(DATA_DIR, "stock_pool.json")
     if not os.path.exists(pool_file):
         return {"stocks": [], "last_scan": None, "strategy": None}
-    with open(pool_file, 'r') as f:
+    with open(pool_file) as f:
         return json.load(f)
 
 
 @router.delete("/api/pool")
-async def clear_pool(token: str = Cookie(None)):
+def clear_pool(token: str = Cookie(None)):
     """清空调股池"""
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")
@@ -1063,8 +1038,8 @@ async def clear_pool(token: str = Cookie(None)):
 # ========== ML Top15 独立选股 ==========
 
 @router.get("/api/ml_top15")
-async def ml_top15_scan(request: FastAPIRequest, token: str = Cookie(None)):
-    """ML V6.5 独立选股 — Top15 按预测概率排序"""
+def ml_top15_scan(request: FastAPIRequest, token: str = Cookie(None)):
+    """ML V11.0 独立选股 — Top15 按ML概率排序（V4+ML混合）"""
     user = get_current_user(token)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
@@ -1072,6 +1047,7 @@ async def ml_top15_scan(request: FastAPIRequest, token: str = Cookie(None)):
 
     try:
         import pymysql
+
         from quant_app.utils.config import get_db_config
         db_config = get_db_config(connect_timeout=3)
         conn = pymysql.connect(**db_config)
@@ -1131,6 +1107,7 @@ async def ml_top15_scan(request: FastAPIRequest, token: str = Cookie(None)):
                         'amount': info.get('amount', 0),
                         'ml_prob': round(pred, 3),
                         'ml_pred_return': round(ret, 2),
+                    '排序强度': round(ret, 2),
                         'model_type': mtype,
                     })
 
@@ -1143,42 +1120,48 @@ async def ml_top15_scan(request: FastAPIRequest, token: str = Cookie(None)):
                     "cache": True,
                 }
 
-        # 无缓存，实时预测
+        # 无缓存，实时预测（与建仓推荐一致：纯ML成交额Top300排序）
         cursor.close()
         conn.close()
 
-        from ml_predict import predict_batch
+        from quant_app.services.strategy_service import generate_v4_ml_candidates
+        # PURE_ML=1 由环境变量控制（默认开启）
         conn2 = pymysql.connect(**db_config)
-        cursor2 = conn2.cursor()
-        cursor2.execute("SELECT ts_code FROM daily_price WHERE trade_date = %s", (date_str,))
-        all_codes = [r[0] for r in cursor2.fetchall()]
-        cursor2.close()
-        conn2.close()
+        candidates, _ = generate_v4_ml_candidates(conn2, limit=15)
 
-        results = predict_batch(all_codes, as_of_date=latest_date)
+        if not candidates:
+            conn2.close()
+            return {"stocks": [], "model": "v11.0", "error": "无候选股"}
 
-        # 排序取 Top15
-        scored = [(tc, p['probability'], p['predicted_return'], p['model_type'])
-                  for tc, p in results.items()]
-        scored.sort(key=lambda x: x[1], reverse=True)
-        top15 = scored[:15]
+        top15_data = []
+        for c in candidates[:15]:
+            ml_score = c.get('ml_score', 0)
+            import math
+            prob = 1 / (1 + math.exp(-ml_score)) if ml_score != 0 else 0.5
+            top15_data.append((c['ts_code'], prob, ml_score, 'v11.0'))
 
-        # 写入库
+        # 写入库（全量写入，异步缓存用）
         conn3 = pymysql.connect(**db_config)
         cursor3 = conn3.cursor()
-        cursor3.execute("DELETE FROM ml_predictions WHERE trade_date = %s", (date_str,))
-        for tc, prob, ret, mt in scored:
-            cursor3.execute(
-                """INSERT INTO ml_predictions (ts_code, trade_date, _ml_pred, predicted_return, model_type)
-                   VALUES (%s, %s, %s, %s, %s)""",
-                (tc, date_str, prob, ret, mt)
-            )
-        conn3.commit()
+        try:
+            cursor3.execute("DELETE FROM ml_predictions WHERE trade_date = %s", (date_str,))
+            for tc, prob, ret, mt in top15_data:
+                cursor3.execute(
+                    """INSERT INTO ml_predictions (ts_code, trade_date, _ml_pred, predicted_return, model_type)
+                       VALUES (%s, %s, %s, %s, %s)""",
+                    (tc, date_str, prob, ret, mt)
+                )
+            conn3.commit()
+        except Exception:
+            pass  # 写入失败不影响返回结果
+        cursor3.close()
+        conn3.close()
 
         # 获取股票信息
-        top_codes = [tc for tc, _, _, _ in top15]
+        top_codes = [tc for tc, _, _, _ in top15_data]
         placeholders = ','.join(['%s'] * len(top_codes))
-        cursor3.execute(f"""
+        cursor2 = conn2.cursor()
+        cursor2.execute(f"""
             SELECT s.ts_code, name, industry, close, pct_chg,
                    volume_ratio, turnover_rate, rps_20, amount
             FROM stock_info s
@@ -1186,18 +1169,18 @@ async def ml_top15_scan(request: FastAPIRequest, token: str = Cookie(None)):
             WHERE s.ts_code IN ({placeholders})
         """, (date_str, *top_codes))
         stock_map = {}
-        for r in cursor3.fetchall():
+        for r in cursor2.fetchall():
             stock_map[r[0]] = {
                 'name': r[1], 'industry': r[2], 'close': float(r[3] or 0),
                 'pct_chg': float(r[4] or 0), 'volume_ratio': float(r[5] or 0),
                 'turnover_rate': float(r[6] or 0), 'rps_20': float(r[7] or 0),
                 'amount': float(r[8] or 0),
             }
-        cursor3.close()
-        conn3.close()
+        cursor2.close()
+        conn2.close()
 
         stocks = []
-        for tc, prob, ret, mt in top15:
+        for tc, prob, ret, mt in top15_data:
             info = stock_map.get(tc, {})
             stocks.append({
                 'ts_code': tc,
@@ -1211,13 +1194,14 @@ async def ml_top15_scan(request: FastAPIRequest, token: str = Cookie(None)):
                 'amount': info.get('amount', 0),
                 'ml_prob': round(prob, 3),
                 'ml_pred_return': round(ret, 2),
+                '排序强度': round(ret, 2),
                 'model_type': mt,
             })
 
         return {
             "stocks": stocks,
             "scan_date": date_str,
-            "model": top15[0][3] if top15 else "unknown",
+            "model": top15_data[0][3] if top15_data else "unknown",
             "cache": False,
         }
 

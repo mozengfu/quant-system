@@ -1,16 +1,22 @@
-# -*- coding: utf-8 -*-
 """
 行情分析相关 API 路由
 """
-import os, json, time, logging, sys, math, urllib.request, urllib.parse
+import json
+import logging
+import os
+import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from fastapi import APIRouter, Cookie, Request as FastAPIRequest, HTTPException
-from fastapi.responses import JSONResponse
+
+from fastapi import APIRouter, Cookie, HTTPException
+from fastapi import Request as FastAPIRequest
+
 from app_core import (
-    get_stock_realtime, get_recent_trade_dates, get_tushare_pro,
-    get_current_user, require_auth, get_db_config, send_feishu,
-    save_access_log, get_client_ip,
+    get_client_ip,
+    get_current_user,
+    get_tushare_pro,
+    save_access_log,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,7 +35,7 @@ if _SCRIPTS_DIR not in sys.path:
 # ========== 盘前预判 ==========
 
 @router.get("/api/market/premarket")
-async def market_premarket(force_refresh: bool = False):
+def market_premarket(force_refresh: bool = False):
     """
     盘前预判状态 - 用于选股页面显示大盘仓位建议
     force_refresh=True 时强制重新获取数据
@@ -49,7 +55,7 @@ async def market_premarket(force_refresh: bool = False):
 
         # 检查缓存
         if cache_file.exists():
-            with open(cache_file, 'r', encoding='utf-8') as f:
+            with open(cache_file, encoding='utf-8') as f:
                 data = json.load(f)
 
             cached_date = data.get('date', '')
@@ -95,7 +101,7 @@ async def market_premarket(force_refresh: bool = False):
 # ========== 大盘研判 ==========
 
 @router.get("/api/market/analysis")
-async def market_analysis(token: str = Cookie(None)):
+def market_analysis(token: str = Cookie(None)):
     """
     大盘研判模块 - 沪指、深指、创业板三大盘面分析
     """
@@ -360,8 +366,8 @@ def get_market_news_summary():
 def crawl_eastmoney_finance_news():
     """爬取东方财富财经要闻"""
     try:
-        import urllib.request
         import json
+        import urllib.request
 
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -410,8 +416,8 @@ def crawl_eastmoney_finance_news():
 def crawl_sina_news():
     """爬取新浪财经"""
     try:
-        import urllib.request
         import json
+        import urllib.request
 
         url = "https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2515&k=&num=20&page=1&r=0.123"
 
@@ -692,8 +698,8 @@ def analyze_sector_reason_by_moneyflow(name, change, net_amount, is_rise):
 def crawl_eastmoney_sectors():
     """爬取东方财富板块数据"""
     try:
-        import urllib.request
         import json
+        import urllib.request
 
         url = "http://push2ex.eastmoney.com/getTopicZS?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.zs&Pageindex=0&pagesize=100&sort=f3&sorttype=1"
 
@@ -723,7 +729,6 @@ def crawl_eastmoney_sectors():
             top = sector_list[:5]
             bottom = sector_list[-5:]
 
-            import random
 
             top_analysis = []
             for s in top:
@@ -901,7 +906,7 @@ def get_mock_sector_analysis():
 # ========== 热点板块 ==========
 
 @router.get("/api/sectors/hot")
-async def api_hot_sectors(top_n: int = 5, lookback_days: int = 5, token: str = Cookie(None)):
+def api_hot_sectors(top_n: int = 5, lookback_days: int = 5, token: str = Cookie(None)):
     """获取热点板块列表"""
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")
@@ -913,7 +918,7 @@ async def api_hot_sectors(top_n: int = 5, lookback_days: int = 5, token: str = C
 
 
 @router.get("/api/stock/{ts_code}/fund_flow")
-async def api_fund_flow(ts_code: str, lookback: int = 5, token: str = Cookie(None)):
+def api_fund_flow(ts_code: str, lookback: int = 5, token: str = Cookie(None)):
     """获取个股资金流向连续性"""
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")
@@ -927,7 +932,7 @@ async def api_fund_flow(ts_code: str, lookback: int = 5, token: str = Cookie(Non
 # ========== 主力资金追踪 ==========
 
 @router.get("/api/mainforce_scan")
-async def mainforce_scan(request: FastAPIRequest, token: str = Cookie(None)):
+def mainforce_scan(request: FastAPIRequest, token: str = Cookie(None)):
     """主力资金评分扫描 - 返回主力评分 Top 50"""
     user = get_current_user(token)
     if not user:
@@ -938,7 +943,7 @@ async def mainforce_scan(request: FastAPIRequest, token: str = Cookie(None)):
             stat = os.stat(cache_file)
             age_hours = (time.time() - stat.st_mtime) / 3600
             if age_hours < 24:
-                with open(cache_file, 'r', encoding='utf-8') as f:
+                with open(cache_file, encoding='utf-8') as f:
                     return json.load(f)
 
         save_access_log(user, get_client_ip(request), "主力资金扫描")
@@ -982,7 +987,7 @@ async def mainforce_scan(request: FastAPIRequest, token: str = Cookie(None)):
 
 
 @router.get("/api/mainforce_stock/{ts_code}")
-async def mainforce_stock(ts_code: str, token: str = Cookie(None)):
+def mainforce_stock(ts_code: str, token: str = Cookie(None)):
     """个股主力分析"""
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")

@@ -47,3 +47,7 @@ QUANT_DIR=/Users/mozengfu/workspace/quant-system
 
 # ========== 底部苏醒策略扫描 ==========
 55 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/scan_bottom_awakening.py >> $QUANT_DIR/logs/bottom_awakening.log 2>&1
+
+# ========== V11.0 滚动训练（每周末） ==========
+# 每周六凌晨3点重训模型，用最新数据。训练约40分钟，完成后自动部署
+0 3 * * 6 cd $QUANT_DIR && bash scripts/rolling_train.sh

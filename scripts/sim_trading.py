@@ -1269,6 +1269,26 @@ def daily_scan():
                         logger.info("%s 已持有，跳过", name)
                         continue
 
+                    # 检查涨停（开盘涨停买不进，跳过）
+                    try:
+                        conn_buy = get_db_conn()
+                        cur_buy = conn_buy.cursor()
+                        cur_buy.execute("""
+                            SELECT pct_chg FROM daily_price 
+                            WHERE ts_code = %s AND trade_date = (
+                                SELECT MAX(trade_date) FROM daily_price
+                            )
+                        """, (ts_code,))
+                        row_zt = cur_buy.fetchone()
+                        cur_buy.close()
+                        conn_buy.close()
+                        if row_zt and float(row_zt[0] or 0) >= 9.5:
+                            logger.info("%s(%s) 今日涨幅%.1f%%已近涨停，买不进，跳过", 
+                                        name, ts_code, float(row_zt[0]))
+                            continue
+                    except Exception as e:
+                        logger.warning("涨停检查失败: %s", e)
+
                     success = execute_buy(
                         ts_code, name, market_full,
                         price, shares,

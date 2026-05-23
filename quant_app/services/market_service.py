@@ -2,20 +2,25 @@
 """
 行情数据服务 - 实时行情、历史数据、RPS计算、持仓同步、技术面买卖信号
 """
-import os, json, time, logging, hashlib, hmac, urllib.request, urllib.parse
+import json
+import logging
+import os
+import time
 from datetime import datetime, timedelta
-from pathlib import Path
-from urllib.request import urlopen, Request as UrlRequest
 
-import pandas as pd
-
-from quant_app.utils.config import get_db_config
-from quant_app.services.technical_service import calculate_macd, calculate_kdj, calculate_bollinger_bands, calculate_atr, calculate_rsi
-from quant_app.utils.indicators import calculate_macd as _calc_macd_full, calculate_kdj as _calc_kdj_full
 from quant_app.services.realtime_service import (
-    _code_to_secid, _try_aliyun, _try_tencent,
     get_stock_quote as get_stock_realtime,
 )
+from quant_app.services.technical_service import (
+    calculate_atr,
+    calculate_bollinger_bands,
+    calculate_kdj,
+    calculate_macd,
+    calculate_rsi,
+)
+from quant_app.utils.config import get_db_config
+from quant_app.utils.indicators import calculate_kdj as _calc_kdj_full
+from quant_app.utils.indicators import calculate_macd as _calc_macd_full
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +181,7 @@ def sync_positions():
         stocks_path = DATA_DIR / "stocks.json"
         positions_path = DATA_DIR / "positions.json"
         if stocks_path.exists():
-            with open(stocks_path, "r", encoding="utf-8") as f:
+            with open(stocks_path, encoding="utf-8") as f:
                 stocks_data = json.load(f)
             cn_positions = stocks_data.get("持仓", None)
             if cn_positions and len(cn_positions) > 0:
@@ -198,7 +203,7 @@ def add_to_positions(signal):
         from quant_app.utils.config import DATA_DIR
         stocks_path = DATA_DIR / "stocks.json"
         if stocks_path.exists():
-            with open(stocks_path, "r", encoding="utf-8") as f:
+            with open(stocks_path, encoding="utf-8") as f:
                 stocks_data = json.load(f)
 
             # 检查是否已存在
@@ -256,8 +261,8 @@ def get_stock_history_from_db(ts_code, days=60):
     失败时返回空字典（会回退到Tushare API）。
     """
     try:
+
         import pymysql
-        import json
 
         db_config = get_db_config()
 
@@ -315,7 +320,7 @@ def get_stock_history_from_db(ts_code, days=60):
                 'low52w': float(r['low_52w']) if r['low_52w'] else 0.0,
             }
         return result
-    except Exception as e:
+    except Exception:
         return {}
 
 
@@ -530,7 +535,7 @@ def get_technical_buy_sell_signals(code, market="sz"):
         if dif is not None and dea is not None:
             if dif > dea and dif > 0:
                 buy_score += 10
-                buy_reasons.append(f"MACD金叉")
+                buy_reasons.append("MACD金叉")
             elif dif > dea:
                 buy_score += 5
                 buy_reasons.append("MACD金叉区域")
@@ -624,7 +629,7 @@ def get_technical_buy_sell_signals(code, market="sz"):
                 sell_reasons.append(f"KDJ高位死叉(K={k:.1f})")
             elif k > 80:
                 sell_score += 10
-                buy_reasons.append(f"KDJ超买(K={k:.1f})")
+                sell_reasons.append(f"KDJ超买(K={k:.1f})")
             elif k > 70:
                 sell_score += 5
 

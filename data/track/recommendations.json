@@ -12,7 +12,7 @@
           "recommendation_time": "14:19",
           "1day_result": 3.27,
           "1week_result": 12.62,
-          "1month_result": null
+          "1month_result": 19.12
         },
         {
           "code": "SZ002236",
@@ -22,7 +22,7 @@
           "recommendation_time": "14:19",
           "1day_result": -0.27,
           "1week_result": -3.66,
-          "1month_result": null
+          "1month_result": -4.45
         },
         {
           "code": "SZ300158",
@@ -32,11 +32,11 @@
           "recommendation_time": "14:19",
           "1day_result": -2.4,
           "1week_result": -7.52,
-          "1month_result": null
+          "1month_result": -10.4
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "completed"
     },
     {
       "date": "2026-04-18",
@@ -50,7 +50,7 @@
           "recommendation_time": "07:11",
           "1day_result": 0.69,
           "1week_result": -0.9,
-          "1month_result": null
+          "1month_result": -4.7
         },
         {
           "code": "SZ000006",
@@ -60,7 +60,7 @@
           "recommendation_time": "07:11",
           "1day_result": 2.87,
           "1week_result": -0.53,
-          "1month_result": null
+          "1month_result": 11.28
         },
         {
           "code": "SZ001317",
@@ -70,11 +70,11 @@
           "recommendation_time": "07:11",
           "1day_result": 3.4,
           "1week_result": 8.3,
-          "1month_result": null
+          "1month_result": 15.18
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "completed"
     },
     {
       "date": "2026-04-19",
@@ -88,7 +88,7 @@
           "recommendation_time": "00:05",
           "1day_result": -1.33,
           "1week_result": -1.99,
-          "1month_result": null
+          "1month_result": -5.09
         },
         {
           "code": "SZ001317",
@@ -98,7 +98,7 @@
           "recommendation_time": "00:05",
           "1day_result": 3.4,
           "1week_result": 8.3,
-          "1month_result": null
+          "1month_result": 15.18
         },
         {
           "code": "SZ002693",
@@ -108,11 +108,11 @@
           "recommendation_time": "00:05",
           "1day_result": 7.89,
           "1week_result": 5.14,
-          "1month_result": null
+          "1month_result": 26.2
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "completed"
     },
     {
       "date": "2026-04-20",
@@ -126,7 +126,7 @@
           "recommendation_time": "23:44",
           "1day_result": -2.52,
           "1week_result": -7.97,
-          "1month_result": null
+          "1month_result": -17.62
         },
         {
           "code": "SZ000725",
@@ -136,7 +136,7 @@
           "recommendation_time": "23:44",
           "1day_result": 0.72,
           "1week_result": 0.48,
-          "1month_result": null
+          "1month_result": 11.93
         },
         {
           "code": "SZ000530",
@@ -146,11 +146,11 @@
           "recommendation_time": "23:44",
           "1day_result": -1.46,
           "1week_result": -4.86,
-          "1month_result": null
+          "1month_result": -8.1
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "completed"
     },
     {
       "date": "2026-04-21",
@@ -164,7 +164,7 @@
           "recommendation_time": "00:13",
           "1day_result": -1.13,
           "1week_result": -6.48,
-          "1month_result": null
+          "1month_result": -6.97
         },
         {
           "code": "SZ000030",
@@ -174,7 +174,7 @@
           "recommendation_time": "00:13",
           "1day_result": -5.82,
           "1week_result": -10.76,
-          "1month_result": null
+          "1month_result": -16.93
         },
         {
           "code": "SZ000735",
@@ -184,11 +184,11 @@
           "recommendation_time": "00:13",
           "1day_result": -2.94,
           "1week_result": -12.31,
-          "1month_result": null
+          "1month_result": -16.78
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "completed"
     },
     {
       "date": "2026-04-22",
@@ -543,7 +543,7 @@
           "score": 0,
           "recommendation_time": "00:21",
           "1day_result": -0.63,
-          "1week_result": null,
+          "1week_result": -2.05,
           "1month_result": null
         },
         {
@@ -553,7 +553,7 @@
           "score": 80.0,
           "recommendation_time": "00:21",
           "1day_result": -3.43,
-          "1week_result": null,
+          "1week_result": 4.48,
           "1month_result": null
         },
         {
@@ -563,7 +563,7 @@
           "score": 65,
           "recommendation_time": "00:21",
           "1day_result": 11.16,
-          "1week_result": null,
+          "1week_result": 31.24,
           "1month_result": null
         }
       ],
@@ -581,7 +581,7 @@
           "score": 0,
           "recommendation_time": "00:25",
           "1day_result": -2.32,
-          "1week_result": null,
+          "1week_result": -8.38,
           "1month_result": null
         },
         {
@@ -591,7 +591,7 @@
           "score": 90.0,
           "recommendation_time": "00:25",
           "1day_result": 9.33,
-          "1week_result": null,
+          "1week_result": 8.93,
           "1month_result": null
         },
         {
@@ -601,7 +601,7 @@
           "score": 60,
           "recommendation_time": "00:25",
           "1day_result": 0.86,
-          "1week_result": null,
+          "1week_result": 6.61,
           "1month_result": null
         }
       ],
@@ -619,7 +619,7 @@
           "score": 0,
           "recommendation_time": "01:43",
           "1day_result": 0.51,
-          "1week_result": null,
+          "1week_result": 3.66,
           "1month_result": null
         },
         {
@@ -629,7 +629,7 @@
           "score": 85.0,
           "recommendation_time": "01:43",
           "1day_result": 0.72,
-          "1week_result": null,
+          "1week_result": 0.54,
           "1month_result": null
         },
         {
@@ -639,7 +639,7 @@
           "score": 62,
           "recommendation_time": "01:43",
           "1day_result": 2.0,
-          "1week_result": null,
+          "1week_result": 3.53,
           "1month_result": null
         }
       ],
@@ -657,7 +657,7 @@
           "score": 0,
           "recommendation_time": "00:08",
           "1day_result": -5.39,
-          "1week_result": null,
+          "1week_result": -4.14,
           "1month_result": null
         },
         {
@@ -667,7 +667,7 @@
           "score": 90.0,
           "recommendation_time": "00:08",
           "1day_result": 20.5,
-          "1week_result": null,
+          "1week_result": 16.84,
           "1month_result": null
         },
         {
@@ -677,7 +677,7 @@
           "score": 64,
           "recommendation_time": "00:08",
           "1day_result": 2.63,
-          "1week_result": null,
+          "1week_result": 16.48,
           "1month_result": null
         }
       ],
@@ -695,7 +695,7 @@
           "score": 64,
           "recommendation_time": "12:49",
           "1day_result": 2.63,
-          "1week_result": null,
+          "1week_result": 16.48,
           "1month_result": null
         },
         {
@@ -705,7 +705,7 @@
           "score": 60,
           "recommendation_time": "12:49",
           "1day_result": 10.07,
-          "1week_result": null,
+          "1week_result": 8.72,
           "1month_result": null
         },
         {
@@ -715,7 +715,7 @@
           "score": 62,
           "recommendation_time": "12:49",
           "1day_result": 2.0,
-          "1week_result": null,
+          "1week_result": 3.53,
           "1month_result": null
         }
       ],
@@ -733,7 +733,7 @@
           "score": 64,
           "recommendation_time": "10:07",
           "1day_result": 2.63,
-          "1week_result": null,
+          "1week_result": 16.48,
           "1month_result": null
         },
         {
@@ -743,7 +743,7 @@
           "score": 60,
           "recommendation_time": "10:07",
           "1day_result": 10.07,
-          "1week_result": null,
+          "1week_result": 8.72,
           "1month_result": null
         },
         {
@@ -753,7 +753,7 @@
           "score": 62,
           "recommendation_time": "10:07",
           "1day_result": 2.0,
-          "1week_result": null,
+          "1week_result": 3.53,
           "1month_result": null
         }
       ],
@@ -771,7 +771,7 @@
           "score": 60,
           "recommendation_time": "00:21",
           "1day_result": 2.65,
-          "1week_result": null,
+          "1week_result": 4.52,
           "1month_result": null
         },
         {
@@ -781,7 +781,7 @@
           "score": 65,
           "recommendation_time": "00:21",
           "1day_result": 10.07,
-          "1week_result": null,
+          "1week_result": 8.72,
           "1month_result": null
         },
         {
@@ -791,7 +791,7 @@
           "score": 72,
           "recommendation_time": "00:21",
           "1day_result": 6.63,
-          "1week_result": null,
+          "1week_result": 5.49,
           "1month_result": null
         }
       ],
@@ -809,7 +809,7 @@
           "score": 42,
           "recommendation_time": "06:44",
           "1day_result": -1.4,
-          "1week_result": null,
+          "1week_result": -2.73,
           "1month_result": null
         },
         {
@@ -819,7 +819,7 @@
           "score": 65,
           "recommendation_time": "06:44",
           "1day_result": 10.07,
-          "1week_result": null,
+          "1week_result": 8.72,
           "1month_result": null
         },
         {
@@ -829,7 +829,7 @@
           "score": 65,
           "recommendation_time": "06:44",
           "1day_result": 0.92,
-          "1week_result": null,
+          "1week_result": 0.0,
           "1month_result": null
         }
       ],
@@ -847,7 +847,7 @@
           "score": 42,
           "recommendation_time": "00:59",
           "1day_result": -1.4,
-          "1week_result": null,
+          "1week_result": -2.73,
           "1month_result": null
         },
         {
@@ -857,7 +857,7 @@
           "score": 65,
           "recommendation_time": "00:59",
           "1day_result": 10.07,
-          "1week_result": null,
+          "1week_result": 8.72,
           "1month_result": null
         },
         {
@@ -867,7 +867,7 @@
           "score": 65,
           "recommendation_time": "00:59",
           "1day_result": 0.92,
-          "1week_result": null,
+          "1week_result": 0.0,
           "1month_result": null
         }
       ],
@@ -885,7 +885,7 @@
           "score": 50,
           "recommendation_time": "00:16",
           "1day_result": 1.52,
-          "1week_result": null,
+          "1week_result": -4.24,
           "1month_result": null
         },
         {
@@ -895,7 +895,7 @@
           "score": 50,
           "recommendation_time": "00:16",
           "1day_result": -1.73,
-          "1week_result": null,
+          "1week_result": -3.21,
           "1month_result": null
         },
         {
@@ -905,7 +905,7 @@
           "score": 48,
           "recommendation_time": "00:16",
           "1day_result": -1.58,
-          "1week_result": null,
+          "1week_result": 0.88,
           "1month_result": null
         }
       ],
@@ -922,8 +922,8 @@
           "price": 616.51,
           "score": 51,
           "recommendation_time": "06:57",
-          "1day_result": null,
-          "1week_result": null,
+          "1day_result": 3.68,
+          "1week_result": 15.5,
           "1month_result": null
         },
         {
@@ -932,8 +932,8 @@
           "price": 112.42,
           "score": 55,
           "recommendation_time": "06:57",
-          "1day_result": null,
-          "1week_result": null,
+          "1day_result": 5.36,
+          "1week_result": -1.95,
           "1month_result": null
         },
         {
@@ -942,8 +942,8 @@
           "price": 50.89,
           "score": 61,
           "recommendation_time": "06:57",
-          "1day_result": null,
-          "1week_result": null,
+          "1day_result": 1.0,
+          "1week_result": 5.25,
           "1month_result": null
         }
       ],
@@ -960,8 +960,8 @@
           "price": 25.53,
           "score": 42,
           "recommendation_time": "00:07",
-          "1day_result": null,
-          "1week_result": null,
+          "1day_result": 0.35,
+          "1week_result": -4.35,
           "1month_result": null
         },
         {
@@ -970,8 +970,8 @@
           "price": 7.83,
           "score": 57,
           "recommendation_time": "00:07",
-          "1day_result": null,
-          "1week_result": null,
+          "1day_result": -5.62,
+          "1week_result": -14.69,
           "1month_result": null
         },
         {
@@ -980,8 +980,8 @@
           "price": 46.34,
           "score": 57,
           "recommendation_time": "00:07",
-          "1day_result": null,
-          "1week_result": null,
+          "1day_result": 4.88,
+          "1week_result": -2.98,
           "1month_result": null
         }
       ],
@@ -998,8 +998,8 @@
           "price": 52.0,
           "score": 138,
           "recommendation_time": "00:58",
-          "1day_result": null,
-          "1week_result": null,
+          "1day_result": 5.29,
+          "1week_result": 15.21,
           "1month_result": null
         }
       ],
@@ -1016,8 +1016,8 @@
           "price": 50.75,
           "score": 145,
           "recommendation_time": "08:55",
-          "1day_result": null,
-          "1week_result": null,
+          "1day_result": 8.85,
+          "1week_result": 14.94,
           "1month_result": null
         },
         {
@@ -1026,8 +1026,8 @@
           "price": 41.06,
           "score": 142,
           "recommendation_time": "08:55",
-          "1day_result": null,
-          "1week_result": null,
+          "1day_result": -1.41,
+          "1week_result": -0.24,
           "1month_result": null
         },
         {
@@ -1036,6 +1036,462 @@
           "price": 56.91,
           "score": 139,
           "recommendation_time": "08:55",
+          "1day_result": -1.35,
+          "1week_result": 1.58,
+          "1month_result": null
+        }
+      ],
+      "tracked": false,
+      "result": null
+    },
+    {
+      "date": "2026-05-12",
+      "strategy": "V4 组合策略 TOP3",
+      "stocks": [
+        {
+          "code": "002273",
+          "name": "水晶光电",
+          "price": 37.74,
+          "score": 145,
+          "recommendation_time": "06:20",
+          "1day_result": 4.35,
+          "1week_result": 2.12,
+          "1month_result": null
+        },
+        {
+          "code": "300440",
+          "name": "运达科技",
+          "price": 19.17,
+          "score": 145,
+          "recommendation_time": "06:20",
+          "1day_result": -2.61,
+          "1week_result": -6.73,
+          "1month_result": null
+        },
+        {
+          "code": "002768",
+          "name": "国恩股份",
+          "price": 60.54,
+          "score": 142,
+          "recommendation_time": "06:20",
+          "1day_result": 2.02,
+          "1week_result": 5.72,
+          "1month_result": null
+        }
+      ],
+      "tracked": false,
+      "result": null
+    },
+    {
+      "date": "2026-05-13",
+      "strategy": "V4 组合策略 TOP3",
+      "stocks": [
+        {
+          "code": "001378",
+          "name": "德冠新材",
+          "price": 27.61,
+          "score": 142,
+          "recommendation_time": "07:16",
+          "1day_result": 2.57,
+          "1week_result": 2.68,
+          "1month_result": null
+        },
+        {
+          "code": "002559",
+          "name": "亚威股份",
+          "price": 11.45,
+          "score": 145,
+          "recommendation_time": "07:16",
+          "1day_result": 0.44,
+          "1week_result": -3.06,
+          "1month_result": null
+        },
+        {
+          "code": "002708",
+          "name": "光洋股份",
+          "price": 15.67,
+          "score": 143,
+          "recommendation_time": "07:16",
+          "1day_result": -1.66,
+          "1week_result": -1.85,
+          "1month_result": null
+        }
+      ],
+      "tracked": false,
+      "result": null
+    },
+    {
+      "date": "2026-05-14",
+      "strategy": "V4 组合策略 TOP3",
+      "stocks": [
+        {
+          "code": "300576",
+          "name": "容大感光",
+          "price": 40.93,
+          "score": 145,
+          "recommendation_time": "08:37",
+          "1day_result": 3.96,
+          "1week_result": 3.74,
+          "1month_result": null
+        },
+        {
+          "code": "603211",
+          "name": "晋拓股份",
+          "price": 30.73,
+          "score": 145,
+          "recommendation_time": "08:37",
+          "1day_result": -0.85,
+          "1week_result": -3.87,
+          "1month_result": null
+        },
+        {
+          "code": "603617",
+          "name": "君禾股份",
+          "price": 8.11,
+          "score": 145,
+          "recommendation_time": "08:37",
+          "1day_result": -2.84,
+          "1week_result": -9.12,
+          "1month_result": null
+        }
+      ],
+      "tracked": false,
+      "result": null
+    },
+    {
+      "date": "2026-05-15",
+      "strategy": "V4 组合策略 TOP3",
+      "stocks": [
+        {
+          "code": "600460",
+          "name": "士兰微",
+          "price": 31.38,
+          "score": 145,
+          "recommendation_time": "00:08",
+          "1day_result": -1.05,
+          "1week_result": 2.49,
+          "1month_result": null
+        },
+        {
+          "code": "300410",
+          "name": "正业科技",
+          "price": 10.48,
+          "score": 142,
+          "recommendation_time": "00:08",
+          "1day_result": -3.05,
+          "1week_result": 4.39,
+          "1month_result": null
+        },
+        {
+          "code": "002443",
+          "name": "金洲管道",
+          "price": 12.24,
+          "score": 140,
+          "recommendation_time": "00:08",
+          "1day_result": 5.39,
+          "1week_result": 1.88,
+          "1month_result": null
+        }
+      ],
+      "tracked": false,
+      "result": null
+    },
+    {
+      "date": "2026-05-16",
+      "strategy": "V4 组合策略 TOP3",
+      "stocks": [
+        {
+          "code": "002301",
+          "name": "齐心集团",
+          "price": 8.18,
+          "score": 145,
+          "recommendation_time": "15:06",
+          "1day_result": 4.16,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002371",
+          "name": "北方华创",
+          "price": 592.0,
+          "score": 140,
+          "recommendation_time": "15:06",
+          "1day_result": 4.68,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002600",
+          "name": "领益智造",
+          "price": 16.94,
+          "score": 142,
+          "recommendation_time": "15:06",
+          "1day_result": -0.18,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": false,
+      "result": null
+    },
+    {
+      "date": "2026-05-17",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "002281",
+          "name": "光迅科技",
+          "price": 196.49,
+          "score": 100,
+          "recommendation_time": "00:00",
+          "1day_result": 17.51,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "001309",
+          "name": "德明利",
+          "price": 712.06,
+          "score": 99,
+          "recommendation_time": "00:00",
+          "1day_result": -1.81,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "600105",
+          "name": "永鼎股份",
+          "price": 51.5,
+          "score": 99,
+          "recommendation_time": "00:00",
+          "1day_result": -2.0,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": false,
+      "result": null
+    },
+    {
+      "date": "2026-05-18",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "603933",
+          "name": "睿能科技",
+          "price": 26.78,
+          "score": 132,
+          "recommendation_time": "08:41",
+          "1day_result": -2.73,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002484",
+          "name": "江海股份",
+          "price": 48.66,
+          "score": 125,
+          "recommendation_time": "08:41",
+          "1day_result": 20.61,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "603915",
+          "name": "国茂股份",
+          "price": 19.16,
+          "score": 130,
+          "recommendation_time": "08:41",
+          "1day_result": -6.21,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": false,
+      "result": null
+    },
+    {
+      "date": "2026-05-19",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "002196",
+          "name": "方正电机",
+          "price": 16.16,
+          "score": 99,
+          "recommendation_time": "00:50",
+          "1day_result": -1.05,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002709",
+          "name": "天赐材料",
+          "price": 55.97,
+          "score": 97,
+          "recommendation_time": "00:50",
+          "1day_result": 3.63,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002407",
+          "name": "多氟多",
+          "price": 37.79,
+          "score": 97,
+          "recommendation_time": "00:50",
+          "1day_result": 7.67,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": false,
+      "result": null
+    },
+    {
+      "date": "2026-05-20",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "601133",
+          "name": "柏诚股份",
+          "price": 30.27,
+          "score": 100,
+          "recommendation_time": "07:29",
+          "1day_result": 9.45,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "003018",
+          "name": "金富科技",
+          "price": 66.5,
+          "score": 99,
+          "recommendation_time": "07:29",
+          "1day_result": 0.36,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "600143",
+          "name": "金发科技",
+          "price": 17.79,
+          "score": 59,
+          "recommendation_time": "07:29",
+          "1day_result": -1.41,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": false,
+      "result": null
+    },
+    {
+      "date": "2026-05-21",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "002246",
+          "name": "北化股份",
+          "price": 24.95,
+          "score": 100,
+          "recommendation_time": "07:42",
+          "1day_result": -7.01,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002709",
+          "name": "天赐材料",
+          "price": 58.0,
+          "score": 98,
+          "recommendation_time": "07:42",
+          "1day_result": 0.14,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "300634",
+          "name": "彩讯股份",
+          "price": 29.15,
+          "score": 99,
+          "recommendation_time": "07:42",
+          "1day_result": -5.08,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": false,
+      "result": null
+    },
+    {
+      "date": "2026-05-22",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "600895",
+          "name": "张江高科",
+          "price": 37.31,
+          "score": 100,
+          "recommendation_time": "08:10",
+          "1day_result": null,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "301696",
+          "name": "三瑞智能",
+          "price": 150.22,
+          "score": 99,
+          "recommendation_time": "08:10",
+          "1day_result": null,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "603906",
+          "name": "龙蟠科技",
+          "price": 29.3,
+          "score": 96,
+          "recommendation_time": "08:10",
+          "1day_result": null,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": false,
+      "result": null
+    },
+    {
+      "date": "2026-05-23",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "002703",
+          "name": "浙江世宝",
+          "price": 21.29,
+          "score": 99,
+          "recommendation_time": "07:37",
+          "1day_result": null,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002920",
+          "name": "德赛西威",
+          "price": 110.5,
+          "score": 97,
+          "recommendation_time": "07:37",
+          "1day_result": null,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "600869",
+          "name": "远东股份",
+          "price": 21.18,
+          "score": 99,
+          "recommendation_time": "07:37",
           "1day_result": null,
           "1week_result": null,
           "1month_result": null
@@ -1046,14 +1502,14 @@
     }
   ],
   "stats": {
-    "total_days": 28,
-    "total_recommendations": 82,
+    "total_days": 40,
+    "total_recommendations": 118,
     "profit_days": 0,
     "loss_days": 0,
-    "total_pnl": 173.6,
-    "win_count": 41,
-    "loss_count": 31,
-    "win_rate": 56.94,
-    "avg_profit": 2.41
+    "total_pnl": 328.24,
+    "win_count": 62,
+    "loss_count": 48,
+    "win_rate": 56.36,
+    "avg_profit": 2.98
   }
 }

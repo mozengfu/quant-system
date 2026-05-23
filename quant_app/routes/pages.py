@@ -1,51 +1,62 @@
 """
 页面路由模块 - 所有 HTML 页面路由
 """
-import os
-import json
 import html
+import os
 import time
 from pathlib import Path
+
 from fastapi import APIRouter, Cookie
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 router = APIRouter(tags=["pages"])
 
 BASE_DIR = Path(__file__).parent.parent.parent
 
 
+@router.get("/logout")
+def logout(token: str = Cookie(None)):
+    from quant_app.routes.auth import SESSIONS, sessions_lock
+    with sessions_lock:
+        if token and token in SESSIONS:
+            del SESSIONS[token]
+    resp = RedirectResponse(url="/", status_code=302)
+    resp.delete_cookie("token")
+    return resp
+
+
 @router.get("/login", response_class=HTMLResponse)
-async def login_page():
+def login_page():
     with open(os.path.join(BASE_DIR, "templates", "login.html"), encoding="utf-8") as f:
         return f.read()
 
 
 @router.get("/register", response_class=HTMLResponse)
-async def register_page():
+def register_page():
     with open(os.path.join(BASE_DIR, "templates", "register.html"), encoding="utf-8") as f:
         return f.read()
 
 
 @router.get("/admin", response_class=HTMLResponse)
-async def admin_page():
+def admin_page():
     with open(os.path.join(BASE_DIR, "templates", "admin.html"), encoding="utf-8") as f:
         return f.read()
 
 
 @router.get("/market", response_class=HTMLResponse)
-async def market_page():
+def market_page():
     with open(os.path.join(BASE_DIR, "templates", "market_analysis.html"), encoding="utf-8") as f:
         return f.read()
 
 
 @router.get("/ml_top15", response_class=HTMLResponse)
-async def ml_top15_page():
+def ml_top15_page():
     with open(os.path.join(BASE_DIR, "templates", "ml_top15.html"), encoding="utf-8") as f:
         return f.read()
 
 
 @router.get("/strategy_v41", response_class=HTMLResponse)
-async def strategy_v41_page():
+def strategy_v41_page():
     from fastapi.responses import HTMLResponse as HR
     with open(os.path.join(BASE_DIR, "templates", "strategy_v41.html"), encoding="utf-8") as f:
         content = f.read()
@@ -53,13 +64,13 @@ async def strategy_v41_page():
 
 
 @router.get("/log_analytics", response_class=HTMLResponse)
-async def log_analytics_page():
+def log_analytics_page():
     with open(os.path.join(BASE_DIR, "templates", "log_analytics.html"), encoding="utf-8") as f:
         return f.read()
 
 
 @router.get("/", response_class=HTMLResponse)
-async def landing():
+def landing():
     """公开落地页 - 系统介绍与模块入口"""
     from fastapi.responses import HTMLResponse as HR
     with open(os.path.join(BASE_DIR, "templates", "landing.html"), encoding="utf-8") as f:
@@ -68,10 +79,11 @@ async def landing():
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(token: str = Cookie(None)):
+def dashboard(token: str = Cookie(None)):
     """主控面板 - 需要登录"""
     from fastapi.responses import Response
     from starlette.responses import RedirectResponse
+
     from quant_app.routes.auth import SESSIONS
     if not token or token not in SESSIONS:
         return RedirectResponse(url="/login")
@@ -81,9 +93,9 @@ async def dashboard(token: str = Cookie(None)):
 
 
 @router.get("/reset-password", response_class=HTMLResponse)
-async def reset_password_page(token: str = ""):
+def reset_password_page(token: str = ""):
     """密码重置页面"""
-    from quant_app.routes.auth import RESET_TOKENS, save_reset_tokens
+    from quant_app.routes.auth import RESET_TOKENS
     if not token or token not in RESET_TOKENS:
         return """<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>链接失效</title>
@@ -99,7 +111,6 @@ async def reset_password_page(token: str = ""):
     token_data = RESET_TOKENS[token]
     if token_data.get("expires", 0) < time.time():
         del RESET_TOKENS[token]
-        save_reset_tokens()
         return """<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>链接失效</title>
 <style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f5f5f5;}

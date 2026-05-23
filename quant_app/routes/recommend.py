@@ -1,17 +1,20 @@
-# -*- coding: utf-8 -*-
 """
 建仓推荐 API 路由
 """
-import os, json, time, logging, sys
-from datetime import datetime, timedelta
+import json
+import logging
+import os
+import time
+from datetime import datetime
 from pathlib import Path
-from fastapi import APIRouter, Cookie, Request as FastAPIRequest, HTTPException
+
+from fastapi import APIRouter, Cookie, HTTPException
+
 from app_core import (
+    get_current_user,
     get_stock_realtime,
-    get_current_user, save_access_log, get_client_ip,
     record_recommendation,
 )
-from quant_app.utils.authz import require_admin, is_admin
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +54,10 @@ def _save_recommend_cache(data):
 
 
 @router.get("/api/recommend")
-async def get_recommend(force_refresh: bool = False, token: str = Cookie(None)):
+def get_recommend(force_refresh: bool = False, token: str = Cookie(None)):
     """
-    建仓推荐 - V4+ML过滤策略（2026-05-09起）
-    V4规则初筛 + ML V6.5自适应百分位过滤，按V4评分排序取TOP3
+    建仓推荐 - ML选股策略（2026-05-16起）
+    V11.0堆叠集成模型 + V4初筛混合选Top3，V4候选池30只 → V11.0 ML排序 → 混合评分
     有30分钟缓存，设置 force_refresh=true 强制刷新
     """
     if not get_current_user(token):
@@ -68,17 +71,18 @@ async def get_recommend(force_refresh: bool = False, token: str = Cookie(None)):
 
     try:
         import pymysql
-        from quant_app.utils.config import get_db_config
+
         from quant_app.services.strategy_service import generate_v4_ml_top5
+        from quant_app.utils.config import get_db_config
         db_config = get_db_config(connect_timeout=3)
         conn = pymysql.connect(**db_config)
 
         recommendations = []
-        top5 = generate_v4_ml_top5(conn)
+        top3 = generate_v4_ml_top5(conn, top_n=3)
         conn.close()
 
-        if top5:
-            for s in top5[:3]:
+        if top3:
+            for s in top3:
                 ml = s.get('ml_score', 0)
                 import math
                 ml_prob = 1 / (1 + math.exp(-ml)) if ml != 0 else 0.5
@@ -89,24 +93,24 @@ async def get_recommend(force_refresh: bool = False, token: str = Cookie(None)):
                     '行业': s.get('industry', ''),
                     '现价': price,
                     '涨跌幅': f"{s.get('pct_chg', 0):+.2f}%",
-                    '评分': int(s.get('v4_score', 0)),
-                    '综合评分': int(s.get('v4_score', 0)),
+                    '评分': int(s.get('blended_score', s.get('v4_score', 0))),
+                    '综合评分': int(s.get('blended_score', s.get('v4_score', 0))),
                     'ML得分': f"{ml:.3f}",
-                    '预测收益': round(ml, 2),
+                    '排序强度': round(ml, 2),
                     'ml概率': round(ml_prob, 4),
                     '量比': float(s.get('volume_ratio', 0)),
                     '换手率': float(s.get('turnover_rate', 0)),
                     '入选理由': ' | '.join(s.get('reasons', [])),
-                    '策略来源': 'V4+ML过滤',
+                    '策略来源': 'V11.0 纯ML选股',
                     '止损价': round(price * 0.95, 2),
                 })
 
-        today_str = top5[0].get('date', datetime.now().strftime('%Y-%m-%d')) if top5 else datetime.now().strftime('%Y-%m-%d')
+        today_str = top3[0].get('date', datetime.now().strftime('%Y-%m-%d')) if top3 else datetime.now().strftime('%Y-%m-%d')
 
         if not recommendations:
             return {
                 "扫描时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "策略": "V4+ML过滤策略 TOP3",
+                "策略": "V11.0 Pure ML TOP3" if __import__("os").environ.get("PURE_ML", "0") == "1" else "V11.0 V4+ML混合 TOP3",
                 "推荐股票": [],
                 "cache_date": today_str,
                 "error": "无符合条件的股票"
@@ -114,14 +118,14 @@ async def get_recommend(force_refresh: bool = False, token: str = Cookie(None)):
 
         result = {
             "扫描时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "策略": "V4+ML过滤策略 TOP3",
+            "策略": "ML选股策略 TOP3",
             "推荐股票": recommendations,
             "cache_date": today_str,
         }
 
         if recommendations:
             try:
-                record_recommendation(recommendations, "V4 组合策略 TOP3")
+                record_recommendation(recommendations, "ML选股策略 TOP3")
                 logger.info(f"推荐股票已记录: {[s['名称'] for s in recommendations]}")
             except Exception as e:
                 logger.warning(f"记录推荐失败: {e}")
@@ -135,7 +139,7 @@ async def get_recommend(force_refresh: bool = False, token: str = Cookie(None)):
 
 
 @router.get("/api/recommend/strong")
-async def get_recommend_strong(token: str = Cookie(None)):
+def get_recommend_strong(token: str = Cookie(None)):
     """
     建仓推荐 - 强势活跃策略版（直接从 MySQL 读取，无缓存）
     """
@@ -145,8 +149,10 @@ async def get_recommend_strong(token: str = Cookie(None)):
     try:
         cache_file = os.path.join(DATA_DIR, "recommend_strong_cache.json")
 
-        import pymysql
         from datetime import datetime as dt
+
+        import pymysql
+
         from quant_app.utils.config import get_db_config
         db_config = get_db_config(connect_timeout=5)
         conn = pymysql.connect(**db_config)
@@ -341,14 +347,14 @@ async def get_recommend_strong(token: str = Cookie(None)):
 # ========== V5.0 API ==========
 
 @router.get("/api/v5_recommend")
-async def get_v5_recommend(token: str = Cookie(None)):
+def get_v5_recommend(token: str = Cookie(None)):
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")
     try:
         v5_file = os.path.join(DATA_DIR, "sector_v5_stocks.json")
         if not os.path.exists(v5_file):
             return {"error": "V5.0 股票池为空"}
-        with open(v5_file, 'r', encoding='utf-8') as f:
+        with open(v5_file, encoding='utf-8') as f:
             v5_data = json.load(f)
         stocks = v5_data.get("top10_stocks", [])
         if len(stocks) < 3:

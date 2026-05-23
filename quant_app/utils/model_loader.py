@@ -1,5 +1,4 @@
 """ML 模型加载器 - 统一管理模型加载和缓存"""
-import os
 import logging
 from functools import lru_cache
 from pathlib import Path
@@ -19,6 +18,14 @@ _MODEL_REGISTRY = {
     "v6.6": MODELS_DIR / "ml_stock_model_v6_6.pkl",
     "v6.7": MODELS_DIR / "ml_stock_model_v6_7.pkl",
     "v8.0": MODELS_DIR / "ml_stock_model_v8_0.pkl",
+    "v8.1": MODELS_DIR / "ml_stock_model_v8_1.pkl",
+    "v8.2": MODELS_DIR / "ml_stock_model_v8_2.pkl",
+    "v8.3": MODELS_DIR / "ml_stock_model_v8_3.pkl",
+    "v8.4": MODELS_DIR / "ml_stock_model_v8_4.pkl",
+    "v8.6": MODELS_DIR / "ml_stock_model_v8_6.pkl",
+    "v9.0": MODELS_DIR / "ml_stock_model_v9_0.pkl",
+    "v10.0": MODELS_DIR / "ml_stock_model_v10_0.pkl",
+    "v11.0": MODELS_DIR / "ml_stock_model_v11_0.pkl",
 }
 
 
