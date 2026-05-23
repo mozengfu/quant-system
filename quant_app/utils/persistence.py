@@ -361,8 +361,14 @@ def update_stock_results():
                         row = cursor.fetchone()
                         if row and row[0] and row[0] > 0:
                             stock["1month_result"] = round(((float(row[0]) - rec_price) / rec_price) * 100, 2)
-                            rec["tracked"] = True
-                            rec["result"] = "completed"
+
+                # 有任意周期结果即标记为已追踪
+                has_any = (stock.get("1day_result") is not None or
+                           stock.get("1week_result") is not None or
+                           stock.get("1month_result") is not None)
+                if has_any:
+                    rec["tracked"] = True
+                    rec["result"] = "completed" if stock.get("1month_result") is not None else "partial"
 
         conn.close()
 

@@ -225,8 +225,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-04-23",
@@ -263,8 +263,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-04-24",
@@ -301,8 +301,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-04-25",
@@ -339,8 +339,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-04-26",
@@ -377,8 +377,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-04-26",
@@ -415,8 +415,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-04-27",
@@ -453,8 +453,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-04-28",
@@ -491,8 +491,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-04-28",
@@ -529,8 +529,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-04-29",
@@ -567,8 +567,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-04-30",
@@ -605,8 +605,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-01",
@@ -643,8 +643,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-02",
@@ -681,8 +681,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-02",
@@ -719,8 +719,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-03",
@@ -757,8 +757,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-04",
@@ -795,8 +795,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-05",
@@ -833,8 +833,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-06",
@@ -871,8 +871,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-07",
@@ -909,8 +909,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-08",
@@ -947,8 +947,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-09",
@@ -985,8 +985,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-10",
@@ -1003,8 +1003,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-11",
@@ -1041,8 +1041,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-12",
@@ -1079,8 +1079,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-13",
@@ -1117,8 +1117,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-14",
@@ -1155,8 +1155,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-15",
@@ -1193,8 +1193,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-16",
@@ -1231,8 +1231,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-17",
@@ -1269,8 +1269,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-18",
@@ -1307,8 +1307,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-19",
@@ -1345,8 +1345,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-20",
@@ -1383,8 +1383,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-21",
@@ -1421,8 +1421,8 @@
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-22",
