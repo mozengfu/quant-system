@@ -2371,9 +2371,11 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
 
         if feat_df is not None and not feat_df.empty:
             scores_df = _ensemble_scores(feat_df, bundle)
+            # scores_df 的 index 是 0..N-1，按位置对齐 feat_df 的 ts_code
+            feat_codes = feat_df['ts_code'].tolist()
             scores_map = {}
-            for idx, row in scores_df.iterrows():
-                code = str(idx)
+            for i, (_, row) in enumerate(scores_df.iterrows()):
+                code = feat_codes[i] if i < len(feat_codes) else str(i)
                 scores_map[code] = {
                     'ml_score': round(float(row['ml_score']), 3),
                     'ml_percentile': round(float(row['rank_pct']), 3),
