@@ -144,13 +144,18 @@ def get_position():
         positions = trader.query_stock_positions(account)
         result = []
         for p in positions:
+            current_price = p.market_value / p.volume if p.volume else 0
             result.append({
                 "code": p.stock_code,
-                "volume": p.volume,
+                "shares": p.volume,
+                "current_amount": p.volume,
                 "usable": p.usable_volume,
                 "cost": p.cost_price,
-                "price": p.market_value / p.volume if p.volume else 0,
+                "cost_price": p.cost_price,
+                "price": current_price,
+                "current_price": current_price,
                 "profit": p.float_pnl,
+                "market_value": p.market_value,
             })
         return jsonify(result)
     except Exception as e:
@@ -192,6 +197,19 @@ def post_sell():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
+
+@app.route("/positions", methods=["GET"])
+@need_qmt
+def get_positions():
+    """Alias for /position - RemoteTraderExecutor fallback"""
+    return get_position()
+
+@app.route("/sync_positions", methods=["POST"])
+@need_qmt
+def sync_positions():
+    d = request.get_json(force=True) or {}
+    logger.info(f"持仓同步请求: {d}")
+    return jsonify({"ok": True, "count": 0, "msg": "QMT xtquant模式从柜台读取实时持仓，无需手动同步"})
 
 @app.route("/orders", methods=["GET"])
 @need_qmt

@@ -90,6 +90,33 @@ def post_sell():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
+@app.route("/position", methods=["GET"])
+def get_position():
+    try:
+        import pymysql
+        conn = pymysql.connect(host="192.168.10.30", port=3306, user="root",
+                               password="root123", database="quant_db", charset="utf8mb4")
+        cur = conn.cursor()
+        cur.execute("SELECT ts_code, shares, cost_price, current_price, market_value, profit_loss FROM sim_positions ")
+        result = [{"code":r[0],"shares":r[1],"cost_price":r[2],"current_price":r[3],"market_value":r[4],"profit":r[5]} for r in cur.fetchall()]
+        cur.close(); conn.close()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+@app.route("/positions", methods=["GET"])
+def get_positions():
+    return get_position()
+
+@app.route("/sync_positions", methods=["POST"])
+def sync_positions():
+    d = request.get_json(force=True) or {}
+    return jsonify({"ok": True, "count": 0, "msg": "QMT mixed模式无需手动同步"})
+
+@app.route("/orders", methods=["GET"])
+def get_orders_qmt():
+    return jsonify([])
+
 @app.route("/unlock", methods=["POST"])
 def unlock(): return jsonify({"ok": True, "msg": "QMT无需解锁"})
 @app.route("/keepalive", methods=["GET"])

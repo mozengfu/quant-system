@@ -3,9 +3,9 @@ IPC 桥接策略 v3 - 心跳测试版
 """
 import os, json, time
 
-CMD_FILE = r"C:\qmt_cmd.json"
-RESULT_FILE = r"C:\qmt_result.json"
-HEARTBEAT_FILE = r"C:\qmt_heartbeat.txt"
+CMD_FILE = r"C:\Users\18978\qmt_cmd.json"
+RESULT_FILE = r"C:\Users\18978\qmt_result.json"
+HEARTBEAT_FILE = r"C:\Users\18978\qmt_heartbeat.txt"
 count = 0
 
 def init(ContextInfo):

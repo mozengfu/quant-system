@@ -11,9 +11,9 @@ from functools import wraps
 from flask import Flask, jsonify, request
 
 PORT = 1430
-CMD_FILE = r"C:\qmt_cmd.json"
-RESULT_FILE = r"C:\qmt_result.json"
-LOG_FILE = r"C:\qmt_trader.log"
+CMD_FILE = r"C:\Users\18978\qmt_cmd.json"
+RESULT_FILE = r"C:\Users\18978\qmt_result.json"
+LOG_FILE = r"C:\Users\18978\qmt_trader.log"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
     handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8"), logging.StreamHandler()])
@@ -74,8 +74,8 @@ def get_position():
         conn = pymysql.connect(host="192.168.10.30", port=3306, user="root",
                                password="root123", database="quant_db", charset="utf8mb4")
         cur = conn.cursor()
-        cur.execute("SELECT ts_code, shares, cost_price, market_value, profit_loss FROM sim_positions ")
-        result = [{"code":r[0],"shares":r[1],"cost":r[2],"market_value":r[3],"profit":r[4]} for r in cur.fetchall()]
+        cur.execute("SELECT ts_code, shares, cost_price, current_price, market_value, profit_loss FROM sim_positions ")
+        result = [{"code":r[0],"shares":r[1],"cost_price":r[2],"current_price":r[3],"market_value":r[4],"profit":r[5]} for r in cur.fetchall()]
         cur.close(); conn.close()
         return jsonify(result)
     except Exception as e:
@@ -103,6 +103,17 @@ def post_sell():
     if "error" in result:
         return jsonify({"error": result["error"], "cmd_id": cid}), 400
     return jsonify({"order_id": result.get("order_id"), "cmd_id": cid, "code": code}), 201
+
+@app.route("/positions", methods=["GET"])
+def get_positions():
+    # Alias for /position - RemoteTraderExecutor fallback path
+    return get_position()
+
+@app.route("/sync_positions", methods=["POST"])
+def sync_positions():
+    d = request.get_json(force=True) or {}
+    logger.info(f"持仓同步请求: {d}")
+    return jsonify({"ok": True, "count": 0, "msg": "QMT IPC模式从MySQL读取持仓，无需手动同步"})
 
 @app.route("/orders", methods=["GET"])
 def get_orders():
