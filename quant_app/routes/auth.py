@@ -2,31 +2,50 @@
 认证路由模块 - 用户注册、登录、密码管理
 用户数据存 MySQL users 表，会话和重置令牌为纯内存。
 """
+
 import logging
-import os
 import threading
 import time
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Cookie, HTTPException
 from fastapi import Request as FastAPIRequest
+from pydantic import BaseModel, Field
 
-from app_core import generate_order_id
 from quant_app.services.notification_service import send_email, send_feishu
 from quant_app.utils.auth import hash_pw, make_token, verify_pw
 from quant_app.utils.authz import is_admin
 from quant_app.utils.config import config
-from quant_app.utils.persistence import get_client_ip, save_access_log
+from quant_app.utils.persistence import generate_order_id, get_client_ip, save_access_log
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+# 登录频率限制：每IP 5次/分钟
+_LOGIN_ATTEMPTS: dict[str, list] = {}
+_LOGIN_LOCK = threading.Lock()
+
+def _check_login_rate(ip: str) -> bool:
+    """检查IP是否超过登录频率限制，返回True表示允许"""
+    now = time.time()
+    window = 60
+    max_attempts = 5
+    with _LOGIN_LOCK:
+        attempts = [t for t in _LOGIN_ATTEMPTS.get(ip, []) if now - t < window]
+        _LOGIN_ATTEMPTS[ip] = attempts
+        if len(attempts) >= max_attempts:
+            return False
+        attempts.append(now)
+        return True
+
 
 # ========== MySQL 用户操作辅助函数 ==========
 
+
 def _db_conn():
     import pymysql
+
     return pymysql.connect(**config.mysql.get_connection_params())
 
 
@@ -163,7 +182,7 @@ sessions_lock = threading.Lock()
 logger.info("会话管理初始化完成（纯内存模式）")
 
 
-def get_current_user(token: str = Cookie(None)):
+def get_current_user(token: str = None):
     with sessions_lock:
         if not token or token not in SESSIONS:
             return None
@@ -173,7 +192,7 @@ def get_current_user(token: str = Cookie(None)):
         return SESSIONS[token]["username"]
 
 
-def require_auth(token: str = Cookie(None)):
+def require_auth(token: str = None):
     user = get_current_user(token)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
@@ -189,25 +208,47 @@ RESET_TOKENS: dict = {}
 PAYMENT_ORDERS = {}  # {order_id: {username, email, time, verified}}
 
 
+# ========== Pydantic 验证模型 ==========
+
+class RegisterRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=20)
+    password: str = Field(..., min_length=6)
+    email: str = Field(..., min_length=5)
+    phone: str = ""
+    pay_remark: str = ""
+    pay_wxid: str = ""
+    pay_amount: int = 99
+
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+
+class ForgotPasswordRequest(BaseModel):
+    username: str = Field(..., min_length=1)
+    email: str = Field(..., min_length=5)
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=6)
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=6)
+
 # ========== 认证路由 ==========
 
-@router.post("/register")
-def register(data: dict):
-    username = data.get("username", "").strip()
-    password = data.get("password", "")
-    email = data.get("email", "").strip()
-    phone = data.get("phone", "").strip()
-    pay_remark = data.get("pay_remark", "").strip()
-    pay_wxid = data.get("pay_wxid", "").strip()
 
-    if len(username) < 3 or len(username) > 20:
-        return {"error": "用户名需3-20位"}
+@router.post("/register")
+def register(data: RegisterRequest):
+    username = data.username.strip()
+    password = data.password
+    email = data.email.strip()
+    phone = data.phone.strip()
+    pay_remark = data.pay_remark.strip()
+    pay_wxid = data.pay_wxid.strip()
+
     if not username.isalnum() and "_" not in username:
         return {"error": "用户名只能为英文字母、数字或下划线"}
-    if len(password) < 6:
-        return {"error": "密码至少6位"}
-    if not email or "@" not in email:
-        return {"error": "请填写正确的邮箱地址"}
 
     users = _load_users()
     if username in users:
@@ -217,11 +258,7 @@ def register(data: dict):
     if username in pending:
         return {"error": "该用户名已提交审核，请耐心等待"}
 
-    pay_amount = data.get("pay_amount", 99)
-    try:
-        pay_amount = int(pay_amount)
-    except Exception:
-        pay_amount = 99
+    pay_amount = data.pay_amount
 
     if pay_amount == 1:
         valid_days = 1
@@ -259,9 +296,13 @@ def register(data: dict):
 
 
 @router.post("/login")
-def do_login(request: FastAPIRequest, data: dict):
-    username = data.get("username", "").strip()
-    password = data.get("password", "")
+def do_login(request: FastAPIRequest, data: LoginRequest):
+    username = data.username.strip()
+    password = data.password
+
+    ip = get_client_ip(request)
+    if not _check_login_rate(ip):
+        return {"error": "登录尝试过于频繁，请1分钟后再试"}
 
     pending = _load_pending_users()
     if username in pending:
@@ -283,7 +324,7 @@ def do_login(request: FastAPIRequest, data: dict):
             try:
                 expire = datetime.strptime(expire_date, "%Y-%m-%d")
                 if datetime.now() > expire:
-                    return {"error": "您的账户已于 %s 过期，请联系管理员续费：259563977@qq.com" % expire_date}
+                    return {"error": f"您的账户已于 {expire_date} 过期，请联系管理员续费：259563977@qq.com"}
             except Exception as _e:
                 logger.warning("expire_date parse error: %s", _e)
 
@@ -293,17 +334,17 @@ def do_login(request: FastAPIRequest, data: dict):
         SESSIONS[token] = {"username": username, "expires": expires}
     save_access_log(username, get_client_ip(request), "login")
     from fastapi.responses import JSONResponse
+
     resp = JSONResponse({"success": True, "redirect": "/dashboard"})
-    is_secure = os.environ.get("ENV", "development") == "production"
-    resp.set_cookie(key="token", value=token, httponly=True, samesite="lax", max_age=86400 * 7, secure=is_secure)
+    resp.set_cookie(key="token", value=token, httponly=True, samesite="strict", max_age=86400 * 7, secure=False)
     return resp
 
 
 @router.post("/forgot-password")
-def forgot_password(data: dict):
+def forgot_password(data: ForgotPasswordRequest):
     """申请密码重置"""
-    username = data.get("username", "").strip()
-    email = data.get("email", "").strip()
+    username = data.username.strip()
+    email = data.email.strip()
 
     if not username or not email:
         return {"error": "请输入用户名和邮箱"}
@@ -366,10 +407,10 @@ def forgot_password(data: dict):
 
 
 @router.post("/reset-password")
-def reset_password(data: dict):
+def reset_password(data: ResetPasswordRequest):
     """执行密码重置"""
-    token = data.get("token", "")
-    new_password = data.get("password", "")
+    token = data.token
+    new_password = data.password
 
     if not token or not new_password:
         return {"error": "参数错误"}
@@ -400,14 +441,14 @@ def reset_password(data: dict):
 
 
 @router.post("/change-password")
-def change_password(data: dict, token: str = Cookie(None)):
+def change_password(data: ChangePasswordRequest, token: str = Cookie(None)):
     """用户修改密码（需要登录）"""
     user = get_current_user(token)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
 
-    old_password = data.get("old_password", "")
-    new_password = data.get("new_password", "")
+    old_password = data.old_password
+    new_password = data.new_password
 
     if not old_password or not new_password:
         return {"error": "请填写旧密码和新密码"}
@@ -427,15 +468,15 @@ def change_password(data: dict, token: str = Cookie(None)):
     _update_user_password(user, hash_pw(new_password))
 
     try:
-        msg = "🔐 密码修改通知\n\n用户：%s\n时间：%s\n\n您的密码已被修改，如非本人操作请立即联系管理员。" % (
-            user, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        msg = "🔐 密码修改通知\n\n用户：{}\n时间：{}\n\n您的密码已被修改，如非本人操作请立即联系管理员。".format(
+            user, datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        )
         send_feishu(msg)
     except Exception as e:
         logger.warning(f"发送密码修改通知失败: {e}")
 
     logger.info(f"用户 {user} 修改密码成功")
     return {"message": "密码修改成功"}
-
 
 
 @router.get("/me")

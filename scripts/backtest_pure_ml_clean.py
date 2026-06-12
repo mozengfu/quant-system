@@ -8,63 +8,82 @@
 3. 前向收益从次日开始计算
 4. 每次用独立的数据库连接
 """
-import os, sys, json, logging, time
-from datetime import datetime, timedelta
-import numpy as np, pandas as pd, pymysql
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
+import json
+import logging
+import os
+import sys
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+import pymysql
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
-from quant_app.utils.model_loader import load_model
-from quant_app.utils.config import get_db_config
-from ml_predict import _ensemble_predict, _ensemble_scores, _build_features_for_stocks_v8_0
-from quant_app.services.strategy_service import _v4_score_single
+from ml_predict import _build_features_for_stocks_v8_0, _ensemble_predict, _ensemble_scores
 from quant_app.risk.filters import apply_risk_filters
 from quant_app.risk.sector import apply_sector_diversification
+from quant_app.services.strategy_service import _v4_score_single
+from quant_app.utils.config import get_db_config
+from quant_app.utils.model_loader import load_model
 
 DB_CONFIG = get_db_config()
 START_DATE, END_DATE = "2024-11-01", "2026-05-08"
 SAMPLE_INTERVAL = 5
-TOP_N = int(os.environ.get('TOP_N', '3'))
+TOP_N = int(os.environ.get("TOP_N", "3"))
 HOLD_DAYS = 5
-POOL_SIZE = int(os.environ.get('POOL_SIZE', '300'))
+POOL_SIZE = int(os.environ.get("POOL_SIZE", "300"))
 
-OUT_PATH = os.path.join(BASE_DIR, 'data', 'backtest_pure_ml_12m.json')
+OUT_PATH = os.path.join(BASE_DIR, "data", "backtest_pure_ml_12m.json")
 
 
 def get_trade_dates(conn):
-    df = pd.read_sql(f"SELECT DISTINCT trade_date FROM daily_price WHERE trade_date >= '{START_DATE}' AND trade_date <= '{END_DATE}' ORDER BY trade_date", conn)
-    return sorted(df['trade_date'].astype(str).tolist())
+    df = pd.read_sql(
+        "SELECT DISTINCT trade_date FROM daily_price WHERE trade_date >= %s AND trade_date <= %s ORDER BY trade_date",
+        conn,
+        params=(START_DATE, END_DATE),
+    )
+    return sorted(df["trade_date"].astype(str).tolist())
 
 
 def get_top_vol_yesterday(conn, date_str, n=500):
     """用前一天的成交额排序选股（防泄漏）"""
-    prev = pd.read_sql(f"SELECT MAX(trade_date) FROM daily_price WHERE trade_date < '{date_str}'", conn)
+    prev = pd.read_sql("SELECT MAX(trade_date) FROM daily_price WHERE trade_date < %s", conn, params=(date_str,))
     prev_date = str(prev.iloc[0, 0])
-    df = pd.read_sql(f"""
+    df = pd.read_sql(
+        """
         SELECT ts_code, amount FROM daily_price
-        WHERE trade_date = '{prev_date}'
+        WHERE trade_date = %s
           AND LEFT(ts_code, 1) NOT IN ('8','4','9')
           AND ts_code NOT LIKE '83%%' AND ts_code NOT LIKE '87%%' AND ts_code NOT LIKE '43%%'
           AND close <= 200
-        ORDER BY amount DESC LIMIT {n}
-    """, conn)
-    return df['ts_code'].tolist()
+        ORDER BY amount DESC LIMIT %s
+    """,
+        conn,
+        params=(prev_date, n),
+    )
+    return df["ts_code"].tolist()
 
 
 def forward_return_clean(conn, code, buy_date_str, hold=5):
     """从买入日次日开始计算持有期收益"""
-    df = pd.read_sql(f"""
+    df = pd.read_sql(
+        """
         SELECT trade_date, pct_chg FROM daily_price
-        WHERE ts_code = '{code}' AND trade_date > '{buy_date_str}'
-        ORDER BY trade_date LIMIT {hold}
-    """, conn)
+        WHERE ts_code = %s AND trade_date > %s
+        ORDER BY trade_date LIMIT %s
+    """,
+        conn,
+        params=(code, buy_date_str, hold),
+    )
     if len(df) < 2:
         return None
-    rets = df['pct_chg'].iloc[:hold].values / 100.0
+    rets = df["pct_chg"].iloc[:hold].values / 100.0
     rets = rets[~np.isnan(rets)]
     if len(rets) == 0:
         return None
@@ -73,23 +92,25 @@ def forward_return_clean(conn, code, buy_date_str, hold=5):
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description='纯 ML vs V4+ML 严谨回测')
-    parser.add_argument('--model', type=str, default='v8.1',
-                        help='模型标识或 .pkl 文件路径')
+
+    parser = argparse.ArgumentParser(description="纯 ML vs V4+ML 严谨回测")
+    parser.add_argument("--model", type=str, default="v8.1", help="模型标识或 .pkl 文件路径")
     args = parser.parse_args()
 
     logger.info(f"加载模型: {args.model}...")
-    use_v11 = 'v11' in args.model.lower()
+    use_v11 = "v11" in args.model.lower()
     if use_v11:
-        from scripts.predict_v11 import load_v11_model, predict_v11
         from quant_app.utils.model_loader import get_model_path
-        model_path = args.model if args.model.endswith('.pkl') else get_model_path(args.model)
+        from scripts.predict_v11 import load_v11_model
+
+        model_path = args.model if args.model.endswith(".pkl") else get_model_path(args.model)
         if model_path is None:
             model_path = args.model  # fallback to raw string
         bundle = load_v11_model(model_path)
         use_v11_predict = True
-    elif args.model.endswith('.pkl'):
+    elif args.model.endswith(".pkl"):
         import joblib
+
         bundle = joblib.load(args.model)
         use_v11_predict = False
     else:
@@ -97,8 +118,8 @@ def main():
         if bundle is None:
             bundle = load_model("v8.0")
         use_v11_predict = False
-    version = bundle.get('version', args.model)
-    logger.info(f"模型: {version}, {bundle.get('n_features','?')}特征")
+    version = bundle.get("version", args.model)
+    logger.info(f"模型: {version}, {bundle.get('n_features', '?')}特征")
 
     conn = pymysql.connect(**DB_CONFIG)
     all_dates = get_trade_dates(conn)
@@ -114,7 +135,7 @@ def main():
 
     for di, buy_date in enumerate(sample_dates):
         if (di + 1) % 5 == 0:
-            logger.info(f"进度: {di+1}/{len(sample_dates)} ({datetime.now().strftime('%H:%M')})")
+            logger.info(f"进度: {di + 1}/{len(sample_dates)} ({datetime.now().strftime('%H:%M')})")
 
         # 用前一日的成交额选股池（当天成交额是未来信息）
         vol_codes = get_top_vol_yesterday(conn, buy_date, 500)
@@ -125,6 +146,7 @@ def main():
         try:
             if use_v11_predict:
                 from scripts.predict_v11 import build_features_v11_inference
+
                 feat = build_features_v11_inference(conn, vol_codes, as_of_date=buy_date)
             else:
                 feat = _build_features_for_stocks_v8_0(conn, vol_codes, as_of_date=buy_date)
@@ -135,14 +157,14 @@ def main():
             continue
 
         # ML 预测
-        v80f = bundle['feature_cols']
-        medians = bundle.get('global_medians', {})
+        v80f = bundle["feature_cols"]
+        medians = bundle.get("global_medians", {})
         for col in v80f:
             if col not in feat.columns:
                 feat[col] = medians.get(col, 0.0)
         feat = feat.fillna(0)
         ml_preds = _ensemble_predict(feat, bundle)
-        codes = feat['ts_code'].tolist()
+        codes = feat["ts_code"].tolist()
 
         # ===== V4+ML =====
         v4ml_top = []
@@ -151,7 +173,7 @@ def main():
             for _, row in feat.iterrows():
                 sc = _v4_score_single(row)
                 if sc >= 0:
-                    v4_picks.append((row['ts_code'], sc))
+                    v4_picks.append((row["ts_code"], sc))
             v4_picks.sort(key=lambda x: -x[1])
             v4_top30 = [c for c, _ in v4_picks[:30]]
             if v4_top30:
@@ -173,45 +195,47 @@ def main():
         try:
             scores_df = _ensemble_scores(feat, bundle)
             # 对齐 index：scores_df 的 index 是 0..N-1，feat 有 ts_code 列
-            scores_df.index = feat['ts_code'].values
-            feat_indexed = feat.set_index('ts_code')
-            for col in ['ml_score', 'z_score', 'probability', 'rank_pct']:
+            scores_df.index = feat["ts_code"].values
+            feat_indexed = feat.set_index("ts_code")
+            for col in ["ml_score", "z_score", "probability", "rank_pct"]:
                 feat_indexed[col] = scores_df[col]
             feat_indexed = feat_indexed.reset_index()
 
             # ML 百分位过滤
-            top_codes = feat_indexed.nlargest(POOL_SIZE, 'ml_score')['ts_code'].tolist()
-            ml_filtered = feat_indexed[feat_indexed['ts_code'].isin(top_codes)]
-            ml_filtered = ml_filtered[ml_filtered['rank_pct'] > 0.50]
+            top_codes = feat_indexed.nlargest(POOL_SIZE, "ml_score")["ts_code"].tolist()
+            ml_filtered = feat_indexed[feat_indexed["ts_code"].isin(top_codes)]
+            ml_filtered = ml_filtered[ml_filtered["rank_pct"] > 0.50]
 
             if len(ml_filtered) >= TOP_N:
                 cands = []
                 for _, row in ml_filtered.iterrows():
-                    cands.append({
-                        'ts_code': row['ts_code'],
-                        'close': float(row.get('close', 0)),
-                        'pct_chg': float(row.get('pct_chg', 0)),
-                        'turnover_rate': float(row.get('turnover_rate', 0)),
-                        'volume_ratio': float(row.get('volume_ratio', 0)),
-                        'rps_20': float(row.get('rps_20', 0)),
-                        'position_52w': 50,
-                        'industry': str(row.get('industry', '')),
-                        'ml_score': float(row['ml_score']),
-                        'blended_score': float(row['ml_score']),
-                    })
-                filtered = apply_risk_filters(cands, risk_state='normal')
+                    cands.append(
+                        {
+                            "ts_code": row["ts_code"],
+                            "close": float(row.get("close", 0)),
+                            "pct_chg": float(row.get("pct_chg", 0)),
+                            "turnover_rate": float(row.get("turnover_rate", 0)),
+                            "volume_ratio": float(row.get("volume_ratio", 0)),
+                            "rps_20": float(row.get("rps_20", 0)),
+                            "position_52w": 50,
+                            "industry": str(row.get("industry", "")),
+                            "ml_score": float(row["ml_score"]),
+                            "blended_score": float(row["ml_score"]),
+                        }
+                    )
+                filtered = apply_risk_filters(cands, risk_state="normal")
                 if len(filtered) >= TOP_N:
                     filtered = apply_sector_diversification(filtered, max_per_sector=2)
-                    filtered.sort(key=lambda x: -x.get('ml_score', 0))
-                    pure_ml_risk_top = [c['ts_code'] for c in filtered[:TOP_N]]
+                    filtered.sort(key=lambda x: -x.get("ml_score", 0))
+                    pure_ml_risk_top = [c["ts_code"] for c in filtered[:TOP_N]]
         except Exception:
             pass
 
         # ===== 前向收益（从次日开始） =====
         for label, top, store in [
-            ('V4+ML', v4ml_top, v4ml_results),
-            ('纯ML', pure_ml_top, pure_ml_results),
-            ('纯ML+风控', pure_ml_risk_top, pure_ml_risk_results),
+            ("V4+ML", v4ml_top, v4ml_results),
+            ("纯ML", pure_ml_top, pure_ml_results),
+            ("纯ML+风控", pure_ml_risk_top, pure_ml_risk_results),
         ]:
             rets = []
             for tc in top:
@@ -219,13 +243,17 @@ def main():
                 if fr is not None:
                     rets.append(fr)
             if rets:
-                store.append({'date': buy_date, 'avg_ret': round(float(np.mean(rets)), 2), 'n': len(rets)})
+                store.append({"date": buy_date, "avg_ret": round(float(np.mean(rets)), 2), "n": len(rets)})
 
         # ===== 当日 IC =====
         if len(codes) >= 30:
-            sort_vol = pd.read_sql(f"SELECT ts_code, amount FROM daily_price WHERE trade_date = '{buy_date}' AND ts_code IN ({','.join(['%s']*len(codes))})", conn, params=codes)
+            sort_vol = pd.read_sql(
+                f"SELECT ts_code, amount FROM daily_price WHERE trade_date = %s AND ts_code IN ({','.join(['%s'] * len(codes))})",
+                conn,
+                params=(buy_date,) + tuple(codes),
+            )
             if not sort_vol.empty:
-                vol_map = dict(zip(sort_vol['ts_code'].tolist(), sort_vol['amount'].tolist()))
+                vol_map = dict(zip(sort_vol["ts_code"].tolist(), sort_vol["amount"].tolist()))
 
                 # Use volume as a rough proxy for "forward interest"
                 # (not actual returns, just to check if ML ordering correlates with volume)
@@ -234,17 +262,17 @@ def main():
     conn.close()
 
     # ===== 结果汇总 =====
-    print(f"\n{'='*55}")
+    print(f"\n{'=' * 55}")
     print(f"纯 ML vs V4+ML 严谨回测（{START_DATE} ~ {END_DATE}）")
-    print(f"{'='*55}")
+    print(f"{'=' * 55}")
     print(f"模型: {version}, 采样: {SAMPLE_INTERVAL}天, 持仓: {HOLD_DAYS}天, Top{TOP_N}")
     print()
 
-    for label, store in [('V4+ML', v4ml_results), ('纯ML', pure_ml_results), ('纯ML+风控', pure_ml_risk_results)]:
+    for label, store in [("V4+ML", v4ml_results), ("纯ML", pure_ml_results), ("纯ML+风控", pure_ml_risk_results)]:
         if not store:
             print(f"  {label}: 无有效交易")
             continue
-        rets = np.array([r['avg_ret'] for r in store])
+        rets = np.array([r["avg_ret"] for r in store])
         wins = int((rets > 0).sum())
         total = len(rets)
         cum = float((1 + rets / 100).prod() - 1) * 100
@@ -256,31 +284,37 @@ def main():
         print(f"    采样次数: {total}")
         print(f"    累积收益: {cum:+.2f}%")
         print(f"    单次均值: {avg:+.2f}%")
-        print(f"    胜率:     {wins/total*100:.1f}% ({wins}W/{total-wins}L)")
+        print(f"    胜率:     {wins / total * 100:.1f}% ({wins}W/{total - wins}L)")
         print(f"    夏普:     {sharpe:.2f}")
-        print(f"    最大回撤: {dd*100:.2f}%")
+        print(f"    最大回撤: {dd * 100:.2f}%")
         print()
 
     if v4ml_results and pure_ml_results:
-        v4_rets = [r['avg_ret'] for r in v4ml_results]
-        ml_rets = [r['avg_ret'] for r in pure_ml_results]
+        v4_rets = [r["avg_ret"] for r in v4ml_results]
+        ml_rets = [r["avg_ret"] for r in pure_ml_results]
         min_len = min(len(v4_rets), len(ml_rets))
         diff = np.array(ml_rets[:min_len]) - np.array(v4_rets[:min_len])
-        print(f"  差异分析（纯 ML - V4+ML）:")
+        print("  差异分析（纯 ML - V4+ML）:")
         print(f"    均值差: {diff.mean():+.2f}%")
-        print(f"    纯ML胜出: {(diff>0).sum()}/{min_len} ({(diff>0).sum()/min_len*100:.0f}%)")
+        print(f"    纯ML胜出: {(diff > 0).sum()}/{min_len} ({(diff > 0).sum() / min_len * 100:.0f}%)")
 
     output = {
-        'model': version,
-        'params': {'start': START_DATE, 'end': END_DATE, 'interval': SAMPLE_INTERVAL, 'top_n': TOP_N, 'hold_days': HOLD_DAYS},
-        'v4ml': v4ml_results,
-        'pure_ml': pure_ml_results,
-        'pure_ml_risk': pure_ml_risk_results,
+        "model": version,
+        "params": {
+            "start": START_DATE,
+            "end": END_DATE,
+            "interval": SAMPLE_INTERVAL,
+            "top_n": TOP_N,
+            "hold_days": HOLD_DAYS,
+        },
+        "v4ml": v4ml_results,
+        "pure_ml": pure_ml_results,
+        "pure_ml_risk": pure_ml_risk_results,
     }
-    with open(OUT_PATH, 'w') as f:
+    with open(OUT_PATH, "w") as f:
         json.dump(output, f, indent=2, default=str)
     logger.info(f"结果已保存: {OUT_PATH}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

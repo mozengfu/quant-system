@@ -16,6 +16,7 @@
     finally:
         sess.close()
 """
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -37,16 +38,13 @@ def _build_url() -> str:
             f"@/{MYSQL_DATABASE}"
             f"?unix_socket={MYSQL_SOCKET}&charset=utf8mb4"
         )
-    return (
-        f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}"
-        f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}"
-        f"?charset=utf8mb4"
-    )
+    return f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
 
 
 engine = create_engine(
     _build_url(),
-    pool_size=5,
+    pool_size=20,
+    max_overflow=30,
     pool_recycle=3600,
     pool_pre_ping=True,
     echo=False,

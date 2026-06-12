@@ -6,8 +6,7 @@
     <title>大盘研判 - 智能量化选股系统</title>
     <link rel="icon" href="/static/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/static/icon-192.png">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+    <style>* { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #f5f7fa;
@@ -133,7 +132,7 @@
 </head>
 <body>
     <div class="header">
-        <h1>📊 大盘研判</h1>
+        <h1>大盘研判</h1>
         <a href="/" style="color:rgba(255,255,255,0.7); text-decoration:none; font-size:13px; flex-shrink:0;">← 返回首页</a>
     </div>
     <div class="container">
@@ -143,8 +142,7 @@
         </div>
     </div>
 
-    <script>
-        function escapeHtml(str) {
+    <script>function escapeHtml(str) {
             if (typeof str !== 'string') return str;
             const div = document.createElement('div');
             div.appendChild(document.createTextNode(str));
@@ -176,25 +174,22 @@
                 if (data.分析日期) {
                     html += `
                         <div class="card">
-                            <h2>📅 分析时间</h2>
+                            <h2>分析时间</h2>
                             <div style="font-size: 16px; color: #333; text-align: center; padding: 10px;">
                                 <strong>分析日期：</strong>${h(data.分析日期)}
                                 ${data.数据日期 ? `<br><span style="color: #666; font-size: 14px;">数据日期：${h(data.数据日期)}</span>` : ''}
                             </div>
-                        </div>
-                    `;
+                        </div>`;
                 }
 
                 // 三大盘面综合分析
                 if (data.综合分析) {
                     html += `
                         <div class="card">
-                            <h2>📊 三大盘面综合分析</h2>
-                            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; line-height: 1.8; font-size: 15px;">
-                                ${h(data.综合分析)}
+                            <h2>三大盘面综合分析</h2>
+                            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; line-height: 1.8; font-size: 15px;">${h(data.综合分析)}
                             </div>
-                        </div>
-                    `;
+                        </div>`;
                 }
 
                 // 三大盘面详细分析
@@ -202,15 +197,14 @@
                     const markets = data.三大盘面;
                     html += `
                         <div class="card">
-                            <h2>📈 沪指 / 深指 / 创业板</h2>
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px;">
-                    `;
+                            <h2>沪指 / 深指 / 创业板</h2>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px;">`;
 
                     for (const [name, marketData] of Object.entries(markets)) {
                         const k = marketData.K线分析 || {};
                         const changeClass = parseFloat(k.今日涨跌) > 0 ? 'up' : 'down';
                         html += `
-                            <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 4px solid ${parseFloat(k.今日涨跌) > 0 ? '#dc3545' : '#28a745'};">
+                            <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 4px solid ${parseFloat(k.今日涨跌) >0 ? '#dc3545' : '#28a745'};">
                                 <h3 style="margin-bottom: 10px; color: #333;">${h(name)} <span style="font-size: 12px; color: #666;">(${h(marketData.市场)})</span></h3>
                                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
                                     <div style="text-align: center;">
@@ -219,15 +213,14 @@
                                     </div>
                                     <div style="text-align: center;">
                                         <div style="font-size: 12px; color: #666;">涨跌</div>
-                                        <div style="font-size: 18px; font-weight: bold; color: ${parseFloat(k.今日涨跌) > 0 ? '#dc3545' : '#28a745'};">${h(k.今日涨跌 || '-')}</div>
+                                        <div style="font-size: 18px; font-weight: bold; color: ${parseFloat(k.今日涨跌) >0 ? '#dc3545' : '#28a745'};">${h(k.今日涨跌 || '-')}</div>
                                     </div>
                                 </div>
                                 <div style="font-size: 13px; color: #555; line-height: 1.6;">
                                     <div>趋势: ${h(k.趋势判断 || '-')}</div>
                                     <div>量能: ${h(k.量能状态 || '-')}</div>
                                 </div>
-                            </div>
-                        `;
+                            </div>`;
                     }
 
                     html += `</div></div>`;
@@ -238,17 +231,14 @@
                     const r = data.涨跌原因;
                     html += `
                         <div class="card">
-                            <h2>📋 涨跌原因分析</h2>
+                            <h2>涨跌原因分析</h2>
                             <div class="analysis-text">
-                                <p><strong>涨跌幅度:</strong> ${h(r.涨跌幅度)}</p>
-                                ${r.昨日涨跌 ? `<p><strong>昨日涨跌:</strong> ${h(r.昨日涨跌)}</p>` : ''}
+                                <p><strong>涨跌幅度:</strong>${h(r.涨跌幅度)}</p>${r.昨日涨跌 ? `<p><strong>昨日涨跌:</strong>${h(r.昨日涨跌)}</p>` : ''}
                                 <p><strong>主要原因:</strong></p>
-                                <ul style="line-height: 2; margin-left: 20px;">
-                                    ${r.主要原因.map(reason => `<li>${h(reason)}</li>`).join('')}
+                                <ul style="line-height: 2; margin-left: 20px;">${r.主要原因.map(reason => `<li>${h(reason)}</li>`).join('')}
                                 </ul>
                             </div>
-                        </div>
-                    `;
+                        </div>`;
                 }
 
                 // 板块分析
@@ -256,47 +246,38 @@
                     const s = data.板块分析;
                     html += `
                         <div class="card">
-                            <h2>🏭 板块涨跌分析</h2>
-
-                            ${s.数据来源 ? `<div style="background: #e8f4f8; padding: 10px; border-radius: 6px; margin-bottom: 15px; font-size: 13px; color: #666;">
+                            <h2>板块涨跌分析</h2>${s.数据来源 ? `<div style="background: #e8f4f8; padding: 10px; border-radius: 6px; margin-bottom: 15px; font-size: 13px; color: #666;">
                                 <strong>数据来源：</strong>${h(s.数据来源)}
                             </div>` : ''}
 
                             ${s.综合分析 ? `<div style="background: #f0f7ff; padding: 15px; border-radius: 8px; margin-bottom: 20px; line-height: 1.8;">${h(s.综合分析)}</div>` : ''}
 
                             <div style="margin-bottom: 20px;">
-                                <h3 style="color: #dc3545; margin-bottom: 12px; font-size: 16px;">📈 领涨板块</h3>
-                                <div style="display: flex; flex-direction: column; gap: 10px;">
-                                    ${s.领涨板块.map(sector => `
+                                <h3 style="color: #dc3545; margin-bottom: 12px; font-size: 16px;">领涨板块</h3>
+                                <div style="display: flex; flex-direction: column; gap: 10px;">${s.领涨板块.map(sector => `
                                         <div style="background: #f8d7da; padding: 12px; border-radius: 8px; border-left: 4px solid #dc3545;">
                                             <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
                                                 <strong>${h(sector.name)}</strong>
                                                 <span style="color: #dc3545; font-weight: bold;">+${h(sector.change)}%</span>
-                                            </div>
-                                            ${sector.主力资金 ? `<div style="font-size: 12px; color: #dc3545; margin-bottom: 3px;">主力资金: ${h(sector.主力资金)}</div>` : ''}
+                                            </div>${sector.主力资金 ? `<div style="font-size: 12px; color: #dc3545; margin-bottom: 3px;">主力资金: ${h(sector.主力资金)}</div>` : ''}
                                             <div style="font-size: 13px; color: #555; line-height: 1.6;">${h(sector.reason)}</div>
-                                        </div>
-                                    `).join('')}
+                                        </div>`).join('')}
                                 </div>
                             </div>
 
                             <div>
-                                <h3 style="color: #28a745; margin-bottom: 12px; font-size: 16px;">📉 领跌板块</h3>
-                                <div style="display: flex; flex-direction: column; gap: 10px;">
-                                    ${s.领跌板块.map(sector => `
+                                <h3 style="color: #28a745; margin-bottom: 12px; font-size: 16px;">领跌板块</h3>
+                                <div style="display: flex; flex-direction: column; gap: 10px;">${s.领跌板块.map(sector => `
                                         <div style="background: #d4edda; padding: 12px; border-radius: 8px; border-left: 4px solid #28a745;">
                                             <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
                                                 <strong>${h(sector.name)}</strong>
                                                 <span style="color: #28a745; font-weight: bold;">${h(sector.change)}%</span>
-                                            </div>
-                                            ${sector.主力资金 ? `<div style="font-size: 12px; color: #28a745; margin-bottom: 3px;">主力资金: ${h(sector.主力资金)}</div>` : ''}
+                                            </div>${sector.主力资金 ? `<div style="font-size: 12px; color: #28a745; margin-bottom: 3px;">主力资金: ${h(sector.主力资金)}</div>` : ''}
                                             <div style="font-size: 13px; color: #555; line-height: 1.6;">${h(sector.reason)}</div>
-                                        </div>
-                                    `).join('')}
+                                        </div>`).join('')}
                                 </div>
                             </div>
-                        </div>
-                    `;
+                        </div>`;
                 }
 
                 // 主要资讯
@@ -304,30 +285,22 @@
                     const n = data.主要资讯;
                     html += `
                         <div class="card">
-                            <h2>📰 主要资讯总结</h2>
-                            <div class="analysis-text">
-                                ${n.宏观政策 ? `
+                            <h2>主要资讯总结</h2>
+                            <div class="analysis-text">${n.宏观政策 ? `
                                     <p><strong>宏观政策:</strong></p>
-                                    <ul style="margin-left: 20px; margin-bottom: 15px;">
-                                        ${n.宏观政策.map(item => `<li>${h(item)}</li>`).join('')}
-                                    </ul>
-                                ` : ''}
+                                    <ul style="margin-left: 20px; margin-bottom: 15px;">${n.宏观政策.map(item => `<li>${h(item)}</li>`).join('')}
+                                    </ul>` : ''}
                                 ${n.行业动态 ? `
                                     <p><strong>行业动态:</strong></p>
-                                    <ul style="margin-left: 20px; margin-bottom: 15px;">
-                                        ${n.行业动态.map(item => `<li>${h(item)}</li>`).join('')}
-                                    </ul>
-                                ` : ''}
+                                    <ul style="margin-left: 20px; margin-bottom: 15px;">${n.行业动态.map(item => `<li>${h(item)}</li>`).join('')}
+                                    </ul>` : ''}
                                 ${n.国际市场 ? `
                                     <p><strong>国际市场:</strong></p>
-                                    <ul style="margin-left: 20px; margin-bottom: 15px;">
-                                        ${n.国际市场.map(item => `<li>${h(item)}</li>`).join('')}
-                                    </ul>
-                                ` : ''}
-                                ${n.总结 ? `<p style="background: #f0f7ff; padding: 15px; border-radius: 8px; margin-top: 15px;"><strong>总结:</strong> ${h(n.总结)}</p>` : ''}
+                                    <ul style="margin-left: 20px; margin-bottom: 15px;">${n.国际市场.map(item => `<li>${h(item)}</li>`).join('')}
+                                    </ul>` : ''}
+                                ${n.总结 ? `<p style="background: #f0f7ff; padding: 15px; border-radius: 8px; margin-top: 15px;"><strong>总结:</strong>${h(n.总结)}</p>` : ''}
                             </div>
-                        </div>
-                    `;
+                        </div>`;
                 }
 
                 // 趋势预测
@@ -335,15 +308,14 @@
                     const p = data.趋势预测;
                     html += `
                         <div class="card">
-                            <h2>🔮 趋势预测</h2>
+                            <h2>趋势预测</h2>
                             <div class="prediction-box">
                                 <div class="prediction-title">短期预测</div>
                                 <p style="margin-bottom: 15px;">${h(p.短期预测)}</p>
                                 <div class="confidence">信心度: ${h(p.信心度)}</div>
                                 <p style="margin-top: 15px; font-size: 14px;">建议: ${h(p.建议)}</p>
                             </div>
-                        </div>
-                    `;
+                        </div>`;
                 }
 
                 content.innerHTML = html;

@@ -7,10 +7,17 @@
 - 模拟不同精度的 ML 排序（α 从 0% 到 100%，α 越高质量越好）
 - 对比 V4+Random、V4+V11、V4+Perfect 的累积收益曲线
 """
-import os, sys, json, logging, warnings
+import json
+import logging
+import os
+import sys
+import warnings
+
 warnings.filterwarnings('ignore')
-import numpy as np, pandas as pd
+import numpy as np
+import pandas as pd
 from dotenv import load_dotenv
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -19,13 +26,15 @@ logger = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 
-from quant_app.utils.model_loader import get_model_path
-from quant_app.utils.config import get_db_config
-from ml_predict import _ensemble_predict
-from quant_app.services.strategy_service import _v4_score_single, ML_PERCENTILE_THRESHOLD, ML_BLEND_WEIGHT
-from scripts.predict_v11 import build_features_v11_inference
+import joblib
+import pymysql
 from sqlalchemy import create_engine
-import joblib, pymysql
+
+from ml_predict import _ensemble_predict
+from quant_app.services.strategy_service import _v4_score_single
+from quant_app.utils.config import get_db_config
+from quant_app.utils.model_loader import get_model_path
+from scripts.predict_v11 import build_features_v11_inference
 
 DB_CONFIG = get_db_config()
 DB_CONFIG.pop('unix_socket', None)
@@ -177,10 +186,10 @@ conn.close()
 
 # ===== Results =====
 print(f"\n{'='*65}")
-print(f"ML 排序精度对 V4+ML 策略收益的影响")
+print("ML 排序精度对 V4+ML 策略收益的影响")
 print(f"{'='*65}")
 print(f"区间: {START_DATE} ~ {END_DATE}, 采样: 每{SAMPLE_INTERVAL}天, 持仓: {HOLD_DAYS}天, Top{TOP_N}")
-print(f"说明: α=ML排序准确度 (0%=完全随机 → 100%=完美排序)")
+print("说明: α=ML排序准确度 (0%=完全随机 → 100%=完美排序)")
 print()
 
 # V11 actual results

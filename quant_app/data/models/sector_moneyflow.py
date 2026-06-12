@@ -1,4 +1,5 @@
 """sector_moneyflow 表 ORM 模型。"""
+
 from decimal import Decimal
 
 from sqlalchemy import DECIMAL, Date, String

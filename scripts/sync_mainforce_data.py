@@ -3,9 +3,13 @@
 主力资金数据同步脚本
 从 Tushare API 拉取历史资金流向、板块资金流向、股东变化、龙虎榜数据并入库
 """
-import os, sys, time, logging
-from datetime import datetime, timedelta
+import logging
+import os
+import time
+from datetime import datetime
+
 from dotenv import load_dotenv
+
 load_dotenv()
 import pymysql
 import tushare as ts
@@ -107,7 +111,7 @@ def sync_moneyflow_daily():
                 (ts_code, trade_date, buy_sm_amount, sell_sm_amount, buy_md_amount, sell_md_amount,
                  buy_lg_amount, sell_lg_amount, buy_elg_amount, sell_elg_amount, net_mf_amount, main_net)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
-            
+
             count = batch_insert(conn, sql, rows)
             total_inserted += count
 

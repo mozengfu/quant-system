@@ -16,12 +16,16 @@ V4+ML 回测对比：V6.5 vs V8.0
 输出:
     data/backtest_v4_v65_vs_v80.json — 两套回测参数对比
 """
-import os, sys, json, logging, subprocess
-from datetime import datetime, timedelta
+import json
+import logging
+import os
+import subprocess
+import sys
 from collections import defaultdict
+from datetime import datetime, timedelta
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -53,8 +57,9 @@ FEATURE_BUILDERS = {
 
 
 def load_df(sql):
-    from quant_app.utils.config import get_db_config
     import pymysql
+
+    from quant_app.utils.config import get_db_config
     conn = pymysql.connect(**get_db_config())
     df = pd.read_sql(sql, conn)
     conn.close()
@@ -203,11 +208,11 @@ def run_single_model(model_version, daily, dt_d, dti_d, hc_d,
     直接加载指定版本模型，使用对应的特征构建函数。
     """
     import pandas as pd
-    import numpy as np
     import pymysql
-    from quant_app.utils.model_loader import load_model
-    from quant_app.utils.config import get_db_config
+
     from ml_predict import _ensemble_predict, _scores_to_percentile
+    from quant_app.utils.config import get_db_config
+    from quant_app.utils.model_loader import load_model
 
     # 直接加载指定版本模型（绕过 _load_best_model 的版本优先逻辑）
     bundle = load_model(model_version)
@@ -507,7 +512,6 @@ def run_single_model(model_version, daily, dt_d, dti_d, hc_d,
 def run_single(model_version):
     """单版本运行入口（子进程调用），支持环境变量调参"""
     import pandas as pd
-    import numpy as np
 
     # 支持环境变量覆盖参数（用于调优模式）
     global ML_PERCENTILE_THRESHOLD, ML_BLEND_WEIGHT
@@ -590,7 +594,7 @@ def run_comparison():
 
     # 输出对比
     print(f"\n{'=' * 80}")
-    print(f"  V4+ML 回测对比结果")
+    print("  V4+ML 回测对比结果")
     print(f"{'=' * 80}")
     h = f"  {'模型':<8s} {'收益率':>8s} {'胜率':>6s} {'夏普':>6s} {'回撤':>8s} {'交易':>4s} {'盈亏比':>6s}"
     print(h)
@@ -655,7 +659,7 @@ def run_tune_fine():
     bw_candidates = [0.10, 0.15, 0.20, 0.25, 0.30]
 
     logger.info(f"{'=' * 80}")
-    logger.info(f"  细粒度调优：围绕粗调最优点加密扫描")
+    logger.info("  细粒度调优：围绕粗调最优点加密扫描")
     logger.info(f"  ML_PERCENTILE_THRESHOLD: {pct_candidates}")
     logger.info(f"  ML_BLEND_WEIGHT:         {bw_candidates}")
     logger.info(f"  共 {len(pct_candidates) * len(bw_candidates)} 个组合")
@@ -694,7 +698,7 @@ def run_tune_fine():
     results.sort(key=lambda x: x['total_return_pct'], reverse=True)
 
     print(f"\n{'=' * 80}")
-    print(f"  细粒度调优结果 (按收益率降序)")
+    print("  细粒度调优结果 (按收益率降序)")
     print(f"{'=' * 80}")
     h = f"  {'pct_th':>6s} {'bw':>4s} {'收益率':>8s} {'夏普':>6s} {'胜率':>6s} {'交易':>4s} {'盈亏比':>6s} {'回撤':>8s} {'ML通过率':>8s}"
     print(h)
@@ -715,7 +719,7 @@ def run_tune_fine():
     print(f"    收益率: {best['total_return_pct']:.2f}%, 夏普: {best['sharpe_ratio']:.2f}, 回撤: {best['max_drawdown_pct']:.2f}%")
 
     # 对比粗调最优
-    print(f"\n  对比粗调最优 (pct=0.20, bw=0.20): 收益 +38.80%, 夏普 1.97, 回撤 18.56%")
+    print("\n  对比粗调最优 (pct=0.20, bw=0.20): 收益 +38.80%, 夏普 1.97, 回撤 18.56%")
     diff_ret = best['total_return_pct'] - 38.80
     print(f"  收益差: {diff_ret:+.2f}%")
 
@@ -741,7 +745,7 @@ def run_tune():
     bw_candidates = [0.0, 0.20, 0.40, 0.60, 0.80, 1.0]
 
     logger.info(f"{'=' * 80}")
-    logger.info(f"  调优模式：扫描参数空间")
+    logger.info("  调优模式：扫描参数空间")
     logger.info(f"  ML_PERCENTILE_THRESHOLD: {pct_candidates}")
     logger.info(f"  ML_BLEND_WEIGHT:         {bw_candidates}")
     logger.info(f"  共 {len(pct_candidates) * len(bw_candidates)} 个组合")
@@ -782,7 +786,7 @@ def run_tune():
     results.sort(key=lambda x: x['total_return_pct'], reverse=True)
 
     print(f"\n{'=' * 80}")
-    print(f"  调优结果 (按收益率降序)")
+    print("  调优结果 (按收益率降序)")
     print(f"{'=' * 80}")
     h = f"  {'pct_th':>6s} {'bw':>4s} {'收益率':>8s} {'夏普':>6s} {'胜率':>6s} {'交易':>4s} {'盈亏比':>6s} {'ML通过率':>8s}"
     print(h)
@@ -823,7 +827,7 @@ def main():
     args = parser.parse_args()
 
     print(f"\n{'=' * 80}")
-    print(f"  V4+ML 回测对比：V6.5 vs V8.0")
+    print("  V4+ML 回测对比：V6.5 vs V8.0")
     print(f"  区间: {START_DATE} ~ {END_DATE}")
     print(f"  策略: V4.1 初筛({V41_CANDIDATE_LIMIT}只) → ML百分位过滤(≥{ML_PERCENTILE_THRESHOLD}) → "
           f"混合评分(ML权重{ML_BLEND_WEIGHT})取Top{TOP_N}")

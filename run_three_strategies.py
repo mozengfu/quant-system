@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """运行 V4 组合策略并输出 TOP5（底部起步和强势活跃策略已下线，详见CLAUDE.md）"""
-import os, sys, json
+import json
+import os
+import sys
 from pathlib import Path
 
 BASE_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
@@ -10,9 +12,11 @@ os.chdir(str(BASE_DIR))
 sys.path.insert(0, str(BASE_DIR))
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 import logging
+
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s %(levelname)s %(message)s')
 
 def print_top5(name, stocks, total=0):
@@ -42,9 +46,11 @@ print("  底部起步/强势活跃策略已下线（回测亏损，详见CLAUDE.
 print("=" * 70)
 
 # V4组合策略：从数据库直接运行
-import pymysql
-from quant_app.utils.config import get_db_config
 from pathlib import Path
+
+import pymysql
+
+from quant_app.utils.config import get_db_config
 
 scripts_dir = str(Path(__file__).resolve().parent / "scripts")
 if scripts_dir not in sys.path:
@@ -118,5 +124,5 @@ with open(DATA_DIR / "stock_pool_v4.json", 'w') as f:
 
 print(f"{'='*70}")
 print(f"  V4 扫描完成，共 {len(stocks)} 只符合条件")
-print(f"  底部起步/强势活跃策略已关闭")
+print("  底部起步/强势活跃策略已关闭")
 print(f"{'='*70}")

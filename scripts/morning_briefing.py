@@ -5,8 +5,11 @@
 2. 检查真实持仓状态
 3. 推送飞书晨间简报
 """
-import os, sys, json, time
-from datetime import datetime, timedelta
+import json
+import os
+import sys
+from datetime import datetime
+
 import pymysql
 
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -37,17 +40,17 @@ def get_sim_status():
             return None
         cols = [d[0] for d in cur.description]
         acc = dict(zip(cols, row))
-        
+
         # 持仓
         cur.execute("""SELECT ts_code, stock_name, shares, cost_price, current_price, profit_pct, stop_loss, take_profit
                        FROM sim_positions WHERE status = 'HOLD'""")
         positions = cur.fetchall()
         pos_cols = [d[0] for d in cur.description]
         pos_list = [dict(zip(pos_cols, p)) for p in positions]
-        
+
         cur.close()
         conn.close()
-        
+
         return {
             'total_value': float(acc['total_value']),
             'profit_loss': float(acc['profit_loss']),
@@ -67,10 +70,10 @@ def get_real_positions():
         positions_file = os.path.join(DATA_DIR, "positions.json")
         if not os.path.exists(positions_file):
             return []
-        with open(positions_file, 'r') as f:
+        with open(positions_file) as f:
             data = json.load(f)
         return data.get('positions', [])
-    except Exception as e:
+    except Exception:
         return []
 
 def morning_briefing():
@@ -78,14 +81,14 @@ def morning_briefing():
     now = datetime.now()
     today_str = now.strftime("%Y-%m-%d")
     weekday = now.strftime("%A")
-    
+
     # 检查是否交易日（周一到周五）
     is_trading_day = now.weekday() < 5
-    
+
     lines = []
     lines.append(f"☀️ 早安！{today_str} {weekday}")
     lines.append("")
-    
+
     # === 模拟交易 ===
     lines.append("🧪 **模拟交易状态**")
     sim = get_sim_status()
@@ -96,7 +99,7 @@ def morning_briefing():
         lines.append(f"  最大回撤: {sim['max_drawdown']}%")
         lines.append(f"  可用资金: ¥{sim['cash']:,.2f}")
         lines.append(f"  交易次数: {sim['trade_count']}笔 | 胜率: {sim['win_rate']}%")
-        
+
         if sim['positions']:
             lines.append(f"  持仓: {len(sim['positions'])}只")
             for p in sim['positions']:
@@ -105,9 +108,9 @@ def morning_briefing():
                 lines.append(f"    {p['stock_name']}({code}) {p['shares']}股 盈亏{pnl_sign}{p['profit_pct']:.2f}%")
     else:
         lines.append("  暂无数据（模拟交易尚未启动）")
-    
+
     lines.append("")
-    
+
     # === 真实持仓 ===
     if is_trading_day:
         lines.append("📊 **真实持仓状态**")
@@ -129,7 +132,7 @@ def morning_briefing():
                     lines.append(f"    止损:{stop:.2f} 止盈:{take:.2f}")
         else:
             lines.append("  当前无持仓")
-        
+
         lines.append("")
         lines.append("📌 **今日操作提醒**")
         lines.append("  ⏰ 9:00 盘前推送 V4 候选股")
@@ -138,7 +141,7 @@ def morning_briefing():
         lines.append("  🧪 15:10 模拟交易扫描")
         lines.append("")
         lines.append("⚡ 请确认清仓/建仓计划是否执行！")
-    
+
     msg = "\n".join(lines)
     send_feishu(msg)
     print(f"晨间简报已发送: {today_str}")

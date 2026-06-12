@@ -1,4 +1,5 @@
 """ML 模型加载器 - 统一管理模型加载和缓存"""
+
 import logging
 from functools import lru_cache
 from pathlib import Path
@@ -26,6 +27,12 @@ _MODEL_REGISTRY = {
     "v9.0": MODELS_DIR / "ml_stock_model_v9_0.pkl",
     "v10.0": MODELS_DIR / "ml_stock_model_v10_0.pkl",
     "v11.0": MODELS_DIR / "ml_stock_model_v11_0.pkl",
+    "v11.2": MODELS_DIR / "ml_stock_model_v11_2.pkl",
+    "v11.0-oos": MODELS_DIR / "ml_stock_model_v11_0_oos_v2.pkl",
+    # TopDown V1 三层模型
+    "market-v3": MODELS_DIR / "models" / "market_direction_v3.pkl",
+    "sector-heat-v1": MODELS_DIR / "models" / "sector_heat_v1.pkl",
+    "wave-catcher-v1": MODELS_DIR / "models" / "wave_catcher_v1.pkl",
 }
 
 
@@ -51,6 +58,7 @@ def load_model(version="v6"):
         return None
     try:
         import joblib
+
         bundle = joblib.load(path)
         logger.info(f"模型已加载: {path.name} (version={bundle.get('version', 'N/A')})")
         return bundle

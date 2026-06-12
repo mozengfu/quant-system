@@ -11,7 +11,6 @@
 import uvicorn
 
 # 导入 FastAPI app 实例并启动
-from app_api import app
 
 if __name__ == "__main__":
     uvicorn.run(

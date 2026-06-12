@@ -12,6 +12,7 @@ signal_fn 签名:
         # 返回当日推荐股票代码列表
         return ["000001.SZ", "000002.SZ", ...]
 """
+
 import logging
 from dataclasses import dataclass, field
 
@@ -81,6 +82,7 @@ class BacktestEngine:
         hold_days: int = 5,
         sample_interval: int = 5,
         use_prev_amount: bool = True,
+        stop_loss: float = 0.0,
     ):
         """
         Args:
@@ -95,6 +97,7 @@ class BacktestEngine:
         self.hold_days = hold_days
         self.sample_interval = sample_interval
         self.use_prev_amount = use_prev_amount
+        self.stop_loss = stop_loss
 
     def run(
         self,
@@ -124,15 +127,20 @@ class BacktestEngine:
                 logger.warning("交易日期不足，无法回测")
                 return BacktestResult()
 
-            logger.info("回测 %s ~ %s (%d 个交易日, 持有%d天, 每%d天采样)",
-                        start_date, end_date, len(trade_dates),
-                        self.hold_days, self.sample_interval)
+            logger.info(
+                "回测 %s ~ %s (%d 个交易日, 持有%d天, 每%d天采样)",
+                start_date,
+                end_date,
+                len(trade_dates),
+                self.hold_days,
+                self.sample_interval,
+            )
 
             result = BacktestResult()
             price_cache: dict[str, dict[str, float]] = {}
             self._preload_prices(conn, price_cache, trade_dates)
 
-            signal_dates = trade_dates[:-(self.hold_days - 1)] if len(trade_dates) >= self.hold_days else []
+            signal_dates = trade_dates[: -(self.hold_days - 1)] if len(trade_dates) >= self.hold_days else []
 
             for i, trade_date in enumerate(signal_dates):
                 if i % self.sample_interval != 0:
@@ -146,20 +154,40 @@ class BacktestEngine:
                 if exit_idx >= len(trade_dates):
                     continue
 
-                exit_date = trade_dates[exit_idx]
-                for ts_code in signals[:self.top_n]:
+                default_exit = trade_dates[exit_idx]
+                for ts_code in signals[: self.top_n]:
                     entry_price = price_cache.get(ts_code, {}).get(trade_date)
-                    exit_price = price_cache.get(ts_code, {}).get(exit_date)
-                    if entry_price and exit_price and entry_price > 0:
+                    if not entry_price or entry_price <= 0:
+                        continue
+
+                    if self.stop_loss < 0:
+                        exit_date = default_exit
+                        exit_price = price_cache.get(ts_code, {}).get(exit_date)
+                        for check_idx in range(i + 1, min(exit_idx + 1, len(trade_dates))):
+                            check_date = trade_dates[check_idx]
+                            check_price = price_cache.get(ts_code, {}).get(check_date)
+                            if check_price and check_price > 0:
+                                cur_ret = (check_price - entry_price) / entry_price
+                                if cur_ret <= self.stop_loss:
+                                    exit_date = check_date
+                                    exit_price = check_price
+                                    break
+                    else:
+                        exit_date = default_exit
+                        exit_price = price_cache.get(ts_code, {}).get(exit_date)
+
+                    if exit_price and exit_price > 0:
                         ret = (exit_price - entry_price) / entry_price * 100
-                        result.trades.append(TradeRecord(
-                            entry_date=trade_date,
-                            exit_date=exit_date,
-                            ts_code=ts_code,
-                            entry_price=entry_price,
-                            exit_price=exit_price,
-                            pct_return=ret,
-                        ))
+                        result.trades.append(
+                            TradeRecord(
+                                entry_date=trade_date,
+                                exit_date=exit_date,
+                                ts_code=ts_code,
+                                entry_price=entry_price,
+                                exit_price=exit_price,
+                                pct_return=ret,
+                            )
+                        )
 
             self._compute_metrics(result)
             return result
@@ -175,10 +203,7 @@ class BacktestEngine:
         """
         if self.use_prev_amount:
             row = conn.cursor()
-            row.execute(
-                "SELECT MAX(trade_date) FROM daily_price WHERE trade_date < %s",
-                (trade_date,)
-            )
+            row.execute("SELECT MAX(trade_date) FROM daily_price WHERE trade_date < %s", (trade_date,))
             prev_date = row.fetchone()[0]
             if prev_date is None:
                 return []
@@ -205,6 +230,7 @@ class BacktestEngine:
     def _get_trade_dates(self, conn, start: str, end: str) -> list[str]:
         """获取交易日列表。"""
         import pandas as pd
+
         df = pd.read_sql(
             "SELECT DISTINCT trade_date FROM daily_price "
             "WHERE trade_date >= %(start)s AND trade_date <= %(end)s ORDER BY trade_date",
@@ -216,6 +242,7 @@ class BacktestEngine:
     def _preload_prices(self, conn, cache: dict, trade_dates: list[str]):
         """预加载所有交易日的收盘价。"""
         import pandas as pd
+
         df = pd.read_sql(
             "SELECT ts_code, trade_date, close FROM daily_price "
             "WHERE trade_date >= %(start)s AND trade_date <= %(end)s",
@@ -223,7 +250,9 @@ class BacktestEngine:
             params={"start": trade_dates[0], "end": trade_dates[-1]},
         )
         for _, row in df.iterrows():
-            cache.setdefault(str(row["ts_code"]), {})[str(row["trade_date"])] = float(row["close"]) if row["close"] else 0
+            cache.setdefault(str(row["ts_code"]), {})[str(row["trade_date"])] = (
+                float(row["close"]) if row["close"] else 0
+            )
 
     def _compute_metrics(self, result: BacktestResult):
         """计算回测指标。"""
@@ -248,9 +277,7 @@ class BacktestEngine:
 
         # 夏普（按持有期年化）
         if len(trade_returns) > 5 and trade_returns.std() > 0:
-            result.sharpe = float(
-                trade_returns.mean() / trade_returns.std() * np.sqrt(252 / self.hold_days)
-            )
+            result.sharpe = float(trade_returns.mean() / trade_returns.std() * np.sqrt(252 / self.hold_days))
 
         # 最大回撤
         nav = np.cumprod(1 + trade_returns)

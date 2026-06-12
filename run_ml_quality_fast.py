@@ -5,10 +5,17 @@ ML 排序精度验证（快速版）
 - 模拟不同排序精度对 Top3 收益的影响
 - 不需要重新构建 ML 特征，直接用 V4 候选池数据
 """
-import os, sys, json, logging, warnings
+import json
+import logging
+import os
+import sys
+import warnings
+
 warnings.filterwarnings('ignore')
-import numpy as np, pandas as pd
+import numpy as np
+import pandas as pd
 from dotenv import load_dotenv
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -17,10 +24,10 @@ logger = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 
-from quant_app.utils.config import get_db_config
-from quant_app.services.strategy_service import _v4_score_single
 from sqlalchemy import create_engine
-import pymysql
+
+from quant_app.services.strategy_service import _v4_score_single
+from quant_app.utils.config import get_db_config
 
 DB_CONFIG = get_db_config()
 DB_CONFIG.pop('unix_socket', None)
@@ -112,7 +119,7 @@ for di, buy_date in enumerate(sample_dates):
     # where alpha is the "ML quality" parameter
     # truth = forward return (normalized)
     # noise = random uniform noise
-    
+
     truth_normalized = (fwd_values - fwd_values.mean()) / fwd_values.std()
     if np.std(truth_normalized) == 0:
         continue
@@ -134,21 +141,21 @@ for di, buy_date in enumerate(sample_dates):
         for _ in range(n_trials):
             noise = np.random.normal(0, 1, len(valid_codes))
             sim_scores = alpha * truth_normalized + (1 - alpha) * noise
-            
+
             # Pick Top3 by simulated score
             top3_idx = np.argsort(sim_scores)[-TOP_N:]
             top3_ret = np.mean([fwd_rets[valid_codes[i]] for i in top3_idx])
             trial_avgs.append(top3_ret)
-        
+
         results[key]['rets'].append(float(np.mean(trial_avgs)))
         results[key]['dates'].append(buy_date)
 
 # ===== Print Results =====
 print(f"\n{'='*70}")
-print(f"ML 排序精度对 V4+ML 策略收益的影响")
+print("ML 排序精度对 V4+ML 策略收益的影响")
 print(f"{'='*70}")
 print(f"区间: {START_DATE} ~ {END_DATE} | 持仓: {HOLD_DAYS}天 | Top{TOP_N}")
-print(f"α = ML 排序准确度 (0%=纯随机 → 100%=完美排序)")
+print("α = ML 排序准确度 (0%=纯随机 → 100%=完美排序)")
 print()
 
 header = f"{'策略':<22} {'累积收益':>10} {'胜率':>8} {'夏普':>8} {'最大回撤':>8} {'均值':>7} {'样本':>6}"
@@ -167,12 +174,12 @@ for alpha_pct in [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]:
     std = float(rets.std())
     sharpe = float(avg / std * np.sqrt(252 / HOLD_DAYS)) if std > 0 else 0
     dd = float(min(0, (rets / 100).min()))
-    
+
     label = f"α={alpha_pct}%"
     if alpha_pct == 0: label += " 随机"
     elif alpha_pct == 50: label += " 半精度"
     elif alpha_pct == 100: label += " 完美"
-    
+
     print(f"{label:<22} {cum:>+10.2f}% {wins/total*100:>7.1f}% {sharpe:>8.2f} {dd*100:>8.2f}% {avg:>+6.2f}% {total:>6d}")
 
 print()

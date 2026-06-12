@@ -16,10 +16,14 @@ MySQL 表结构：
 回测（2025-10-01~2026-04-30）：收益+20.25%，胜率67.9%，回撤9.64%
 """
 
-import os, sys, json, logging, pymysql
+import json
+import logging
+import os
+import sys
 from datetime import datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
+
+import pymysql
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -37,7 +41,7 @@ POSITION_PER_STOCK = 0.18  # 每只股票分配 18%（5只 = 90%仓位，留10%�
 def init_tables(conn):
     """创建模拟组合表"""
     cur = conn.cursor()
-    
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ai_sim_recommendations (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -57,7 +61,7 @@ def init_tables(conn):
             UNIQUE KEY uk_date_rank (recommend_date, rec_rank)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """)
-    
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ai_sim_performance (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -88,7 +92,7 @@ def init_tables(conn):
             INDEX idx_date (recommend_date)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """)
-    
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ai_sim_summary (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -111,7 +115,7 @@ def init_tables(conn):
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """)
-    
+
     # 模拟账户表
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ai_sim_account (
@@ -132,7 +136,7 @@ def init_tables(conn):
     cur.execute("SELECT COUNT(*) FROM ai_sim_account")
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO ai_sim_account (initial_capital, cash) VALUES (%s, %s)", (INITIAL_CAPITAL, INITIAL_CAPITAL))
-    
+
     # 模拟持仓表
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ai_sim_positions (
@@ -156,7 +160,7 @@ def init_tables(conn):
             INDEX idx_status (status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """)
-    
+
     # 模拟交易记录表
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ai_sim_trade_log (
@@ -174,7 +178,7 @@ def init_tables(conn):
             INDEX idx_date (trade_date)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """)
-    
+
     conn.commit()
     cur.close()
     logger.info("AI模拟组合表初始化完成（含账户/持仓/交易记录）")
@@ -287,13 +291,13 @@ def record_daily_top5(conn):
                         cash -= cost
                         trade_count += 1
                         buy_count += 1
-    
+
     # 更新账户
     cur.execute("SELECT SUM(market_value) FROM ai_sim_positions WHERE status='holding'")
     mv = float(cur.fetchone()[0] or 0)
-    
+
     total_val = cash + mv
-    
+
     cur.execute("""
         UPDATE ai_sim_account SET 
             cash=%s, market_value=%s, total_value=%s,
@@ -302,7 +306,7 @@ def record_daily_top5(conn):
             trade_count=%s
         WHERE id=1
     """, (cash, mv, total_val, trade_count))
-    
+
     conn.commit()
     cur.close()
     logger.info(f"记录今日TOP5完成: {len(top5)}只, 模拟买入{buy_count}只, 现金={cash:.0f}, 市值={mv:.0f}")
@@ -313,11 +317,11 @@ def sell_expired_positions(conn, cur, today):
     """卖出持有≥5个交易日的持仓（按收盘价）"""
     cur.execute("SELECT id, ts_code, name, buy_price, shares FROM ai_sim_positions WHERE status='holding'")
     positions = cur.fetchall()
-    
+
     for pos_id, ts_code, name, buy_price, shares in positions:
         code = ts_code.split('.')[0]
         exchange = ts_code.split('.')[1].upper() if '.' in ts_code else ''
-        
+
         # 找买入后第5个交易日的收盘价
         buy_date_str = today.replace('-', '')
         cur.execute("""
@@ -325,7 +329,7 @@ def sell_expired_positions(conn, cur, today):
             WHERE ts_code=%s AND trade_date > (SELECT buy_date FROM ai_sim_positions WHERE id=%s)
             ORDER BY trade_date ASC LIMIT 5
         """, (f"{code}.{exchange}", pos_id))
-        
+
         rows = cur.fetchall()
         if len(rows) >= 5:
             sell_date = rows[-1][0]
@@ -333,7 +337,7 @@ def sell_expired_positions(conn, cur, today):
             sell_amount = shares * sell_price
             cost = float(buy_price) * shares
             pnl = sell_amount - cost
-            
+
             cur.execute("""
                 UPDATE ai_sim_positions 
                 SET status='sold', sell_date=%s, sell_price=%s, sell_reason='持有5日到期',
@@ -341,55 +345,55 @@ def sell_expired_positions(conn, cur, today):
                     pnl_pct=%s
                 WHERE id=%s
             """, (sell_date, sell_price, sell_price, sell_amount, pnl, pnl/cost*100 if cost>0 else 0, pos_id))
-            
+
             cur.execute("""
                 INSERT INTO ai_sim_trade_log 
                 (trade_date, ts_code, name, action, price, shares, amount, pnl, reason)
                 VALUES (%s, %s, %s, 'SELL', %s, %s, %s, %s, '持有5日到期')
             """, (sell_date, ts_code, name, sell_price, shares, sell_amount, pnl))
-            
+
             # 退回现金
             cur.execute("UPDATE ai_sim_account SET cash=cash+%s, trade_count=trade_count+1 WHERE id=1", (sell_amount,))
-            
+
             # 更新胜率
             if pnl > 0:
                 cur.execute("UPDATE ai_sim_account SET win_count=win_count+1 WHERE id=1")
-    
+
     # 止损：检查持仓是否跌破-5%
     cur.execute("SELECT id, ts_code, name, buy_price, shares FROM ai_sim_positions WHERE status='holding'")
     for pos_id, ts_code, name, buy_price, shares in cur.fetchall():
         code = ts_code.split('.')[0]
         exchange = ts_code.split('.')[1].upper() if '.' in ts_code else ''
-        
+
         cur.execute("""
             SELECT trade_date, close FROM daily_price 
             WHERE ts_code=%s AND trade_date > (SELECT buy_date FROM ai_sim_positions WHERE id=%s)
             ORDER BY trade_date DESC LIMIT 1
         """, (f"{code}.{exchange}", pos_id))
-        
+
         row = cur.fetchone()
         if row:
             current_price = float(row[1]) if row[1] else float(buy_price)
             pnl_pct = (current_price - float(buy_price)) / float(buy_price) * 100
-            
+
             if pnl_pct <= -5.0:  # 止损
                 sell_amount = shares * current_price
                 cost = float(buy_price) * shares
                 pnl = sell_amount - cost
-                
+
                 cur.execute("""
                     UPDATE ai_sim_positions 
                     SET status='sold', sell_date=CURDATE(), sell_price=%s, sell_reason='止损(-5%%)',
                         current_price=%s, market_value=%s, pnl=%s, pnl_pct=%s
                     WHERE id=%s
                 """, (current_price, current_price, sell_amount, pnl, pnl_pct, pos_id))
-                
+
                 cur.execute("""
                     INSERT INTO ai_sim_trade_log 
                     (trade_date, ts_code, name, action, price, shares, amount, pnl, reason)
                     VALUES (CURDATE(), %s, %s, 'SELL', %s, %s, %s, %s, '止损(-5%%)')
                 """, (ts_code, name, current_price, shares, sell_amount, pnl))
-                
+
                 cur.execute("UPDATE ai_sim_account SET cash=cash+%s, trade_count=trade_count+1 WHERE id=1", (sell_amount,))
             else:
                 # 更新当前价格和市值
@@ -404,30 +408,30 @@ def sell_expired_positions(conn, cur, today):
 def update_performance(conn, days_back=30):
     """更新已推荐股票的后续表现"""
     cur = conn.cursor()
-    
+
     # 获取需要更新的推荐（最近N天，还未到10日的也更新已有天数）
     start_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
     today = datetime.now().strftime('%Y-%m-%d')
-    
+
     cur.execute("""
         SELECT p.id, p.ts_code, p.recommend_date, p.entry_price
         FROM ai_sim_performance p
         WHERE p.recommend_date >= %s AND p.recommend_date <= %s
     """, (start_date, today))
-    
+
     rows = cur.fetchall()
     updated = 0
-    
+
     for rec_id, ts_code, rec_date, entry_price in rows:
         rec_date_str = rec_date.strftime('%Y%m%d') if hasattr(rec_date, 'strftime') else str(rec_date).replace('-', '')[:8]
-        
+
         days_passed = (datetime.now().date() - (rec_date if hasattr(rec_date, 'date') else datetime.strptime(str(rec_date), '%Y-%m-%d').date())).days
         if days_passed < 1 or days_passed > 15:
             continue
-        
+
         code_short = ts_code.split('.')[0]
         exchange = ts_code.split('.')[1].upper() if '.' in ts_code else ''
-        
+
         updates = {}
         for target_day in [1, 3, 5, 10]:
             if days_passed >= target_day:
@@ -436,13 +440,13 @@ def update_performance(conn, days_back=30):
                     ret = (close_val - float(entry_price)) / float(entry_price)
                     updates[f'close_{target_day}d'] = close_val
                     updates[f'ret_{target_day}d'] = ret
-        
+
         # 持有期间最高/最低收益
         max_ret, min_ret = _get_max_min_ret(conn, code_short, exchange, rec_date_str, min(days_passed, 10))
         if max_ret is not None:
             updates['max_ret'] = max_ret
             updates['min_ret'] = min_ret
-        
+
         # 止损判断（跌破-5%）
         if updates.get('min_ret') and updates['min_ret'] <= -0.05 and not updates.get('is_stop_loss'):
             updates['is_stop_loss'] = 1
@@ -453,7 +457,7 @@ def update_performance(conn, days_back=30):
                 stop_price = _get_close_on_date(conn, code_short, exchange, stop_date.replace('-', ''))
                 if stop_price:
                     updates['stop_loss_price'] = stop_price
-        
+
         if updates:
             set_parts = []
             vals = []
@@ -461,11 +465,11 @@ def update_performance(conn, days_back=30):
                 set_parts.append(f"{k} = %s")
                 vals.append(v)
             vals.append(rec_id)
-            
+
             sql = f"UPDATE ai_sim_performance SET {', '.join(set_parts)} WHERE id = %s"
             cur.execute(sql, vals)
             updated += 1
-    
+
     conn.commit()
     cur.close()
     logger.info(f"性能更新完成: {updated}条记录")
@@ -498,14 +502,14 @@ def _get_max_min_ret(conn, code, exchange, start_date, max_days):
     """, (f"{code}.{exchange}", start_date, max_days))
     rows = cur.fetchall()
     cur.close()
-    
+
     if not rows:
         return None, None
-    
+
     closes = [float(r[0]) for r in rows if r[0]]
     if not closes:
         return None, None
-    
+
     entry = closes[0] if len(closes) > 0 else 1
     max_ret = max((c - entry) / entry for c in closes)
     min_ret = min((c - entry) / entry for c in closes)
@@ -524,7 +528,7 @@ def _find_stop_loss_date(conn, code, exchange, start_date, entry_price):
     """, (f"{code}.{exchange}", start_date))
     rows = cur.fetchall()
     cur.close()
-    
+
     for row in rows:
         if row[1] and entry_price > 0:
             ret = (float(row[1]) - entry_price) / entry_price
@@ -549,9 +553,9 @@ def _get_close_on_date(conn, code, exchange, date_str):
 def compute_summary(conn):
     """计算统计摘要"""
     cur = conn.cursor()
-    
+
     today = datetime.now().strftime('%Y-%m-%d')
-    
+
     cur.execute("""
         SELECT 
             COUNT(*) as total,
@@ -567,14 +571,14 @@ def compute_summary(conn):
         FROM ai_sim_performance 
         WHERE recommend_date < DATE_SUB(%s, INTERVAL 1 DAY)
     """, (today,))
-    
+
     row = cur.fetchone()
     if not row or row[0] == 0:
         cur.close()
         return
-    
+
     total, wr_1d, wr_3d, wr_5d, ar_1d, ar_3d, ar_5d, cr_1d, cr_3d, cr_5d = row
-    
+
     # 计算得分相关性
     cur.execute("""
         SELECT r.total_score, p.ret_5d 
@@ -583,7 +587,7 @@ def compute_summary(conn):
         WHERE p.ret_5d IS NOT NULL AND r.recommend_date < DATE_SUB(%s, INTERVAL 5 DAY)
     """, (today,))
     corr_rows = cur.fetchall()
-    
+
     corr = 0
     if len(corr_rows) >= 3:
         scores = [float(r[0]) for r in corr_rows]
@@ -596,7 +600,7 @@ def compute_summary(conn):
         std_r = (sum((r - mean_r) ** 2 for r in returns) / n) ** 0.5
         if std_s > 0 and std_r > 0:
             corr = cov / (std_s * std_r)
-    
+
     cur.execute("""
         INSERT INTO ai_sim_summary 
         (stat_date, total_recs, win_rate_1d, win_rate_3d, win_rate_5d,
@@ -611,7 +615,7 @@ def compute_summary(conn):
             cum_ret_3d=VALUES(cum_ret_3d), cum_ret_5d=VALUES(cum_ret_5d),
             score_return_corr=VALUES(score_return_corr)
     """, (today, total, wr_1d, wr_3d, wr_5d, ar_1d, ar_3d, ar_5d, cr_1d, cr_3d, cr_5d, corr))
-    
+
     conn.commit()
     cur.close()
     logger.info(f"统计摘要更新完成: {total}条记录, 5日胜率={wr_5d:.1f}%, 得分相关性={corr:.3f}")
@@ -620,14 +624,14 @@ def compute_summary(conn):
 def get_performance_report(conn):
     """获取性能报告（含账户/持仓/交易/推荐）"""
     cur = conn.cursor()
-    
+
     # 账户信息
     cur.execute("SELECT * FROM ai_sim_account LIMIT 1")
     acc = cur.fetchone()
     acc_cols = ['id','initial_capital','cash','market_value','total_value',
                 'total_pnl','total_pnl_pct','max_drawdown','trade_count','win_count','win_rate']
     acc_data = dict(zip(acc_cols, acc)) if acc else {'initial_capital': INITIAL_CAPITAL, 'cash': INITIAL_CAPITAL, 'total_value': INITIAL_CAPITAL}
-    
+
     # 当前持仓
     cur.execute("""
         SELECT ts_code, name, buy_date, buy_price, shares, cost_amount, 
@@ -637,7 +641,7 @@ def get_performance_report(conn):
     pos_rows = cur.fetchall()
     pos_cols = ['ts_code','name','buy_date','buy_price','shares','cost_amount',
                 'current_price','market_value','pnl','pnl_pct','days_held','status']
-    
+
     # 交易记录
     cur.execute("""
         SELECT trade_date, ts_code, name, action, price, shares, amount, pnl, reason
@@ -645,7 +649,7 @@ def get_performance_report(conn):
     """)
     trade_rows = cur.fetchall()
     trade_cols = ['trade_date','ts_code','name','action','price','shares','amount','pnl','reason']
-    
+
     # 推荐及表现
     cur.execute("""
         SELECT r.recommend_date, r.rec_rank, r.ts_code, r.name, r.industry,
@@ -659,13 +663,13 @@ def get_performance_report(conn):
     recs = cur.fetchall()
     rec_cols = ['recommend_date','rec_rank','ts_code','name','industry','price',
                 'ml_score','tech_score','total_score','ret_1d','ret_3d','ret_5d','is_stop_loss']
-    
+
     # 最新摘要
     cur.execute("SELECT * FROM ai_sim_summary ORDER BY stat_date DESC LIMIT 1")
     summary = cur.fetchone()
-    
+
     cur.close()
-    
+
     return {
         'account': {k: float(v) if isinstance(v, Decimal) else v for k, v in acc_data.items()} if acc_data else {'initial_capital': INITIAL_CAPITAL, 'cash': INITIAL_CAPITAL, 'total_value': INITIAL_CAPITAL},
         'positions': [{k: float(v) if isinstance(v, Decimal) else v for k, v in p.items()} for p in [dict(zip(pos_cols, r)) for r in pos_rows]],

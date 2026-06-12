@@ -6,16 +6,21 @@ Tushare 付费数据回填脚本
 - 补全 market_index_daily（沪深指数）
 - 断点续传：进度记录在 progress.json
 """
-import pymysql
-import tushare as ts
-import json, time, sys, os
+import json
+import os
+import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
+
+import pymysql
+import tushare as ts
 
 # ========== 配置 ==========
 TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from quant_app.utils.config import get_db_config
+
 DB_CONFIG = get_db_config()
 BATCH_SIZE = 100        # 每批回填天数
 STOCK_BATCH = 50        # 每批股票数
@@ -51,20 +56,20 @@ def backfill_stock_info(progress):
     cur = conn.cursor()
 
     # 拉取主板+创业板（排除ST）
-    df = pro.stock_basic(exchange='', list_status='L', 
+    df = pro.stock_basic(exchange='', list_status='L',
                          fields='ts_code,symbol,name,industry,market,list_date')
     # 只保留主板(SZ/SH)+创业板(SZ)，排除科创板/北交所
     allowed = {'主板', '创业板'}
     df = df[df['market'].isin(allowed)]
     # 排除ST
     df = df[~df['name'].str.contains('ST', na=False)]
-    
+
     log(f"获取到 {len(df)} 只股票（主板+创业板，排除ST）")
 
     # 清理旧数据（只保留北交所/科创板等不在此次范围的）
     cur.execute("SELECT ts_code FROM stock_info WHERE market IN ('SZ','SH')")
     existing = set(r[0] for r in cur.fetchall())
-    
+
     new_stocks = []
     for _, row in df.iterrows():
         if row['ts_code'] in existing:
@@ -78,7 +83,7 @@ def backfill_stock_info(progress):
             'list_date': row['list_date'],
             'is_st': 1 if 'ST' in str(row['name']) else 0
         })
-    
+
     if new_stocks:
         cur.executemany(
             """INSERT IGNORE INTO stock_info (ts_code, code, name, market, industry, list_date, is_st)
@@ -144,7 +149,7 @@ def backfill_daily_price(progress):
 
                 basic = pro.daily_basic(ts_code=ts_code, trade_date=latest_date,
                                         fields='ts_code,trade_date,pe,pb,turnover_rate')
-                
+
                 pe = pb = turnover_rate = None
                 if basic is not None and not basic.empty:
                     pe = basic['pe'].iloc[0] if 'pe' in basic.columns else None

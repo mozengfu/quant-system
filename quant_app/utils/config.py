@@ -11,6 +11,7 @@
 
 import os
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -100,6 +101,9 @@ MYSQL_SOCKET = config.mysql.socket
 # Tushare
 TUSHARE_TOKEN = config.tushare.token
 
+# 东方财富实时行情
+EASTMONEY_HOST = "http://push2.eastmoney.com"
+
 # 阿里云行情
 ALIYUN_HOST = config.aliyun_market.host
 ALIYUN_CODE = config.aliyun_market.app_code
@@ -135,3 +139,28 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 def get_db_config(**kwargs):
     """pymysql 连接参数字典（向后兼容旧代码）"""
     return config.mysql.get_connection_params(**kwargs)
+
+
+class db_connection:
+    """pymysql 连接上下文管理器，自动关闭连接。
+
+    用法:
+        from quant_app.utils.config import db_connection
+        with db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(...)
+    """
+
+    def __init__(self, **kwargs):
+        self._kwargs = kwargs
+        self.conn = None
+
+    def __enter__(self):
+        import pymysql
+        self.conn = pymysql.connect(**get_db_config(**self._kwargs))
+        return self.conn
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.conn:
+            self.conn.close()
+        return False

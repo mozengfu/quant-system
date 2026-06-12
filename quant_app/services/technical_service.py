@@ -2,6 +2,7 @@
 技术指标服务 - MA, MACD, KDJ, BOLL, ATR, RSI 等指标计算
 统一委托 quant_app.utils.indicators 的全序列版，本层只做标量取尾适配。
 """
+
 import logging
 
 from quant_app.utils.indicators import (

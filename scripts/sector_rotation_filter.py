@@ -10,10 +10,9 @@
 用法：被 strategy_service.generate_v4_ml_candidates() 调用
 """
 import logging
+from datetime import datetime
+
 import pandas as pd
-import pymysql
-from datetime import datetime, timedelta
-import numpy as np
 
 logger = logging.getLogger(__name__)
 

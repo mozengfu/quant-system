@@ -11,6 +11,7 @@
     # V8.0 fallback
     feat = build_features_for(conn, ts_codes, as_of_date, version="v8.0")
 """
+
 from quant_app.features.v11_features import (
     V11_FEATURE_COLS,
     align_features_to_model,

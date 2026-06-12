@@ -1,0 +1,342 @@
+[
+  {
+    "hold": 2,
+    "sl": 0,
+    "n_trades": 39,
+    "total_pnl": -766.1835539999724,
+    "total_ret_pct": -0.7661835539999329,
+    "win_rate_pct": 0.0,
+    "avg_win": 0,
+    "avg_loss": -0.14999999999999572,
+    "pl_ratio": 0,
+    "actions": {
+      "stop_loss": 39,
+      "time_stop": 0,
+      "end_of_period": 0
+    },
+    "ann_pct": -1.4666843925598805
+  },
+  {
+    "hold": 2,
+    "sl": -0.03,
+    "n_trades": 33,
+    "total_pnl": -7155.220228682501,
+    "total_ret_pct": -7.1552202286825235,
+    "win_rate_pct": 15.151515151515152,
+    "avg_win": 5.955813299300852,
+    "avg_loss": -2.9218767733409137,
+    "pl_ratio": 2.0383519776198136,
+    "actions": {
+      "stop_loss": 23,
+      "time_stop": 8,
+      "end_of_period": 2
+    },
+    "ann_pct": -13.29174580842335
+  },
+  {
+    "hold": 2,
+    "sl": -0.05,
+    "n_trades": 32,
+    "total_pnl": -6299.187396075004,
+    "total_ret_pct": -6.299187396075034,
+    "win_rate_pct": 25.0,
+    "avg_win": 5.163632534216606,
+    "avg_loss": -3.8287331943851726,
+    "pl_ratio": 1.3486530066365188,
+    "actions": {
+      "stop_loss": 12,
+      "time_stop": 17,
+      "end_of_period": 3
+    },
+    "ann_pct": -11.749433463751513
+  },
+  {
+    "hold": 2,
+    "sl": -0.07,
+    "n_trades": 32,
+    "total_pnl": -5375.041565875011,
+    "total_ret_pct": -5.37504156587506,
+    "win_rate_pct": 31.25,
+    "avg_win": 5.943875791934512,
+    "avg_loss": -4.342197432116183,
+    "pl_ratio": 1.3688635500476876,
+    "actions": {
+      "stop_loss": 9,
+      "time_stop": 19,
+      "end_of_period": 4
+    },
+    "ann_pct": -10.069772891345696
+  },
+  {
+    "hold": 2,
+    "sl": -0.1,
+    "n_trades": 29,
+    "total_pnl": -5546.387524424999,
+    "total_ret_pct": -5.546387524425023,
+    "win_rate_pct": 37.93103448275862,
+    "avg_win": 5.545228767626394,
+    "avg_loss": -5.414251473080544,
+    "pl_ratio": 1.024191210030983,
+    "actions": {
+      "stop_loss": 7,
+      "time_stop": 18,
+      "end_of_period": 4
+    },
+    "ann_pct": -10.38234540378703
+  },
+  {
+    "hold": 3,
+    "sl": 0,
+    "n_trades": 39,
+    "total_pnl": -766.1835539999724,
+    "total_ret_pct": -0.7661835539999329,
+    "win_rate_pct": 0.0,
+    "avg_win": 0,
+    "avg_loss": -0.14999999999999572,
+    "pl_ratio": 0,
+    "actions": {
+      "stop_loss": 39,
+      "time_stop": 0,
+      "end_of_period": 0
+    },
+    "ann_pct": -1.4666843925598805
+  },
+  {
+    "hold": 3,
+    "sl": -0.03,
+    "n_trades": 33,
+    "total_pnl": -7432.264131007502,
+    "total_ret_pct": -7.432264131007493,
+    "win_rate_pct": 18.181818181818183,
+    "avg_win": 3.9335764378282527,
+    "avg_loss": -2.973869389630529,
+    "pl_ratio": 1.322713247442571,
+    "actions": {
+      "stop_loss": 24,
+      "time_stop": 7,
+      "end_of_period": 2
+    },
+    "ann_pct": -13.788102124072598
+  },
+  {
+    "hold": 3,
+    "sl": -0.05,
+    "n_trades": 32,
+    "total_pnl": -5371.580896075004,
+    "total_ret_pct": -5.371580896075045,
+    "win_rate_pct": 25.0,
+    "avg_win": 4.625803123388894,
+    "avg_loss": -3.512366877400266,
+    "pl_ratio": 1.3170045399166148,
+    "actions": {
+      "stop_loss": 12,
+      "time_stop": 17,
+      "end_of_period": 3
+    },
+    "ann_pct": -10.063454496973566
+  },
+  {
+    "hold": 3,
+    "sl": -0.07,
+    "n_trades": 31,
+    "total_pnl": -4714.220869222509,
+    "total_ret_pct": -4.714220869222574,
+    "win_rate_pct": 29.03225806451613,
+    "avg_win": 4.469609740861337,
+    "avg_loss": -3.7250845357571465,
+    "pl_ratio": 1.1998680024459796,
+    "actions": {
+      "stop_loss": 8,
+      "time_stop": 19,
+      "end_of_period": 4
+    },
+    "ann_pct": -8.859405721261037
+  },
+  {
+    "hold": 3,
+    "sl": -0.1,
+    "n_trades": 28,
+    "total_pnl": -2976.5429033500027,
+    "total_ret_pct": -2.97654290335001,
+    "win_rate_pct": 35.714285714285715,
+    "avg_win": 5.21521258454134,
+    "avg_loss": -4.376307640271574,
+    "pl_ratio": 1.1916924067563284,
+    "actions": {
+      "stop_loss": 6,
+      "time_stop": 18,
+      "end_of_period": 4
+    },
+    "ann_pct": -5.639651380323452
+  },
+  {
+    "hold": 4,
+    "sl": 0,
+    "n_trades": 39,
+    "total_pnl": -766.1835539999724,
+    "total_ret_pct": -0.7661835539999329,
+    "win_rate_pct": 0.0,
+    "avg_win": 0,
+    "avg_loss": -0.14999999999999572,
+    "pl_ratio": 0,
+    "actions": {
+      "stop_loss": 39,
+      "time_stop": 0,
+      "end_of_period": 0
+    },
+    "ann_pct": -1.4666843925598805
+  },
+  {
+    "hold": 4,
+    "sl": -0.03,
+    "n_trades": 32,
+    "total_pnl": -7766.831429810003,
+    "total_ret_pct": -7.766831429810006,
+    "win_rate_pct": 18.75,
+    "avg_win": 3.9340935981268497,
+    "avg_loss": -3.048571889839949,
+    "pl_ratio": 1.2904709943820254,
+    "actions": {
+      "stop_loss": 25,
+      "time_stop": 5,
+      "end_of_period": 2
+    },
+    "ann_pct": -14.385696873031506
+  },
+  {
+    "hold": 4,
+    "sl": -0.05,
+    "n_trades": 27,
+    "total_pnl": -10916.729784575004,
+    "total_ret_pct": -10.916729784575018,
+    "win_rate_pct": 18.51851851851852,
+    "avg_win": 2.6591226896296005,
+    "avg_loss": -4.517650810137395,
+    "pl_ratio": 0.5886073982660756,
+    "actions": {
+      "stop_loss": 13,
+      "time_stop": 14,
+      "end_of_period": 0
+    },
+    "ann_pct": -19.914154562020926
+  },
+  {
+    "hold": 4,
+    "sl": -0.07,
+    "n_trades": 26,
+    "total_pnl": -11079.910175910007,
+    "total_ret_pct": -11.079910175910001,
+    "win_rate_pct": 23.076923076923077,
+    "avg_win": 2.807435326054064,
+    "avg_loss": -5.143182710103647,
+    "pl_ratio": 0.5458556470371801,
+    "actions": {
+      "stop_loss": 9,
+      "time_stop": 17,
+      "end_of_period": 0
+    },
+    "ann_pct": -20.195733594641084
+  },
+  {
+    "hold": 4,
+    "sl": -0.1,
+    "n_trades": 25,
+    "total_pnl": -9137.752855349998,
+    "total_ret_pct": -9.137752855350001,
+    "win_rate_pct": 36.0,
+    "avg_win": 3.52474114988374,
+    "avg_loss": -6.409954705591101,
+    "pl_ratio": 0.5498855002531102,
+    "actions": {
+      "stop_loss": 7,
+      "time_stop": 16,
+      "end_of_period": 2
+    },
+    "ann_pct": -16.81357475266371
+  },
+  {
+    "hold": 5,
+    "sl": 0,
+    "n_trades": 39,
+    "total_pnl": -766.1835539999724,
+    "total_ret_pct": -0.7661835539999329,
+    "win_rate_pct": 0.0,
+    "avg_win": 0,
+    "avg_loss": -0.14999999999999572,
+    "pl_ratio": 0,
+    "actions": {
+      "stop_loss": 39,
+      "time_stop": 0,
+      "end_of_period": 0
+    },
+    "ann_pct": -1.4666843925598805
+  },
+  {
+    "hold": 5,
+    "sl": -0.03,
+    "n_trades": 32,
+    "total_pnl": -7075.539425559998,
+    "total_ret_pct": -7.075539425559985,
+    "win_rate_pct": 18.75,
+    "avg_win": 5.392331968488906,
+    "avg_loss": -3.145499999999998,
+    "pl_ratio": 1.7143004191667175,
+    "actions": {
+      "stop_loss": 26,
+      "time_stop": 2,
+      "end_of_period": 4
+    },
+    "ann_pct": -13.148735439590686
+  },
+  {
+    "hold": 5,
+    "sl": -0.05,
+    "n_trades": 27,
+    "total_pnl": -9648.716041574999,
+    "total_ret_pct": -9.648716041574978,
+    "win_rate_pct": 22.22222222222222,
+    "avg_win": 3.7314222776428267,
+    "avg_loss": -4.49273585623538,
+    "pl_ratio": 0.8305456623861068,
+    "actions": {
+      "stop_loss": 15,
+      "time_stop": 7,
+      "end_of_period": 5
+    },
+    "ann_pct": -17.70991214891581
+  },
+  {
+    "hold": 5,
+    "sl": -0.07,
+    "n_trades": 26,
+    "total_pnl": -8812.664503307506,
+    "total_ret_pct": -8.812664503307499,
+    "win_rate_pct": 26.923076923076923,
+    "avg_win": 4.057792982935658,
+    "avg_loss": -4.829883793213128,
+    "pl_ratio": 0.8401429841102184,
+    "actions": {
+      "stop_loss": 9,
+      "time_stop": 12,
+      "end_of_period": 5
+    },
+    "ann_pct": -16.24087818208888
+  },
+  {
+    "hold": 5,
+    "sl": -0.1,
+    "n_trades": 25,
+    "total_pnl": -7246.157855349997,
+    "total_ret_pct": -7.246157855349966,
+    "win_rate_pct": 36.0,
+    "avg_win": 4.749162841793515,
+    "avg_loss": -5.9363132121266045,
+    "pl_ratio": 0.8000189127642393,
+    "actions": {
+      "stop_loss": 7,
+      "time_stop": 13,
+      "end_of_period": 5
+    },
+    "ann_pct": -13.45482174665783
+  }
+]

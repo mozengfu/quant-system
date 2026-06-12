@@ -8,19 +8,22 @@ AKShare 数据补充同步脚本
   P1: 板块成分股映射、北向资金持仓个股排行
   P2: 业绩报表、大宗交易
 """
-import sys
-import os
-import time
 import logging
-import requests
+import os
+import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import requests
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
+import warnings
+
 import akshare as ak
 import pandas as pd
 import pymysql
-import warnings
+
 warnings.filterwarnings('ignore')
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -53,12 +56,28 @@ def get_db():
     from quant_app.utils.config import get_db_config
     return pymysql.connect(**get_db_config())
 
+# 表名白名单（防止 f-string 拼接 SQL 注入风险）
+_BOARD_TABLES = {
+    'board_concept': 'board_concept',
+    'board_industry': 'board_industry',
+    'board_concept_hist': 'board_concept_hist',
+    'board_industry_hist': 'board_industry_hist',
+    'board_concept_cons': 'board_concept_cons',
+    'board_industry_cons': 'board_industry_cons',
+}
+def _safe_table(key):
+    """白名单校验表名，拒绝未知输入"""
+    tbl = _BOARD_TABLES.get(key)
+    if not tbl:
+        raise ValueError(f"禁止的表名: {key}")
+    return tbl
+
 
 def create_tables():
     """创建缺失的数据表"""
     conn = get_db()
     cursor = conn.cursor()
-    
+
     tables = {
         # P0: 涨停板池
         'zt_pool': """
@@ -318,11 +337,11 @@ def create_tables():
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """,
     }
-    
+
     for name, ddl in tables.items():
         cursor.execute(ddl)
         logger.info(f"Table {name} ready")
-    
+
     conn.commit()
     cursor.close()
     conn.close()
@@ -340,10 +359,10 @@ def sync_zt_pool(trade_date: str, dry_run=False):
         if df is None or df.empty:
             logger.info(f"  {trade_date} 无涨停数据")
             return 0
-        
+
         df['trade_date'] = pd.to_datetime(trade_date)
         df['代码'] = df['代码'].apply(lambda x: f"{x.zfill(6)}.{'SZ' if x.startswith(('0','3')) else 'SH'}")
-        
+
         cols_map = {
             '代码': 'ts_code', '名称': 'name', '涨跌幅': 'pct_change',
             '最新价': 'close', '换手率': 'turnover_rate', '成交额': 'amount',
@@ -352,12 +371,12 @@ def sync_zt_pool(trade_date: str, dry_run=False):
             '封板占比': 'seal_ratio', '开板次数': 'open_count',
             '连板数': 'last_board', '量比': 'volume_ratio'
         }
-        
+
         df = df.rename(columns={k: v for k, v in cols_map.items() if v})
-        
+
         conn = get_db()
         cursor = conn.cursor()
-        
+
         for _, row in df.iterrows():
             ts_code = row.get('ts_code', '')
             if not ts_code:
@@ -379,7 +398,7 @@ def sync_zt_pool(trade_date: str, dry_run=False):
                 row.get('seal_amount',0), row.get('seal_ratio',0),
                 row.get('open_count',0), row.get('last_board',1)
             ))
-        
+
         # 强势涨停（连板 >= 2）
         strong = df[df.get('last_board', pd.Series([0]*len(df))) >= 2]
         for _, row in strong.iterrows():
@@ -398,7 +417,7 @@ def sync_zt_pool(trade_date: str, dry_run=False):
                 row.get('seal_amount',0), row.get('open_count',0),
                 row.get('seal_ratio',0), row.get('turnover_rate',0), row.get('amount',0)
             ))
-        
+
         # 炸板池
         try:
             dt_df = ak.stock_zt_pool_zbgc_em(date=trade_date)
@@ -420,7 +439,7 @@ def sync_zt_pool(trade_date: str, dry_run=False):
                     ))
         except Exception as e:
             logger.warning(f"  炸板池同步失败: {e}")
-        
+
         conn.commit()
         cursor.close()
         conn.close()
@@ -434,19 +453,19 @@ def sync_zt_pool(trade_date: str, dry_run=False):
 def sync_board_lists():
     """P0: 概念/行业板块列表 — 返回 (concept_ok, industry_ok)"""
     logger.info("同步板块列表")
-    
+
     # 确保 is_latest 列存在
     conn = get_db()
     cursor = conn.cursor()
     for tbl in ['board_concept', 'board_industry']:
         try:
-            cursor.execute(f"ALTER TABLE quant_db.{tbl} ADD COLUMN is_latest BOOLEAN DEFAULT TRUE")
+            cursor.execute(f"ALTER TABLE {_safe_table(tbl)} ADD COLUMN is_latest BOOLEAN DEFAULT TRUE")
         except Exception:
             pass  # 列已存在
     conn.commit()
     cursor.close()
     conn.close()
-    
+
     concept_ok = False
     # 概念板块
     try:
@@ -454,7 +473,7 @@ def sync_board_lists():
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("UPDATE quant_db.board_concept SET is_latest = FALSE")
-        
+
         for _, row in df.iterrows():
             sql = """INSERT INTO quant_db.board_concept
                 (board_code, board_name, latest_price, change_pct, total_mv,
@@ -479,7 +498,7 @@ def sync_board_lists():
         concept_ok = True
     except Exception as e:
         logger.error(f"  概念板块列表同步失败: {e}")
-    
+
     industry_ok = False
     # 行业板块
     try:
@@ -487,7 +506,7 @@ def sync_board_lists():
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("UPDATE quant_db.board_industry SET is_latest = FALSE")
-        
+
         for _, row in df.iterrows():
             sql = """INSERT INTO quant_db.board_industry
                 (board_code, board_name, latest_price, change_pct, total_mv,
@@ -512,7 +531,7 @@ def sync_board_lists():
         industry_ok = True
     except Exception as e:
         logger.error(f"  行业板块列表同步失败: {e}")
-    
+
     return concept_ok, industry_ok
 
 
@@ -521,16 +540,16 @@ def sync_board_hist(board_type: str, days: int = 120):
     table = 'board_concept_hist' if board_type == 'concept' else 'board_industry_hist'
     fetch_func = ak.stock_board_concept_hist_em if board_type == 'concept' else ak.stock_board_industry_hist_em
     list_table = 'board_concept' if board_type == 'concept' else 'board_industry'
-    
+
     conn = get_db()
     cursor = conn.cursor()
-    
+
     # 获取板块列表
-    cursor.execute(f"SELECT board_code, board_name FROM quant_db.{list_table}")
+    cursor.execute(f"SELECT board_code, board_name FROM {_safe_table(list_table)}")
     boards = cursor.fetchall()
-    
+
     # 获取已同步的最新日期（增量）
-    cursor.execute(f"SELECT MAX(trade_date) FROM quant_db.{table}")
+    cursor.execute(f"SELECT MAX(trade_date) FROM {_safe_table(table)}")
     latest = cursor.fetchone()[0]
     if latest:
         start_date = (latest + timedelta(days=1)).strftime('%Y%m%d')
@@ -538,11 +557,11 @@ def sync_board_hist(board_type: str, days: int = 120):
     else:
         start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
         logger.info(f"  {board_type} hist 全量同步: 从 {start_date} 开始")
-    
+
     end_date = datetime.now().strftime('%Y%m%d')
     cursor.close()
     conn.close()
-    
+
     total = 0
     failed = 0
     for i, (code, name) in enumerate(boards):
@@ -550,16 +569,16 @@ def sync_board_hist(board_type: str, days: int = 120):
             df = ak_retry(fetch_func, symbol=name, start_date=start_date, end_date=end_date)
             if df is None or df.empty:
                 continue
-            
+
             conn = get_db()
             cursor = conn.cursor()
-            
+
             for _, row in df.iterrows():
                 trade_date = str(row.get('日期', ''))
                 if len(trade_date) == 8:
                     trade_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}"
-                
-                sql = f"""INSERT INTO quant_db.{table}
+
+                sql = f"""INSERT INTO {_safe_table(table)}
                     (trade_date, board_code, board_name, open, close, high, low,
                      pct_change, change_amount, volume, amount, turnover_rate)
                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
@@ -574,17 +593,17 @@ def sync_board_hist(board_type: str, days: int = 120):
                     row.get('涨跌幅',0), row.get('涨跌额',0), row.get('成交量',0),
                     row.get('成交额',0), row.get('换手率',0)
                 ))
-            
+
             conn.commit()
             cursor.close()
             conn.close()
             total += len(df)
-            
+
             if (i + 1) % 50 == 0:
                 logger.info(f"  {board_type} hist: {i+1}/{len(boards)} boards, {total} rows")
-            
+
             time.sleep(0.1)  # 降低限频
-            
+
             # 每 10 个板块冷却 2 秒，避免触发东财频率限制
             if (i + 1) % 10 == 0:
                 time.sleep(2)
@@ -593,8 +612,8 @@ def sync_board_hist(board_type: str, days: int = 120):
             if failed <= 3:
                 logger.warning(f"  {code} {name} 历史行情同步失败: {e}")
             elif failed == 4:
-                logger.warning(f"  ... (后续失败不再逐个打印)")
-    
+                logger.warning("  ... (后续失败不再逐个打印)")
+
     logger.info(f"  {board_type} hist 完成: {total} rows, {failed} failed")
 
 
@@ -602,31 +621,31 @@ def sync_board_cons(board_type: str):
     """P1: 板块成分股映射"""
     table = 'board_concept_cons' if board_type == 'concept' else 'board_industry_cons'
     fetch_func = ak.stock_board_concept_cons_em if board_type == 'concept' else ak.stock_board_industry_cons_em
-    
+
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute(f"SELECT board_code, board_name FROM quant_db.{'board_concept' if board_type == 'concept' else 'board_industry'}")
+    cursor.execute(f"SELECT board_code, board_name FROM {_safe_table('board_concept' if board_type == 'concept' else 'board_industry')}")
     boards = cursor.fetchall()
     cursor.close()
     conn.close()
-    
+
     total = 0
     for i, (code, name) in enumerate(boards):
         try:
             df = ak_retry(fetch_func, symbol=name)
             if df is None or df.empty:
                 continue
-            
+
             # 标记旧数据
             conn = get_db()
             cursor = conn.cursor()
-            cursor.execute(f"UPDATE quant_db.{table} SET is_latest = FALSE WHERE board_code = %s", (code,))
-            
+            cursor.execute(f"UPDATE {_safe_table(table)} SET is_latest = FALSE WHERE board_code = %s", (code,))
+
             for _, row in df.iterrows():
                 raw_code = str(row.get('代码', ''))
                 ts_code = f"{raw_code.zfill(6)}.{'SZ' if raw_code.startswith(('0','3')) else 'SH'}"
-                
-                sql = f"""INSERT INTO quant_db.{table}
+
+                sql = f"""INSERT INTO {_safe_table(table)}
                     (board_code, ts_code, stock_name, latest_price, pct_change, is_latest)
                     VALUES (%s,%s,%s,%s,%s,TRUE)
                     ON DUPLICATE KEY UPDATE
@@ -636,19 +655,19 @@ def sync_board_cons(board_type: str):
                     code, ts_code, str(row.get('名称','')),
                     safe_float(row.get('最新价', 0)), safe_float(row.get('涨跌幅', 0))
                 ))
-            
+
             conn.commit()
             cursor.close()
             conn.close()
             total += len(df)
-            
+
             if (i + 1) % 100 == 0:
                 logger.info(f"  {board_type} cons: {i+1}/{len(boards)} boards, {total} stocks")
-            
+
             time.sleep(0.1)
         except Exception as e:
             logger.warning(f"  {code} {name} 成分股同步失败: {e}")
-    
+
     logger.info(f"  {board_type} cons 完成: {total} stocks")
 
 
@@ -659,7 +678,7 @@ def sync_hsgt_hold(trade_date: str):
         dt_fmt = trade_date.replace('-', '')
         df = ak.stock_hsgt_hist_em(symbol='北向资金')
         if df is None or df.empty:
-            logger.info(f"  无北向数据")
+            logger.info("  无北向数据")
             return 0
 
         df['date_str'] = df['日期'].astype(str).str.replace('-', '')
@@ -766,17 +785,17 @@ def sync_earnings(report_period: str = '20251231'):
     try:
         df = ak.stock_yjbb_em(date=report_period)
         if df is None or df.empty:
-            logger.info(f"  无业绩数据")
+            logger.info("  无业绩数据")
             return 0
-        
+
         conn = get_db()
         cursor = conn.cursor()
         count = 0
-        
+
         for _, row in df.iterrows():
             raw_code = str(row.get('股票代码', ''))
             ts_code = f"{raw_code.zfill(6)}.{'SZ' if raw_code.startswith(('0','3')) else 'SH'}"
-            
+
             sql = """INSERT INTO quant_db.earnings_report
                 (ts_code, report_date, name, eps, revenue, revenue_yoy,
                  net_profit, net_profit_yoy, roe, navps, gross_margin, net_margin)
@@ -800,7 +819,7 @@ def sync_earnings(report_period: str = '20251231'):
                 0  # net_margin not available in yjbb
             ))
             count += 1
-        
+
         conn.commit()
         cursor.close()
         conn.close()
@@ -817,7 +836,7 @@ def sync_block_trade(start_date: str, end_date: str):
     try:
         df = ak.stock_dzjy_mrmx(start_date=start_date, end_date=end_date)
         if df is None or df.empty:
-            logger.info(f"  无大宗交易数据")
+            logger.info("  无大宗交易数据")
             return 0
 
         conn = get_db()
@@ -826,7 +845,7 @@ def sync_block_trade(start_date: str, end_date: str):
 
         # 批量获取这些股票的对应日期收盘价，用于计算折溢率
         date_filter = f"'{start_date}'" if start_date else "'2000-01-01'"
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT ts_code, trade_date, close
             FROM daily_price
             WHERE trade_date >= %s AND trade_date <= %s
@@ -1034,19 +1053,19 @@ def main():
     logger.info("=" * 60)
     logger.info("AKShare 数据补充同步开始")
     logger.info("=" * 60)
-    
+
     start_time = time.time()
-    
+
     # 1. 建表
     logger.info("\n[Step 1] 创建数据表")
     create_tables()
-    
+
     # 2. 板块列表
     logger.info("\n[Step 2] 同步板块列表")
     concept_ok, industry_ok = sync_board_lists()
-    
+
     today = datetime.now()
-    
+
     # 3. 涨停板（最近30天）
     logger.info("\n[Step 3] 同步涨停板（最近30天）")
     for i in range(30, -1, -1):
@@ -1057,7 +1076,7 @@ def main():
             continue
         sync_zt_pool(day_name)
         time.sleep(0.5)
-    
+
     # 4. 板块历史行情（每日增量同步）— 依赖 Step 2 成功
     is_workday = today.weekday() < 5
     if is_workday and concept_ok and industry_ok:
@@ -1076,7 +1095,7 @@ def main():
         sync_board_cons('industry')
     else:
         logger.info("\n[Step 5] 跳过板块成分股（非周五）")
-    
+
     # 6. 北向资金持仓（最近30个交易日）+ 个股持仓
     logger.info("\n[Step 6] 同步北向资金持仓")
     for i in range(30, -1, -1):
@@ -1102,7 +1121,7 @@ def main():
     end_d = today.strftime('%Y%m%d')
     sync_block_trade(start_d, end_d)
     backfill_block_trade_premium()
-    
+
     elapsed = time.time() - start_time
     logger.info(f"\n{'='*60}")
     logger.info(f"同步完成，耗时 {elapsed/60:.1f} 分钟")

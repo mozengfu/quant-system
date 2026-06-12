@@ -3,9 +3,12 @@
 调用 strategy_service.generate_bottom_awakening_candidates
 输出 Top10 → 写入 stock_pool_awakening 表 → 保存 JSON
 """
-import os, sys, json, logging
-from pathlib import Path
+import json
+import logging
+import os
+import sys
 from datetime import datetime
+from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -14,14 +17,16 @@ os.chdir(str(BASE_DIR))
 sys.path.insert(0, str(BASE_DIR))
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
 
 import pymysql
-from quant_app.utils.config import get_db_config
+
 from quant_app.services.strategy_service import generate_bottom_awakening_candidates
+from quant_app.utils.config import get_db_config
 
 LIMIT = 20
 TOP_N = 10

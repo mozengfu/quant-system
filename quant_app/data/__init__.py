@@ -12,8 +12,16 @@ from quant_app.data.models import (
 )
 
 __all__ = [
-    "Base", "SessionLocal", "with_session",
-    "StockInfo", "DailyPrice", "MarketIndexDaily", "FinaIndicator",
-    "MoneyflowDaily", "MarginDaily", "SectorMoneyflow",
-    "BoardConcept", "BoardIndustry",
+    "Base",
+    "SessionLocal",
+    "with_session",
+    "StockInfo",
+    "DailyPrice",
+    "MarketIndexDaily",
+    "FinaIndicator",
+    "MoneyflowDaily",
+    "MarginDaily",
+    "SectorMoneyflow",
+    "BoardConcept",
+    "BoardIndustry",
 ]

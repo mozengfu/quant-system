@@ -1,0 +1,23 @@
+{
+  "date": "2026-06-11",
+  "time": "09:43",
+  "market_state": "normal",
+  "data_basis": "2026-06-10 收盘（今日盘中数据未入库）",
+  "market_env": {
+    "sh_pct": -0.26,
+    "hs300_pct": 0.02,
+    "sz_pct": 0.03,
+    "chinext_pct": 0.77,
+    "score": 65,
+    "status": "小幅上涨"
+  },
+  "pool_size": 29,
+  "strict_match": 0,
+  "selected": [
+    {"rank":1, "name":"西域旅游", "code":"300859", "note":"RPS 90 略高，其余过", "position":"轻仓100股"},
+    {"rank":2, "name":"健麾信息", "code":"605186", "note":"强势但已大涨", "position":"观望"},
+    {"rank":3, "name":"润阳科技", "code":"300920", "note":"前期超跌反弹", "position":"观望"}
+  ],
+  "conclusion": "信号不清晰，建议谨慎开仓，优先处理现有持仓",
+  "feishu_pushed": true
+}

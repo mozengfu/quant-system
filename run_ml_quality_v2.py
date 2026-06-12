@@ -5,11 +5,18 @@ ML 排序精度验证 V2 — 基于真实 V11 模型预测的排序质量
 - 测量 V11 预测值与前向收益的 Spearman 秩相关
 - 然后模拟不同 IC 提升幅度对策略收益的影响
 """
-import os, sys, json, logging, warnings
+import json
+import logging
+import os
+import sys
+import warnings
+
 warnings.filterwarnings('ignore')
-import numpy as np, pandas as pd
-from scipy.stats import spearmanr
+import numpy as np
+import pandas as pd
 from dotenv import load_dotenv
+from scipy.stats import spearmanr
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -18,13 +25,15 @@ logger = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 
-from quant_app.utils.model_loader import get_model_path
-from quant_app.utils.config import get_db_config
+import joblib
+import pymysql
+from sqlalchemy import create_engine
+
 from ml_predict import _ensemble_predict
 from quant_app.services.strategy_service import _v4_score_single
+from quant_app.utils.config import get_db_config
+from quant_app.utils.model_loader import get_model_path
 from scripts.predict_v11 import build_features_v11_inference
-from sqlalchemy import create_engine
-import joblib, pymysql
 
 DB_CONFIG = get_db_config()
 DB_CONFIG.pop('unix_socket', None)
@@ -144,7 +153,7 @@ for di, buy_date in enumerate(sample_dates):
         if target_ic <= ic or target_ic <= 0:
             improved_rets[f"+{pct}%IC"].append(np.mean([fwd_rets[c] for c in v11_ranked]))
             continue
-        
+
         # Generate improved scores with target IC
         n_trials = 10
         trial_rets = []
@@ -164,7 +173,7 @@ conn.close()
 # === Results ===
 avg_ic = float(np.mean(ic_values)) if ic_values else 0
 print(f"\n{'='*70}")
-print(f"V11 模型在 V4 候选池内的排序质量分析")
+print("V11 模型在 V4 候选池内的排序质量分析")
 print(f"{'='*70}")
 print(f"区间: {START_DATE} ~ {END_DATE} | 持仓: {HOLD_DAYS}天 | Top{TOP_N}")
 print(f"V4 候选池平均规模: ~30只, 采样次数: {len(actual_rets)}")
@@ -191,7 +200,7 @@ print(f"  {'V4 + 随机 (α=0%)':<25} {r_cum:>+10.2f}% {r_win/len(r_rets)*100:>7
 print(f"  {'V4 + V11 实际':<25} {a_cum:>+10.2f}% {a_win/len(a_rets)*100:>7.1f}% {a_sharpe:>8.2f} {a_dd*100:>8.2f}% {a_rets.mean():>+6.2f}%")
 
 print()
-print(f"  V11 IC 提升对 V4+ML 收益的影响模拟:")
+print("  V11 IC 提升对 V4+ML 收益的影响模拟:")
 print(f"  {'提升幅度':<12} {'累积收益':>10} {'胜率':>8} {'夏普':>8} {'最大回撤':>8} {'均值':>7}")
 print(f"  {'-'*53}")
 

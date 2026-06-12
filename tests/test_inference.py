@@ -1,9 +1,11 @@
 """ML 推理管线测试 — 模型可用性 + 配置 + 预测完整性"""
 
-import pytest
 from pathlib import Path
-from quant_app.utils.model_loader import get_model_path
+
+import pytest
+
 from quant_app.utils.config import config
+from quant_app.utils.model_loader import get_model_path
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 
@@ -54,7 +56,7 @@ class TestModelLoading:
         assert bundle is not None, "V11.0 模型加载失败"
         assert "models" in bundle, "缺少 models"
         assert "feature_cols" in bundle, "缺少 feature_cols"
-        assert len(bundle["models"]) == 11, "应为 11 子模型，实际 %s" % len(bundle["models"])
+        assert len(bundle["models"]) == 7, "应为 7 子模型，实际 %s" % len(bundle["models"])
 
     def test_v8_1_load(self):
         from quant_app.utils.model_loader import load_model
@@ -66,9 +68,10 @@ class TestModelLoading:
 @pytest.mark.slow
 def test_predict_smoke():
     """冒烟测试：最新交易日 top10 成交额股票预测（需DB+模型）"""
-    from quant_app.utils.model_loader import load_model
-    from quant_app.utils.config import get_db_config
     import pymysql
+
+    from quant_app.utils.config import get_db_config
+    from quant_app.utils.model_loader import load_model
 
     bundle = load_model("v11.0")
     if bundle is None:

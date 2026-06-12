@@ -2,6 +2,7 @@
 """
 策略选股服务 - C3.0 V3评分、策略扫描、技术面扫描、底部起步、均线回踩
 """
+
 import json
 import logging
 import os
@@ -11,12 +12,22 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 
-from market_state import get_market_state as unified_market_state
 from quant_app.services.market_service import calculate_rps, get_recent_trade_dates, get_stock_realtime, get_tushare_pro
+from quant_app.services.market_state import get_market_state as unified_market_state
 from quant_app.services.technical_service import calculate_atr, calculate_bollinger_bands, calculate_kdj, calculate_macd
 from quant_app.utils.config import DATA_DIR, get_db_config
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_float(val, default=0.0):
+    """安全float转换，处理NaN/None/空字符串"""
+    try:
+        v = float(val) if val is not None else default
+        return default if np.isnan(v) else v
+    except (ValueError, TypeError):
+        return default
+
 
 # ========== 持仓预警状态（防止重复通知） ==========
 POSITION_ALERT_STATE = {}
@@ -24,30 +35,68 @@ POSITION_ALERT_STATE = {}
 # ========== 板块常量 ==========
 ALL_BLOCKS = [
     # 科技类
-    "半导体", "IT设备", "互联网", "软件服务", "通信设备", "元器件",
+    "半导体",
+    "IT设备",
+    "互联网",
+    "软件服务",
+    "通信设备",
+    "元器件",
     # 医药类
-    "中成药", "化学制药", "生物制药", "医疗保健", "医药商业", "农药化肥",
+    "中成药",
+    "化学制药",
+    "生物制药",
+    "医疗保健",
+    "医药商业",
+    "农药化肥",
     # 消费类
-    "白酒", "啤酒", "红黄酒", "食品", "软饮料", "纺织", "酒店餐饮", "家居用品", "家用电器",
+    "白酒",
+    "啤酒",
+    "红黄酒",
+    "食品",
+    "软饮料",
+    "纺织",
+    "酒店餐饮",
+    "家居用品",
+    "家用电器",
     # 制造类
-    "汽车整车", "汽车配件", "汽车服务", "专用机械", "工程机械", "电气设备", "机床制造",
+    "汽车整车",
+    "汽车配件",
+    "汽车服务",
+    "专用机械",
+    "工程机械",
+    "电气设备",
+    "机床制造",
     # 地产建筑类
-    "全国地产", "区域地产", "房产服务", "建筑工程", "装修装饰", "其他建材",
+    "全国地产",
+    "区域地产",
+    "房产服务",
+    "建筑工程",
+    "装修装饰",
+    "其他建材",
     # 金融类
-    "银行", "证券", "保险", "多元金融",
+    "银行",
+    "证券",
+    "保险",
+    "多元金融",
     # 其他
-    "化工原料", "化纤", "化工机械", "小金属", "广告包装", "影视音像"
+    "化工原料",
+    "化纤",
+    "化工机械",
+    "小金属",
+    "广告包装",
+    "影视音像",
 ]
 
 
 # ========== 技术指标工具函数 ==========
 
+
 def calculate_macd_kdj_single(highs, lows, closes, n=9):
     """单值版KDJ计算（供个股分析用，取最新值）"""
     from quant_app.services.technical_service import calculate_kdj as _ts_kdj
+
     k, d, j = _ts_kdj(highs, lows, closes, n)
     return k or 0, d or 0, j or 0
-
 
 
 # ========== 个股深度分析 ==========
@@ -70,13 +119,27 @@ def analyze_stock(code, market="sz"):
     l52 = rt.get("52周低", 0)
     zt = rt.get("涨停价", 0)
     dt = rt.get("跌停价", 0)
-    ts_code = f"{code}.{'SZ' if market=='sz' else 'SH'}"
+    ts_code = f"{code}.{'SZ' if market == 'sz' else 'SH'}"
 
     # 初始化基本面数据
-    basic_info = {"行业": "N/A", "PE": "N/A", "PB": "N/A", "毛利率": "N/A", "净利率": "N/A", "ROE": "N/A", "盈亏": "N/A"}
+    basic_info = {
+        "行业": "N/A",
+        "PE": "N/A",
+        "PB": "N/A",
+        "毛利率": "N/A",
+        "净利率": "N/A",
+        "ROE": "N/A",
+        "盈亏": "N/A",
+    }
 
     # 初始化资金流向数据
-    money_flow = {"主力净流入": "N/A", "主力净流入占比": "N/A", "大单净流入": "N/A", "中单净流入": "N/A", "小单净流入": "N/A"}
+    money_flow = {
+        "主力净流入": "N/A",
+        "主力净流入占比": "N/A",
+        "大单净流入": "N/A",
+        "中单净流入": "N/A",
+        "小单净流入": "N/A",
+    }
 
     try:
         dates = get_recent_trade_dates(60)
@@ -92,15 +155,19 @@ def analyze_stock(code, market="sz"):
             mf = pro.moneyflow(ts_code=ts_code, trade_date=dates[-1])
             if mf is not None and len(mf) > 0:
                 row = mf.iloc[0]
+
                 def fmt_mf(v):
                     val = v or 0
                     return f"{val:.1f}万" if abs(val) > 0.01 else "N/A"
+
                 money_flow = {
-                    "主力净流入": fmt_mf(row.get('net_mf_amount', 0)),
-                    "主力净流入占比": f"{row.get('net_mf_rate', 0):.2f}%" if abs(row.get('net_mf_rate', 0)) > 0.01 else "N/A",
-                    "大单净流入": fmt_mf(row.get('lg_net_mf_amount', 0)),
-                    "中单净流入": fmt_mf(row.get('md_net_mf_amount', 0)),
-                    "小单净流入": fmt_mf(row.get('sm_net_mf_amount', 0)),
+                    "主力净流入": fmt_mf(row.get("net_mf_amount", 0)),
+                    "主力净流入占比": f"{row.get('net_mf_rate', 0):.2f}%"
+                    if abs(row.get("net_mf_rate", 0)) > 0.01
+                    else "N/A",
+                    "大单净流入": fmt_mf(row.get("lg_net_mf_amount", 0)),
+                    "中单净流入": fmt_mf(row.get("md_net_mf_amount", 0)),
+                    "小单净流入": fmt_mf(row.get("sm_net_mf_amount", 0)),
                 }
         except Exception as e:
             logger.warning(f"资金流向获取失败: {e}")
@@ -119,8 +186,8 @@ def analyze_stock(code, market="sz"):
             daily_basic = pro.daily_basic(ts_code=ts_code, trade_date=dates[-1], fields="pe,pb")
             if daily_basic is not None and len(daily_basic) > 0:
                 row = daily_basic.iloc[0]
-                basic_info["PE"] = f"{row.get('pe', 0):.1f}" if row.get('pe', 0) and row.get('pe', 0) > 0 else "N/A"
-                basic_info["PB"] = f"{row.get('pb', 0):.2f}" if row.get('pb', 0) and row.get('pb', 0) > 0 else "N/A"
+                basic_info["PE"] = f"{row.get('pe', 0):.1f}" if row.get("pe", 0) and row.get("pe", 0) > 0 else "N/A"
+                basic_info["PB"] = f"{row.get('pb', 0):.2f}" if row.get("pb", 0) and row.get("pb", 0) > 0 else "N/A"
         except Exception as e:
             logger.warning(f"PE/PB获取失败: {e}")
 
@@ -128,7 +195,9 @@ def analyze_stock(code, market="sz"):
         try:
             for period in ["20260331", "20251231", "20250630"]:
                 try:
-                    fina = pro.fina_indicator(ts_code=ts_code, period=period, fields="roe,grossprofit_margin,netprofit_margin")
+                    fina = pro.fina_indicator(
+                        ts_code=ts_code, period=period, fields="roe,grossprofit_margin,netprofit_margin"
+                    )
                     if fina is not None and len(fina) > 0:
                         row = fina.iloc[0]
                         roe = row.get("roe", 0)
@@ -228,28 +297,44 @@ def analyze_stock(code, market="sz"):
                         except Exception as e:
                             logger.debug(f"KDJ状态判断失败: {e}")
                             kdj_state = "正常"
-                        kdj_cross = "K上穿D" if (isinstance(d_val, (int, float)) and k_val > d_val) else "K下穿D"
                     else:
                         kdj_state = "数据不足"
-                        kdj_cross = ""
         except Exception as e:
             logger.warning(f"Tushare日线数据获取失败: {e}")
 
     # 兜底默认值（防止 try 内异常导致局部变量未定义）
-    try: ma5
-    except NameError: ma5 = ma10 = ma20 = price; ma_trend = "震荡"; rps = 50
-    try: rps
-    except NameError: rps = 50
-    try: ma_trend
-    except NameError: ma_trend = "震荡"
-    try: macd_state
-    except NameError: macd_line = signal_line = macd_hist = None; macd_state = "数据不足"
-    try: kdj_state
-    except NameError: k_val = d_val = j_val = None; kdj_state = "数据不足"; kdj_cross = ""
-    try: atr_val
-    except NameError: atr_val = None
-    try: bb_upper
-    except NameError: bb_upper = bb_middle = bb_lower = None
+    try:
+        ma5
+    except NameError:
+        ma5 = ma10 = ma20 = price
+        ma_trend = "震荡"
+        rps = 50
+    try:
+        rps
+    except NameError:
+        rps = 50
+    try:
+        ma_trend
+    except NameError:
+        ma_trend = "震荡"
+    try:
+        macd_state
+    except NameError:
+        macd_line = signal_line = macd_hist = None
+        macd_state = "数据不足"
+    try:
+        kdj_state
+    except NameError:
+        k_val = d_val = j_val = None
+        kdj_state = "数据不足"
+    try:
+        atr_val
+    except NameError:
+        atr_val = None
+    try:
+        bb_upper
+    except NameError:
+        bb_upper = bb_middle = bb_lower = None
     if vol > 0 and vr > 2:
         vol_comment = "放量" if change_pct > 0 else "放量下跌"
     elif vol > 0 and vr < 0.8:
@@ -391,30 +476,33 @@ def analyze_stock(code, market="sz"):
         ml_prob = pred_ret = model_type = None
         # 1) 内存缓存（实时批量扫描结果）
         from ml_predict import _last_scan_results
+
         cached = _last_scan_results.get(ts_code)
         if cached:
-            ml_prob = cached['ml概率']
-            pred_ret = cached['排序强度']
-            model_type = cached.get('模型名称', '')
+            ml_prob = cached["ml概率"]
+            pred_ret = cached["排序强度"]
+            model_type = cached.get("模型名称", "")
         # 2) 数据库表（历史扫描结果）
         if ml_prob is None:
             import pymysql
 
             from quant_app.utils.config import get_db_config
+
             conn = pymysql.connect(**get_db_config(connect_timeout=3))
             cur = conn.cursor()
             cur.execute(
                 "SELECT _ml_pred, predicted_return, model_type FROM ml_predictions "
-                "WHERE ts_code=%s ORDER BY trade_date DESC LIMIT 1", [ts_code]
+                "WHERE ts_code=%s ORDER BY trade_date DESC LIMIT 1",
+                [ts_code],
             )
             row = cur.fetchone()
             cur.close()
             conn.close()
             if row:
-                ml_prob, pred_ret, model_type = float(row[0]), float(row[1]), str(row[2] or '')
+                ml_prob, pred_ret, model_type = float(row[0]), float(row[1]), str(row[2] or "")
         if ml_prob is not None:
             ml_info = {
-                "ML概率": f"{ml_prob*100:.1f}%",
+                "ML概率": f"{ml_prob * 100:.1f}%",
                 "ML看涨": ml_prob >= 0.5,
                 "排序分": f"{pred_ret:+.2f}",
                 "资金趋势": "N/A",
@@ -442,9 +530,9 @@ def analyze_stock(code, market="sz"):
     # ========== ATR动态止盈止损 ==========
     # 用市场状态参数校验ATR结果的合理性
     try:
-        ms_params = (unified_market_state() or {}).get('params', {})
-        max_sl_pct = ms_params.get('stop_loss_pct', -5)
-        min_tp_pct = ms_params.get('take_profit_pct', 8)
+        ms_params = (unified_market_state() or {}).get("params", {})
+        max_sl_pct = ms_params.get("stop_loss_pct", -5)
+        min_tp_pct = ms_params.get("take_profit_pct", 8)
     except Exception as e:
         logger.warning(f"获取市场状态参数失败: {e}")
         max_sl_pct = -5
@@ -494,7 +582,10 @@ def analyze_stock(code, market="sz"):
         else:
             tech_parts.append(f"KDJ指标运行正常(K={k_val:.2f}，D={d_val:.2f}，J={j_val:.2f})")
 
-    tech_parts.append(f"RPS评分为{rps:.0f}/100，" + ("处于市场前列，强势特征明显" if rps >= 80 else "处于市场中游" if rps >= 50 else "偏弱，关注趋势改善"))
+    tech_parts.append(
+        f"RPS评分为{rps:.0f}/100，"
+        + ("处于市场前列，强势特征明显" if rps >= 80 else "处于市场中游" if rps >= 50 else "偏弱，关注趋势改善")
+    )
     tech_parts.append(f"量价配合{vol_comment}")
 
     summary_parts.append(("技术面综合", "；".join(tech_parts)))
@@ -514,8 +605,15 @@ def analyze_stock(code, market="sz"):
     # ML模型观点
     ml_summary = ""
     if ml_info:
-        trend_map = {'accelerating': '加速流入', 'steady': '平稳', 'weakening': '减弱', 'inflow': '流入', 'outflow': '流出', 'unknown': '未知'}
-        trend_cn = trend_map.get(ml_info.get('资金趋势', ''), ml_info.get('资金趋势', 'N/A'))
+        trend_map = {
+            "accelerating": "加速流入",
+            "steady": "平稳",
+            "weakening": "减弱",
+            "inflow": "流入",
+            "outflow": "流出",
+            "unknown": "未知",
+        }
+        trend_cn = trend_map.get(ml_info.get("资金趋势", ""), ml_info.get("资金趋势", "N/A"))
         ml_summary = f"ML模型看好概率{ml_info['ML概率']}，排序分{ml_info['排序分']}，{trend_cn}"
         if ml_info.get("ML看涨"):
             ml_summary += "，模型信号偏积极"
@@ -561,6 +659,7 @@ def analyze_stock(code, market="sz"):
     sector_summary = ""
     try:
         from sector_rotation import get_hot_sectors
+
         hot_sectors = get_hot_sectors(top_n=5)
         stock_industry = basic_info.get("行业", "N/A")
         if stock_industry and stock_industry != "N/A":
@@ -579,8 +678,8 @@ def analyze_stock(code, market="sz"):
     market_summary = ""
     try:
         ms = unified_market_state()
-        state_name = ms.get('state_name', '未知')
-        advice = ms.get('advice', '')
+        state_name = ms.get("state_name", "未知")
+        advice = ms.get("advice", "")
         market_summary = f"大盘{state_name}，{advice}"
     except Exception as e:
         logger.warning(f"大盘情绪获取失败: {e}")
@@ -601,7 +700,7 @@ def analyze_stock(code, market="sz"):
         risks.append("MACD死叉，空头动能仍未释放完毕")
     # ATR>3%波动警告
     if atr_val and price > 0 and atr_val / price * 100 > 3:
-        risks.append(f"ATR波动率{(atr_val/price*100):.1f}%，波动较大，注意控制仓位")
+        risks.append(f"ATR波动率{(atr_val / price * 100):.1f}%，波动较大，注意控制仓位")
     if change_pct > 7:
         risks.append(f"今日涨幅{change_pct:.1f}%，短期涨幅较大，注意追高风险")
     if not risks:
@@ -618,7 +717,7 @@ def analyze_stock(code, market="sz"):
         action_text = f"综合评分一般（{score}分），建议持仓观察或等待更明确信号。"
     else:
         action_text = f"综合评分偏低（{score}分），建议暂时观望，等待趋势改善。"
-    action_text += f"若入场，参考止损价{stop_loss:.2f}元(-{(price-stop_loss)/price*100:.1f}%)，目标价{target_price:.2f}元(+{(target_price-price)/price*100:.1f}%)。"
+    action_text += f"若入场，参考止损价{stop_loss:.2f}元(-{(price - stop_loss) / price * 100:.1f}%)，目标价{target_price:.2f}元(+{(target_price - price) / price * 100:.1f}%)。"
     summary_parts.append(("操作参考", action_text))
 
     summary = {
@@ -643,7 +742,7 @@ def analyze_stock(code, market="sz"):
         tech_extra["ATR"] = f"{atr_val:.2f}"
     if bb_middle is not None and bb_upper is not None and bb_lower is not None:
         tech_extra["布林带"] = f"上轨={bb_upper:.2f} 中轨={bb_middle:.2f} 下轨={bb_lower:.2f}"
-        bb_pos = f"{(price-bb_lower)/(bb_upper-bb_lower)*100:.0f}%" if bb_upper != bb_lower else "50%"
+        bb_pos = f"{(price - bb_lower) / (bb_upper - bb_lower) * 100:.0f}%" if bb_upper != bb_lower else "50%"
         tech_extra["布林带位置"] = bb_pos
     # 板块趋势数据
     stock_industry = basic_info.get("行业", "N/A")
@@ -654,19 +753,27 @@ def analyze_stock(code, market="sz"):
         "股票代码": f"{market.upper()}{code}",
         "更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "一、基础数据": {
-            "现价": f"{price:.2f}元", "昨收": f"{yc:.2f}元", "今开": f"{o:.2f}元",
-            "最高": f"{h:.2f}元", "最低": f"{l:.2f}元",
+            "现价": f"{price:.2f}元",
+            "昨收": f"{yc:.2f}元",
+            "今开": f"{o:.2f}元",
+            "最高": f"{h:.2f}元",
+            "最低": f"{l:.2f}元",
             "涨跌幅": f"{change_pct:+.2f}%",
-            "涨停价": f"{zt}元", "跌停价": f"{dt}元",
-            "成交量": f"{vol/10000:.1f}万手",
-            "成交额": f"{rt['成交额']/100000000:.2f}亿" if rt["成交额"] else "N/A",
-            "换手率": f"{turnover:.2f}%", "量比": f"{vr:.2f}",
-            "52周高点": f"{h52}元", "52周低点": f"{l52}元",
-            "市值": f"{rt['市值']/100000000:.2f}亿" if rt["市值"] else "N/A",
+            "涨停价": f"{zt}元",
+            "跌停价": f"{dt}元",
+            "成交量": f"{vol / 10000:.1f}万手",
+            "成交额": f"{rt['成交额'] / 100000000:.2f}亿" if rt["成交额"] else "N/A",
+            "换手率": f"{turnover:.2f}%",
+            "量比": f"{vr:.2f}",
+            "52周高点": f"{h52}元",
+            "52周低点": f"{l52}元",
+            "市值": f"{rt['市值'] / 100000000:.2f}亿" if rt["市值"] else "N/A",
         },
         "二、技术面": {
             "均线趋势": ma_trend,
-            "价格位置": f"52周区间的{(price-l52)/(h52-l52)*100:.1f}%" if h52 and l52 and h52 > l52 > 0 else "数据异常",
+            "价格位置": f"52周区间的{(price - l52) / (h52 - l52) * 100:.1f}%"
+            if h52 and l52 and h52 > l52 > 0
+            else "数据异常",
             "RPS评分": f"{rps:.0f}/100",
             "量价配合": vol_comment,
             **tech_extra,
@@ -709,22 +816,28 @@ def get_dragon_tiger_bonus(conn, ts_code, trade_date):
     """
     try:
         cur = conn.cursor()
-        td_limit = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+        td_limit = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
 
         # 机构净买入
-        cur.execute("""
+        cur.execute(
+            """
             SELECT COALESCE(SUM(net_buy), 0)
             FROM dragon_tiger_inst
             WHERE ts_code = %s AND trade_date >= %s
               AND (exalter LIKE '%%机构%%' OR exalter LIKE '%%专用%%')
-        """, (ts_code, td_limit))
+        """,
+            (ts_code, td_limit),
+        )
         inst_net = float(cur.fetchone()[0])
 
         # 是否上榜
-        cur.execute("""
+        cur.execute(
+            """
             SELECT COUNT(*) FROM dragon_tiger
             WHERE ts_code = %s AND trade_date >= %s
-        """, (ts_code, td_limit))
+        """,
+            (ts_code, td_limit),
+        )
         listed_count = int(cur.fetchone()[0])
 
         cur.close()
@@ -751,12 +864,15 @@ def get_holder_bonus(conn, ts_code):
     """
     try:
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT end_date, holder_num_change
             FROM holder_change
             WHERE ts_code = %s
             ORDER BY end_date DESC LIMIT 4
-        """, (ts_code,))
+        """,
+            (ts_code,),
+        )
         rows = cur.fetchall()
         cur.close()
 
@@ -781,7 +897,27 @@ def get_holder_bonus(conn, ts_code):
         return 0
 
 
-def score_stock_c30(change_pct, turnover, vr, price, h52, l52, ma5, ma10, ma20, chg3day, rps=50, money_flow=0, pct_chg_rank_pct=None, macd_dif=None, macd_dea=None, k_val=None, d_val=None, dragon_tiger_bonus=0, holder_bonus=0):
+def score_stock_c30(
+    change_pct,
+    turnover,
+    vr,
+    price,
+    h52,
+    l52,
+    ma5,
+    ma10,
+    ma20,
+    chg3day,
+    rps=50,
+    money_flow=0,
+    pct_chg_rank_pct=None,
+    macd_dif=None,
+    macd_dea=None,
+    k_val=None,
+    d_val=None,
+    dragon_tiger_bonus=0,
+    holder_bonus=0,
+):
     """C3.0 V3 选股评分（重校准，满分约195）"""
     score = 0
     reasons = []
@@ -965,8 +1101,6 @@ def score_stock_c30(change_pct, turnover, vr, price, h52, l52, ma5, ma10, ma20, 
     return score, reasons
 
 
-
-
 def detect_macd_crossover(closes, lookback=10):
     """
     真正的 MACD 金叉穿越检测。
@@ -985,7 +1119,8 @@ def detect_macd_crossover(closes, lookback=10):
         return False, -1
 
     # 计算完整的 MACD 序列
-    from app_core import calculate_ema
+    from quant_app.utils.indicators import calculate_ema
+
     fast_ema = calculate_ema(closes, 12)
     slow_ema = calculate_ema(closes, 26)
 
@@ -1013,9 +1148,9 @@ def detect_macd_crossover(closes, lookback=10):
             valid_dea.append(dea)
 
     # 将对齐后的 dif 和 dea 映射回去（跳过前面的 None）
-    none_count = sum(1 for d in dif_list if d is None)
+    sum(1 for d in dif_list if d is None)
     aligned_dif = [d for d in dif_list if d is not None]
-    aligned_dea = valid_dea[:len(aligned_dif)]
+    aligned_dea = valid_dea[: len(aligned_dif)]
 
     if len(aligned_dif) < 2:
         return False, -1
@@ -1042,242 +1177,150 @@ def detect_macd_crossover(closes, lookback=10):
 # ========== 策略扫描 ==========
 def scan_daily_pool():
     """
-    每日17:00股票池扫描 - 只用Tushare数据，不调用任何API
-    筛选条件：涨跌幅0.5~3%、量比1.2~5.0、换手率2~15%
-    保存Top100到stock_pool.json
+    每日17:00股票池扫描 - 使用MySQL daily_price数据
+    筛选条件：涨跌幅-3~5%、量比>1.0、换手>1.5%
+    注入OOS-v2 ML Top10 → 保存stock_pool.json + 同步QMT
     """
     try:
-        pro = get_tushare_pro()
-        logger.info("开始每日股票池扫描...")
+        import pymysql as _pm
+        logger.info("开始每日股票池扫描(MySQL)...")
 
-        # 大盘情绪过滤
+        conn = _pm.connect(**get_db_config(connect_timeout=10))
+        cur = conn.cursor()
+
+        # 最新交易日
+        cur.execute("SELECT MAX(trade_date) FROM daily_price")
+        today = str(cur.fetchone()[0])
+        logger.info(f"交易日: {today}")
+
+        # 大盘情绪
         ms_scan = unified_market_state()
         logger.info(f"大盘状态: {ms_scan.get('state_name', '未知')} (评分:{ms_scan.get('score', 0)})")
-        mood = ms_scan.get('state', 'range')
-        advice = ms_scan.get('advice', '')
-        sh_pct, cyb_pct, sh_date = 0.0, 0.0, ''
+        mood = ms_scan.get("state", "range")
+        advice = ms_scan.get("advice", "")
+        sh_pct, cyb_pct, sh_date = 0.0, 0.0, ""
         try:
-            import pymysql as _pm
-            _c = _pm.connect(**get_db_config(connect_timeout=3))
-            _cur = _c.cursor()
-            _cur.execute("SELECT trade_date, change_pct FROM market_index_daily WHERE index_code='000001.SH' ORDER BY trade_date DESC LIMIT 1")
-            _r = _cur.fetchone()
-            if _r: sh_date, sh_pct = str(_r[0]), float(_r[1]) if _r[1] else 0.0
-            _cur.execute("SELECT trade_date, change_pct FROM market_index_daily WHERE index_code='399006.SZ' ORDER BY trade_date DESC LIMIT 1")
-            _r = _cur.fetchone()
-            if _r: cyb_pct = float(_r[1]) if _r[1] else 0.0
-            _c.close()
+            cur.execute("SELECT trade_date, change_pct FROM market_index_daily WHERE index_code='000001.SH' ORDER BY trade_date DESC LIMIT 1")
+            r = cur.fetchone()
+            if r:
+                sh_date, sh_pct = str(r[0]), float(r[1] or 0)
+            cur.execute("SELECT change_pct FROM market_index_daily WHERE index_code='399006.SZ' ORDER BY trade_date DESC LIMIT 1")
+            r = cur.fetchone()
+            if r:
+                cyb_pct = float(r[0] or 0)
         except Exception as e:
-            logger.warning(f"获取指数行情失败: {e}")
-            pass
+            logger.warning(f"指数行情获取失败: {e}")
 
-        # 获取所有股票基本信息，排除ST股和科创板
-        all_basic = pro.stock_basic(exchange="", list_status="L", fields="ts_code,name,industry")
-        all_basic = all_basic[~all_basic["name"].str.contains("ST", na=False)]  # 排除ST
-        all_basic = all_basic[~all_basic["ts_code"].str.startswith("688")]  # 排除科创板
-        name_map = dict(zip(all_basic["ts_code"], all_basic["name"]))
-        industry_map = dict(zip(all_basic["ts_code"], all_basic["industry"]))
+        # 股票基本信息（排除ST和科创板）
+        cur.execute("SELECT ts_code, name, industry FROM stock_info WHERE name NOT LIKE '%%ST%%' AND ts_code NOT LIKE '688%%'")
+        basics = cur.fetchall()
+        name_map = {r[0]: r[1] for r in basics}
+        industry_map = {r[0]: r[2] for r in basics}
+        logger.info(f"股票基础信息: {len(basics)}只")
 
-        # 获取交易日
-        dates = get_recent_trade_dates(5)
-        if not dates:
-            logger.error("无法获取交易日历")
-            return {"error": "无法获取交易日历"}
-        today = dates[-1]
+        # 当日行情
+        cur.execute("""
+            SELECT d.ts_code, d.close, d.pct_chg, d.volume_ratio, d.turnover_rate,
+                   d.ma5, d.ma10, d.ma20, d.amount, d.pre_close
+            FROM daily_price d
+            WHERE d.trade_date=%s
+              AND d.close BETWEEN 3 AND 200
+              AND LEFT(d.ts_code,1) NOT IN ('8','4','9')
+              AND d.ts_code NOT LIKE '688%%'
+        """, (today,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        logger.info(f"当日行情: {len(rows)}只")
 
-        # 批量获取当日行情（如果当天没数据则向前找最近的交易日）
-        today_df = pro.daily(trade_date=today)
-        if today_df is None or len(today_df) == 0:
-            logger.warning(f"今日({today})无交易数据，向前查找最近有数据的交易日...")
-            # 向前最多查5天
-            found = False
-            for days_back in range(1, 6):
-                prev_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y%m%d")
-                today_df = pro.daily(trade_date=prev_date)
-                if today_df is not None and len(today_df) > 0:
-                    today = prev_date
-                    logger.info(f"使用{prev_date}的数据进行扫描")
-                    found = True
-                    break
-            if not found:
-                logger.error("最近5天内都没有交易数据")
-                return {"error": "最近5天内都没有交易数据"}
+        if len(rows) < 100:
+            logger.warning(f"当日数据不足({len(rows)}只)，检查数据导入")
+            return {"error": f"当日数据仅{len(rows)}只，可能未完成导入"}
 
-        today_basic = pro.daily_basic(trade_date=today)
-        today_merged = today_df.merge(today_basic, on=["ts_code", "trade_date"], suffixes=('_daily', '_basic'))
-        logger.info(f"Tushare行情数据: {len(today_df)}只, 合并后: {len(today_merged)}只, 交易日: {today}")
-
-        # 检查 daily_basic 数据质量：如果大量股票的 volume_ratio 为0（数据未更新），则放宽量比条件
-        vr_nonzero = (today_merged['volume_ratio'].fillna(0) > 0).sum()
-        data_fresh = vr_nonzero > len(today_merged) * 0.3  # 至少30%股票有数据才算新鲜
-        if not data_fresh:
-            logger.info(f"daily_basic数据未更新(量比非零仅{vr_nonzero}/{len(today_merged)})，放宽量比换手过滤")
-
+        # 筛选候选
         candidates = []
-        for _, row in today_merged.iterrows():
-            try:
-                ts_code = row["ts_code"]
-                code = ts_code.split(".")[0]
-                market_code = "sz" if ts_code.endswith(".SZ") else "sh"
+        for row in rows:
+            ts_code, close, pct_chg, vr, turnover, ma5, ma10, ma20, amount, pre_close = row
+            pct_chg = float(pct_chg or 0)
+            vr = float(vr or 0)
+            turnover = float(turnover or 0)
+            close = float(close or 0)
+            ma5 = float(ma5 or 0)
+            ma10 = float(ma10 or 0)
+            ma20 = float(ma20 or 0)
 
-                change_pct = float(row.get("pct_chg", 0) or 0)
-                turnover = float(row.get("turnover_rate", 0) or 0)
-                vr = float(row.get("volume_ratio", 0) or 0)
-                price = float(row.get("close_daily") or row.get("close_basic") or row.get("pre_close") or 0)
-
-                # 筛选条件：如果daily_basic数据不新鲜，放宽量比和换手率限制
-                if data_fresh:
-                    if not (-3 <= change_pct <= 5 and vr > 1.0 and turnover > 1.5):
-                        continue
-                else:
-                    # 数据不新鲜时：只用涨跌幅过滤，不用量比和换手率（因为它们可能是0）
-                    if not (-3 <= change_pct <= 5):
-                        continue
-
-                candidates.append({
-                    "ts_code": ts_code,
-                    "代码": f"{market_code.upper()}{code}",
-                    "名称": name_map.get(ts_code, code),
-                    "行业": industry_map.get(ts_code, ""),
-                    "现价": price,
-                    "涨跌幅": f"{change_pct:+.2f}%",
-                    "换手率": f"{turnover:.2f}%" if turnover else "N/A",
-                    "量比": f"{vr:.2f}" if vr else "N/A",
-                    "快速评分": 0,
-                    "入选理由": "",
-                })
-            except Exception:
+            if not (-3 <= pct_chg <= 5):
+                continue
+            if vr < 1.0:
+                continue
+            if turnover < 1.5:
                 continue
 
-        logger.info(f"快速筛选: 总{len(today_merged)}只, 候选{len(candidates)}只")
+            code = ts_code.split(".")[0]
+            market_code = "sz" if ts_code.endswith(".SZ") else "sh"
+            name = name_map.get(ts_code, code)
+            industry = industry_map.get(ts_code, "")
 
-        # ===== P3 强势活跃放宽增强：均线趋势确认 + 3日涨幅动量 + 板块筛选 =====
-        # 获取当日板块趋势数据（用于板块筛选）
-        concept_data = None
-        concept_file = os.path.join(DATA_DIR, "concept_trend_v4.json")
-        try:
-            if os.path.exists(concept_file):
-                import os as _os
-                stat = _os.stat(concept_file)
-                from datetime import datetime as _dt
-                file_age_hours = (_dt.now().timestamp() - stat.st_mtime) / 3600
-                if file_age_hours < 24:
-                    with open(concept_file) as _cf:
-                        concept_data = json.load(_cf)
-        except Exception as _e:
-            logger.error(f"Error in strategy_service: {_e}")
+            # 均线+量价评分
+            score = 0
+            reasons = []
+            if pct_chg > 0:
+                score += 10
+                reasons.append(f"涨幅{pct_chg:+.2f}%")
+            if vr > 2:
+                score += 20
+                reasons.append(f"量比{vr:.1f}")
+            elif vr > 1.5:
+                score += 10
+            if turnover > 3:
+                score += 20
+                reasons.append(f"换手{turnover:.1f}%")
+            elif turnover > 2:
+                score += 10
+            if ma5 > ma10 > ma20 > 0:
+                score += 40
+                reasons.append("多头排列")
+            elif close > ma5 > 0:
+                score += 20
+                reasons.append("站上MA5")
+            elif close > ma20 > 0:
+                score += 10
 
-        top5_concepts = []
-        if concept_data and "top5_concepts" in concept_data:
-            top5_concepts = [c["名称"] for c in concept_data["top5_concepts"]]
-            logger.info(f"板块筛选：当日涨幅前5板块 = {top5_concepts}")
-
-        enriched_candidates = []
-        for c in candidates:
-            ts_code = c["ts_code"]
-            conn = None
-            try:
-                import pymysql
-                db_config = get_db_config(connect_timeout=3)
-                conn = pymysql.connect(**db_config)
-                cursor = conn.cursor()
-
-                # 获取均线数据
-                cursor.execute("""
-                    SELECT d.ma5, d.ma10, d.ma20, d.close,
-                           d.pct_chg, d.volume_ratio, d.turnover_rate
-                    FROM daily_price d
-                    WHERE d.ts_code = %s ORDER BY d.trade_date DESC LIMIT 1
-                """, (ts_code,))
-                row_ma = cursor.fetchone()
-                cursor.close()
-
-                if not row_ma or not row_ma[3]:
-                    continue
-
-                ma5 = float(row_ma[0]) if row_ma[0] else 0
-                ma10 = float(row_ma[1]) if row_ma[1] else 0
-                ma20 = float(row_ma[2]) if row_ma[2] else 0
-                close = float(row_ma[3]) if row_ma[3] else 0
-                pct_chg = float(row_ma[4]) if row_ma[4] else 0
-                vr = float(row_ma[5]) if row_ma[5] else 0
-                tr = float(row_ma[6]) if row_ma[6] else 0
-
-                # 龙虎榜加分
-                dt_bonus = get_dragon_tiger_bonus(conn, ts_code, today)
-                # 股东集中度加分
-                hc_bonus = get_holder_bonus(conn, ts_code)
-
-                # 主力评分过滤（V4.1 要求主力评分≥60）
-                _scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'scripts')
-                if _scripts_dir not in sys.path:
-                    sys.path.insert(0, _scripts_dir)
-                from mainforce_scoring import calculate_mainforce_score
-                mf = calculate_mainforce_score(ts_code, datetime.strptime(today, '%Y%m%d').date(), conn=conn)
-                mainforce_score = mf.get('score', 0)
-                mainforce_level = mf.get('level', '未知')
-
-                score = _v41_score(ma5, ma10, ma20, close, pct_chg, vr, tr, dt_bonus, hc_bonus)
-                if score <= 0:
-                    continue
-
-                c["快速评分"] = score
-                c["综合评分"] = score
-                c["主力评分"] = int(mainforce_score)
-                c["阶段判断"] = mainforce_level
-                c["龙虎榜加分"] = dt_bonus
-                c["股东加分"] = hc_bonus
-                c["3日涨幅"] = 0
-                reasons = []
-                if dt_bonus > 0:
-                    reasons.append(f"龙虎榜+{dt_bonus}")
-                if hc_bonus > 0:
-                    reasons.append(f"股东集中+{hc_bonus}")
-                if reasons:
-                    c["入选理由"] = " | ".join(reasons)
-                enriched_candidates.append(c)
-            except Exception as e:
-                logger.warning(f"候选股增强失败 {c.get('ts_code','')}: {e}")
+            if score <= 0:
                 continue
-            finally:
-                if conn:
-                    try: conn.close()
-                    except Exception: pass
 
-        candidates = enriched_candidates
-        # ===== P1 增强结束 =====
+            candidates.append({
+                "ts_code": ts_code,
+                "代码": ("SZ" if ts_code.endswith(".SZ") else "SH") + code,
+                "名称": name,
+                "行业": industry,
+                "现价": round(close, 2),
+                "涨跌幅": f"{pct_chg:+.2f}%",
+                "换手率": f"{turnover:.2f}%",
+                "量比": f"{vr:.2f}",
+                "快速评分": score,
+                "入选理由": " | ".join(reasons),
+                "均线加分": score,
+                "均线理由": "",
+                "3日涨幅": 0,
+            })
 
-        # ML增强评分（如果模型可用）
-        try:
-            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-            from ml_predict import ml_enhanced_score
-            candidates = ml_enhanced_score(candidates, db_conn=None)
-            has_ml = True
-            logger.info(f"ML增强已应用，共{len(candidates)}只")
-        except Exception as e:
-            logger.info(f"ML增强不可用，使用原始评分: {e}")
-            has_ml = False
+        candidates.sort(key=lambda x: x["快速评分"], reverse=True)
+        logger.info(f"候选股: {len(candidates)}只")
 
-        # 按增强评分排序（有ML时用增强评分，否则用快速评分）
-        if has_ml:
-            candidates.sort(key=lambda x: x.get('增强评分', 0), reverse=True)
-        else:
-            candidates.sort(key=lambda x: x["快速评分"], reverse=True)
-
-        # 大盘状态过滤：弱势时提高门槛，减少输出数量
-        _scan_mood = ms_scan.get('state', 'range') if 'ms_scan' in dir() else 'range'
-        if _scan_mood in ('trend_down', 'panic'):
+        # 大盘过滤
+        _scan_mood = ms_scan.get("state", "range")
+        if _scan_mood in ("trend_down", "panic"):
             candidates = [c for c in candidates if c["快速评分"] >= 6]
             pool = candidates[:30]
-            logger.info(f"弱势市场过滤：评分>=6，保留{len(pool)}只")
+            logger.info(f"弱势市场过滤: 保留{len(pool)}只")
         else:
             pool = candidates[:100]
 
-        # 保存股票池
-        actual_trade_date = today  # 实际有数据的交易日（today可能被回退修改过）
+        actual_trade_date = today
         pool_data = {
             "scan_date": today,
-            "actual_trade_date": actual_trade_date,  # 实际数据对应的交易日
+            "actual_trade_date": actual_trade_date,
             "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "total_candidates": len(candidates),
             "stocks": pool,
@@ -1287,26 +1330,93 @@ def scan_daily_pool():
             "cyb_pct": round(cyb_pct, 3),
             "sh_date": sh_date,
         }
+
+        # ---- OOS-v2 ML 选股注入 ----
+        oos_codes = []
+        try:
+            oos_model = os.path.join(DATA_DIR, "ml_stock_model_v11_0_oos.pkl")
+            if os.path.exists(oos_model):
+                sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "scripts"))
+                from predict_v11_oos import predict_daily_top
+                result = predict_daily_top(top_n=10)
+                if result is not None and not result.empty:
+                    top10 = result.head(10)
+                    conn2 = _pm.connect(**get_db_config(connect_timeout=5))
+                    cur2 = conn2.cursor()
+                    for _, row in top10.iterrows():
+                        tc = row["ts_code"]
+                        sc = float(row["ml_score"])
+                        oos_codes.append(tc.split(".")[0])
+                        cur2.execute("SELECT name, industry FROM stock_info WHERE ts_code=%s", (tc,))
+                        r = cur2.fetchone()
+                        name = r[0] if r else tc
+                        ind = r[1] if r else ""
+                        cur2.execute("SELECT close FROM daily_price WHERE ts_code=%s ORDER BY trade_date DESC LIMIT 1", (tc,))
+                        pr = cur2.fetchone()
+                        price = float(pr[0]) if pr else 0
+                        pool.insert(0, {
+                            "ts_code": tc,
+                            "代码": ("SZ" if tc.endswith(".SZ") else "SH") + tc.split(".")[0],
+                            "名称": name,
+                            "行业": ind,
+                            "现价": price,
+                            "涨跌幅": "",
+                            "换手率": "",
+                            "量比": "",
+                            "快速评分": 0,
+                            "入选理由": f"OOS-v2 ML Top10 (score={sc:.4f})",
+                            "ML评分": sc,
+                            "ml概率": sc,
+                        })
+                    cur2.close()
+                    conn2.close()
+                    logger.info("OOS-v2 注入: Top%d已插入股票池头部", len(top10))
+        except Exception as e:
+            logger.warning("OOS-v2 注入失败（不影响主流程）: %s", e)
+
+        pool_data["total_candidates"] = len(candidates) + len(oos_codes)
+        pool_data["oos_top10"] = oos_codes
+
         pool_file = os.path.join(DATA_DIR, "stock_pool.json")
-        with open(pool_file, 'w') as f:
+        with open(pool_file, "w") as f:
             json.dump(pool_data, f, ensure_ascii=False, indent=2)
 
-        # 同时更新强势活跃股票池（Tushare版本，不覆盖cron写入的stock_pool_strong.json）
-        strong_pool = {
-            "pool": pool[:20],  # Top20作为强势活跃候选
-            "updated": actual_trade_date,
-            "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
+        # ---- QMT V5 格式 stockpool.json ----
+        all_codes = oos_codes.copy()
+        for s in pool:
+            code = s.get("ts_code", "").split(".")[0]
+            if code and code not in all_codes and len(code) == 6:
+                all_codes.append(code)
+        qmt_pool = {"ts": datetime.now().timestamp(), "n": min(len(all_codes), 200), "codes": all_codes[:200]}
+        qmt_file = os.path.join(DATA_DIR, "stockpool.json")
+        with open(qmt_file, "w") as f:
+            json.dump(qmt_pool, f, ensure_ascii=False)
+
+        # ---- 同步到 QMT ----
+        try:
+            import subprocess
+            ssh_key = os.path.expanduser("~/.ssh/id_ed25519_qmt")
+            if os.path.exists(ssh_key):
+                subprocess.run(["scp", "-i", ssh_key, "-o", "StrictHostKeyChecking=no",
+                    qmt_file, "mozf@192.168.10.25:C:/Users/Public/stockpool.json"],
+                    timeout=15, capture_output=True)
+                logger.info("stockpool.json 已同步到 QMT")
+        except Exception as e:
+            logger.warning("同步 stockpool.json 到 QMT 失败: %s", e)
+
+        # 强势活跃池
+        strong_pool = {"pool": pool[:20], "updated": actual_trade_date,
+                       "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         strong_file = os.path.join(DATA_DIR, "stock_pool_strong_tushare.json")
-        with open(strong_file, 'w') as f:
+        with open(strong_file, "w") as f:
             json.dump(strong_pool, f, ensure_ascii=False, indent=2)
 
-        logger.info(f"股票池扫描完成，共{len(candidates)}只候选，保存Top{len(pool)}只，强活{len(strong_pool['pool'])}只")
+        logger.info(f"股票池完成: 候选{len(candidates)} + OOS{len(oos_codes)} = TOP{len(pool)}只")
         return pool_data
+
     except Exception as e:
         logger.error(f"股票池扫描失败: {e}")
         return {"error": str(e)}
-
 
 def _v41_score(ma5, ma10, ma20, close, pct_chg, vol_ratio, turnover, dt_bonus=0, hc_bonus=0):
     """V4.1 快速评分：quick_score + 龙虎榜加分 + 股东集中度加分"""
@@ -1328,10 +1438,11 @@ def strategy_scan(block_name, market=None):
     """从MySQL实时筛选板块/市场股票 - 不依赖JSON文件"""
     try:
         import pymysql
+
         db_config = get_db_config(connect_timeout=3)
         conn = pymysql.connect(**db_config)
         cursor = conn.cursor()
-        cursor.execute("SELECT MAX(trade_date) FROM quant_db.daily_price")
+        cursor.execute("SELECT MAX(trade_date) FROM daily_price")
         latest_date = cursor.fetchone()[0]
         if not latest_date:
             return {"error": "MySQL无交易数据，请先执行数据更新"}
@@ -1348,7 +1459,6 @@ def strategy_scan(block_name, market=None):
             market_filter = " AND SUBSTRING(d.ts_code, 1, 2) IN ('00','01','02')"
 
         # 板块过滤（如果指定了板块名）
-        industry_join = ""
         industry_filter = ""
         if block_name:
             industry_filter = " AND s.industry LIKE %s"
@@ -1360,9 +1470,9 @@ def strategy_scan(block_name, market=None):
                    d.ma5, d.ma10, d.ma20,
                    d.rps_20, d.high_52w, d.low_52w,
                    COALESCE(mf.main_net, 0) AS main_net
-            FROM quant_db.daily_price d
-            JOIN quant_db.stock_info s ON d.ts_code = s.ts_code COLLATE utf8mb4_unicode_ci
-            LEFT JOIN quant_db.moneyflow_daily mf ON d.ts_code = mf.ts_code COLLATE utf8mb4_unicode_ci AND mf.trade_date = %s
+            FROM daily_price d
+            JOIN stock_info s ON d.ts_code = s.ts_code COLLATE utf8mb4_unicode_ci
+            LEFT JOIN moneyflow_daily mf ON d.ts_code = mf.ts_code COLLATE utf8mb4_unicode_ci AND mf.trade_date = %s
             WHERE d.trade_date = %s
               AND d.pct_chg BETWEEN -5 AND 10    -- 放宽到-5到10
               AND d.volume_ratio > 1.0            -- 放宽：只需放量，不设上限
@@ -1390,7 +1500,7 @@ def strategy_scan(block_name, market=None):
                 "股票池扫描时间": str(latest_date),
                 "符合条件数": 0,
                 "股票列表": [],
-                "提示": f"最新数据日期{latest_date}，无符合条件股票"
+                "提示": f"最新数据日期{latest_date}，无符合条件股票",
             }
 
         # V4.1 评分
@@ -1419,16 +1529,17 @@ def strategy_scan(block_name, market=None):
 
             # 主力评分过滤（V4.1 要求主力评分≥60）
             try:
-                _scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'scripts')
+                _scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts")
                 if _scripts_dir not in sys.path:
                     sys.path.insert(0, _scripts_dir)
                 from mainforce_scoring import calculate_mainforce_score
+
                 mf = calculate_mainforce_score(r[0], latest_date, conn=tech_conn)
             except Exception as e:
                 logger.warning(f"主力资金评分失败 {r[0]}: {e}")
-                mf = {'score': 0, 'level': '未知'}
-            mainforce_score = mf.get('score', 0)
-            mainforce_level = mf.get('level', '未知')
+                mf = {"score": 0, "level": "未知"}
+            mainforce_score = mf.get("score", 0)
+            mainforce_level = mf.get("level", "未知")
 
             score = _v41_score(ma5, ma10, ma20, close, pct, vr, tr, dt_bonus, hld_bonus)
             if score <= 0:
@@ -1466,6 +1577,7 @@ def strategy_scan(block_name, market=None):
         try:
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
             from ml_predict import ml_enhanced_score
+
             conn2 = pymysql.connect(**db_config)
             stocks = ml_enhanced_score(stocks, db_conn=conn2)
             conn2.close()
@@ -1474,21 +1586,21 @@ def strategy_scan(block_name, market=None):
             logger.info(f"ML增强不可用，使用原始评分: {e}")
             has_ml = False
             for s in stocks:
-                s['ml概率'] = 0.5
-                s['增强评分'] = s.get('综合评分', 0)
+                s["ml概率"] = 0.5
+                s["增强评分"] = s.get("综合评分", 0)
 
         # 按增强评分排序
-        stocks.sort(key=lambda x: x.get('增强评分', 0), reverse=True)
+        stocks.sort(key=lambda x: x.get("增强评分", 0), reverse=True)
 
         # 市场过滤（内存二次精确筛选）
         if market == "沪市主板":
             stocks = [s for s in stocks if s["代码"][:2] == "SH" and s["代码"][2:4] == "60"]
         elif market == "深市主板":
-            stocks = [s for s in stocks if s["代码"][:2] == "SZ" and s["代码"][2:4] in ("00","01","02")]
+            stocks = [s for s in stocks if s["代码"][:2] == "SZ" and s["代码"][2:4] in ("00", "01", "02")]
 
         # 清理内部字段
         for s in stocks:
-            s.pop('ts_code', None)
+            s.pop("ts_code", None)
 
         ml_note = " | ML增强已启用" if has_ml else ""
         return {
@@ -1499,10 +1611,9 @@ def strategy_scan(block_name, market=None):
             "股票列表": stocks[:10],
             "提示": f"此为 C3.0 V3 评分{ml_note}，满分100分，60分以上值得买入",
         }
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return {"error": str(e)}
+    except Exception:
+        logger.exception("扫描失败")
+        return {"error": "内部错误"}
 
 
 # ========== 深度技术面选股（定时任务用） ==========
@@ -1590,7 +1701,7 @@ def scan_daily_pool_technical():
                 closes = hist_df["close"].tolist()
                 highs = hist_df["high"].tolist()
                 lows = hist_df["low"].tolist()
-                vols = hist_df["vol"].tolist()
+                hist_df["vol"].tolist()
 
                 # 计算技术指标（来自 technical_service，返回当前值标量）
                 curr_dif, curr_dea, macd_hist = calculate_macd(closes)
@@ -1598,9 +1709,9 @@ def scan_daily_pool_technical():
                 curr_bb_upper, curr_bb_middle, curr_bb_lower = calculate_bollinger_bands(closes)
 
                 # 从 hist_df 计算均线
-                ma5 = float(hist_df['close'].rolling(5).mean().iloc[-1]) if len(hist_df) >= 5 else 0
-                ma10 = float(hist_df['close'].rolling(10).mean().iloc[-1]) if len(hist_df) >= 10 else 0
-                ma20 = float(hist_df['close'].rolling(20).mean().iloc[-1]) if len(hist_df) >= 20 else 0
+                ma5 = float(hist_df["close"].rolling(5).mean().iloc[-1]) if len(hist_df) >= 5 else 0
+                ma10 = float(hist_df["close"].rolling(10).mean().iloc[-1]) if len(hist_df) >= 10 else 0
+                ma20 = float(hist_df["close"].rolling(20).mean().iloc[-1]) if len(hist_df) >= 20 else 0
 
                 # 计算买入评分（重校准，满分约126）
                 buy_score = 0
@@ -1701,21 +1812,25 @@ def scan_daily_pool_technical():
                     buy_score += 5
                     buy_reasons.append(f"换手率{turnover:.1f}%(高换手)")
 
-                candidates.append({
-                    "ts_code": ts_code,
-                    "代码": ts_code_raw,
-                    "名称": stock.get("名称", name_map.get(ts_code, code)),
-                    "行业": stock.get("行业", industry_map.get(ts_code, "")),
-                    "现价": price,
-                    "涨跌幅": f"{change_pct:+.2f}%",
-                    "换手率": f"{turnover:.2f}%",
-                    "量比": f"{vr:.2f}",
-                    "技术面评分": buy_score,
-                    "入选理由": "+".join(buy_reasons) if buy_reasons else "信号不足",
-                    "MACD多空": "多头" if curr_dea > 0 else "空头",
-                    "KDJ状态": "超卖" if curr_k < 30 else ("偏弱" if curr_k < 50 else "中性"),
-                    "布林位置": "下轨附近" if price <= curr_bb_lower * 1.05 else ("中轨附近" if price <= curr_bb_middle * 1.05 else "上轨附近"),
-                })
+                candidates.append(
+                    {
+                        "ts_code": ts_code,
+                        "代码": ts_code_raw,
+                        "名称": stock.get("名称", name_map.get(ts_code, code)),
+                        "行业": stock.get("行业", industry_map.get(ts_code, "")),
+                        "现价": price,
+                        "涨跌幅": f"{change_pct:+.2f}%",
+                        "换手率": f"{turnover:.2f}%",
+                        "量比": f"{vr:.2f}",
+                        "技术面评分": buy_score,
+                        "入选理由": "+".join(buy_reasons) if buy_reasons else "信号不足",
+                        "MACD多空": "多头" if curr_dea > 0 else "空头",
+                        "KDJ状态": "超卖" if curr_k < 30 else ("偏弱" if curr_k < 50 else "中性"),
+                        "布林位置": "下轨附近"
+                        if price <= curr_bb_lower * 1.05
+                        else ("中轨附近" if price <= curr_bb_middle * 1.05 else "上轨附近"),
+                    }
+                )
 
             except Exception:
                 continue
@@ -1726,26 +1841,26 @@ def scan_daily_pool_technical():
             import pymysql as _pm
 
             from ml_predict import ml_enhanced_score
+
             db_cfg_ml = get_db_config(connect_timeout=3)
             ml_conn = _pm.connect(**db_cfg_ml)
             candidates = ml_enhanced_score(candidates, db_conn=ml_conn)
             ml_conn.close()
-            has_ml_tech = True
             logger.info(f"ML增强已应用于深度扫描（{len(candidates)}只）")
         except Exception as e:
             logger.info(f"深度扫描ML增强不可用: {e}")
-            has_ml_tech = False
             for s in candidates:
-                s['ml概率'] = 0.5
-                s['ML评分'] = 0
-                s['排序强度'] = "N/A"
+                s["ml概率"] = 0.5
+                s["ML评分"] = 0
+                s["排序强度"] = "N/A"
 
         # 板块轮动增强：热点板块加分
         try:
             from sector_rotation import get_hot_sectors, get_sector_bonus
+
             hot_sectors = get_hot_sectors(top_n=8)
             for s in candidates:
-                ts_code = f"{s.get('代码','')}.{'SH' if (s.get('代码','')[:1]=='6') else 'SZ'}"
+                ts_code = f"{s.get('代码', '')}.{'SH' if (s.get('代码', '')[:1] == '6') else 'SZ'}"
                 bonus, name, _ = get_sector_bonus(ts_code, hot_sectors)
                 s["热点板块"] = name
                 s["板块加分"] = bonus
@@ -1764,10 +1879,10 @@ def scan_daily_pool_technical():
             "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "total_candidates": len(candidates),
             "stocks": pool,
-            "scan_type": "深度技术面扫描"
+            "scan_type": "深度技术面扫描",
         }
         pool_file = os.path.join(DATA_DIR, "stock_pool.json")
-        with open(pool_file, 'w') as f:
+        with open(pool_file, "w") as f:
             json.dump(pool_data, f, ensure_ascii=False, indent=2)
 
         logger.info(f"深度扫描完成，共{len(candidates)}只符合条件，保存Top{len(pool)}只")
@@ -1803,11 +1918,14 @@ def scan_concept_trend():
         today = str(latest_date)
 
         # 获取最近7天有数据的交易日（用于计算3/5日涨幅）
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT DISTINCT trade_date FROM daily_price
             WHERE trade_date <= %s
             ORDER BY trade_date DESC LIMIT 7
-        """, (today,))
+        """,
+            (today,),
+        )
         trade_dates = [str(r[0]) for r in cursor.fetchall()]
         conn.close()
 
@@ -1815,22 +1933,24 @@ def scan_concept_trend():
             return {"error": f"交易日不足，仅{len(trade_dates)}天"}
 
         t_today = trade_dates[0]
-        t_3d = trade_dates[min(2, len(trade_dates)-1)]  # 3日前交易日索引2（含今天=第0）
-        t_5d = trade_dates[min(4, len(trade_dates)-1)]  # 5日前
+        t_3d = trade_dates[min(2, len(trade_dates) - 1)]  # 3日前交易日索引2（含今天=第0）
+        t_5d = trade_dates[min(4, len(trade_dates) - 1)]  # 5日前
 
         # 按行业分组计算板块表现（使用MySQL直接聚合）
         conn = pymysql.connect(**db_config)
         cursor = conn.cursor()
 
         # 获取各行业今日的统计数据（平均涨幅、股票数、平均换手率）
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT s.industry,
                    AVG(d.pct_chg) as avg_chg,
+                   AVG(d.close) as avg_close,
                    COUNT(*) as stock_count,
                    AVG(d.turnover_rate) as avg_turnover,
                    AVG(d.volume_ratio) as avg_vr
             FROM daily_price d
-            JOIN stock_info s ON CONVERT(d.ts_code USING utf8mb4) = CONVERT(s.ts_code USING utf8mb4)
+            JOIN stock_info s ON d.ts_code COLLATE utf8mb4_unicode_ci = s.ts_code COLLATE utf8mb4_unicode_ci
             WHERE d.trade_date = %s
               AND s.industry IS NOT NULL AND s.industry != ''
               AND s.is_st = 0
@@ -1838,33 +1958,41 @@ def scan_concept_trend():
             GROUP BY s.industry
             HAVING stock_count >= 3
             ORDER BY avg_chg DESC
-        """, (t_today,))
+        """,
+            (t_today,),
+        )
         industry_today = {r[0]: r for r in cursor.fetchall()}
 
         # 获取各行业3日前的平均收盘价（用于计算3日涨幅）
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT s.industry, AVG(d.close) as avg_close
             FROM daily_price d
-            JOIN stock_info s ON CONVERT(d.ts_code USING utf8mb4) = CONVERT(s.ts_code USING utf8mb4)
+            JOIN stock_info s ON d.ts_code COLLATE utf8mb4_unicode_ci = s.ts_code COLLATE utf8mb4_unicode_ci
             WHERE d.trade_date = %s
               AND s.industry IS NOT NULL AND s.industry != ''
               AND s.is_st = 0
               AND d.ts_code NOT LIKE '688%%'
             GROUP BY s.industry
-        """, (t_3d,))
+        """,
+            (t_3d,),
+        )
         industry_close_3d = {r[0]: float(r[1]) for r in cursor.fetchall() if r[1]}
 
         # 获取各行业5日前的平均收盘价（用于计算5日涨幅）
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT s.industry, AVG(d.close) as avg_close
             FROM daily_price d
-            JOIN stock_info s ON CONVERT(d.ts_code USING utf8mb4) = CONVERT(s.ts_code USING utf8mb4)
+            JOIN stock_info s ON d.ts_code COLLATE utf8mb4_unicode_ci = s.ts_code COLLATE utf8mb4_unicode_ci
             WHERE d.trade_date = %s
               AND s.industry IS NOT NULL AND s.industry != ''
               AND s.is_st = 0
               AND d.ts_code NOT LIKE '688%%'
             GROUP BY s.industry
-        """, (t_5d,))
+        """,
+            (t_5d,),
+        )
         industry_close_5d = {r[0]: float(r[1]) for r in cursor.fetchall() if r[1]}
 
         conn.close()
@@ -1873,31 +2001,36 @@ def scan_concept_trend():
         all_concepts = []
         for industry, data in industry_today.items():
             avg_chg_today = float(data[1]) if data[1] else 0
-            stock_count = int(data[2])
-            avg_turnover = float(data[3]) if data[3] else 0
-            avg_vr = float(data[4]) if data[4] else 0
+            avg_close_today = float(data[2]) if data[2] else 0
+            stock_count = int(data[3])
+            avg_turnover = float(data[4]) if data[4] else 0
+            avg_vr = float(data[5]) if data[5] else 0
 
             # 计算3日涨幅和5日涨幅
-            close_3d = industry_close_3d.get(industry, 0)
-            close_5d = industry_close_5d.get(industry, 0)
-
-            # 用今日行业平均涨幅来估算趋势（更精确需要跨日JOIN）
-            chg3_approx = avg_chg_today  # 简化：用今日涨幅代替趋势指标（实际应跨日计算）
-            chg5_approx = avg_chg_today
+            close_3d = industry_close_3d.get(industry)
+            close_5d = industry_close_5d.get(industry)
+            chg3_approx = (
+                round((avg_close_today - close_3d) / close_3d * 100, 2) if (close_3d and avg_close_today) else 0
+            )
+            chg5_approx = (
+                round((avg_close_today - close_5d) / close_5d * 100, 2) if (close_5d and avg_close_today) else 0
+            )
 
             # 趋势评分 = 今日平均涨幅 * 1 + 股票数 * 0.1（股票越多越可靠）
             trend_score = avg_chg_today + stock_count * 0.05
 
-            all_concepts.append({
-                "名称": industry,
-                "3日涨幅": round(chg3_approx, 2),
-                "5日涨幅": round(chg5_approx, 2),
-                "今日涨幅": round(avg_chg_today, 2),
-                "股票数": stock_count,
-                "平均换手率": round(avg_turnover, 2),
-                "平均量比": round(avg_vr, 2),
-                "趋势评分": round(trend_score, 2),
-            })
+            all_concepts.append(
+                {
+                    "名称": industry,
+                    "3日涨幅": round(chg3_approx, 2),
+                    "5日涨幅": round(chg5_approx, 2),
+                    "今日涨幅": round(avg_chg_today, 2),
+                    "股票数": stock_count,
+                    "平均换手率": round(avg_turnover, 2),
+                    "平均量比": round(avg_vr, 2),
+                    "趋势评分": round(trend_score, 2),
+                }
+            )
 
         # 按趋势评分排序，取Top5
         all_concepts.sort(key=lambda x: x["趋势评分"], reverse=True)
@@ -1914,7 +2047,7 @@ def scan_concept_trend():
 
         # 保存到文件（P1版本）
         pool_file = os.path.join(DATA_DIR, "concept_trend_v4.json")
-        with open(pool_file, 'w') as f:
+        with open(pool_file, "w") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
 
         logger.info(f"板块趋势扫描完成，{len(all_concepts)}个板块，Top5: {[c['名称'] for c in top5]}")
@@ -1928,6 +2061,7 @@ def scan_concept_trend():
 def get_hot_concepts():
     """获取热点板块列表，如果概念趋势数据过期则自动刷新"""
     import os
+
     trend_file = os.path.join(DATA_DIR, "concept_trend_v4.json")
 
     # 检查是否需要刷新（文件不存在或超过1天）
@@ -1936,6 +2070,7 @@ def get_hot_concepts():
         try:
             stat = os.stat(trend_file)
             from datetime import datetime
+
             file_age_hours = (datetime.now().timestamp() - stat.st_mtime) / 3600
             if file_age_hours < 24:
                 need_refresh = False
@@ -1959,11 +2094,12 @@ def get_hot_concepts():
 # ML_BLEND_WEIGHT: 混合评分中 ML 权重
 # 2026-05-16 更新：参数调优至 pct=0.15, bw=0.10（回测 53.59%/夏普 2.24/回撤 21.67%）
 
-ML_PERCENTILE_THRESHOLD = 0.20   # 候选池 ML 百分位低于此值过滤（提高阈值优选高质量候选）
-ML_BLEND_WEIGHT = 0.20           # 混合评分中 ML 权重（0.20 = 20% ML + 80% V4）
+ML_PERCENTILE_THRESHOLD = 0.20  # 候选池 ML 百分位低于此值过滤（提高阈值优选高质量候选）
+ML_BLEND_WEIGHT = 0.20  # 混合评分中 ML 权重（0.20 = 20% ML + 80% V4）
 V4_CANDIDATE_LIMIT = 30
 V4_TOP_N = 5
-PURE_ML_MODE = os.environ.get('PURE_ML', '0') == '1'  # 当前主模式：纯ML（回测优于V4+ML混合），V4+ML作为备选
+# 启动时确定，运行时不变（模块级，import 时读取 os.environ，如需热切换需重启进程）
+PURE_ML_MODE = os.environ.get("PURE_ML", "0") == "1"  # 当前主模式：纯ML（回测优于V4+ML混合），V4+ML作为备选
 
 
 def _v4_score_single(row):
@@ -1974,65 +2110,85 @@ def _v4_score_single(row):
     2. 52周高位不再排除（原 return -1 → 扣5分）
     3. 参数保持 pct=0.15, bw=0.10（V4 初筛30只，ML 百分位15%过滤，ML权重10%）
     """
-    pct = float(row.get('pct_chg', 0) or 0)
-    vr = float(row.get('volume_ratio', 0) or 0)
-    tr = float(row.get('turnover_rate', 0) or 0)
-    ma5 = float(row.get('ma5', 0) or 0)
-    ma10 = float(row.get('ma10', 0) or 0)
-    ma20 = float(row.get('ma20', 0) or 0)
-    rps = float(row.get('rps_20', 0) or 0)
-    close = float(row.get('close', 0) or 0)
-    h52w = float(row.get('high_52w', 0) or 0)
-    l52w = float(row.get('low_52w', 0) or 0)
-    main_net = float(row.get('main_net', 0) or 0)
+    pct = _safe_float(row.get("pct_chg"))
+    vr = _safe_float(row.get("volume_ratio"))
+    tr = _safe_float(row.get("turnover_rate"))
+    ma5 = _safe_float(row.get("ma5"))
+    ma10 = _safe_float(row.get("ma10"))
+    ma20 = _safe_float(row.get("ma20"))
+    rps = _safe_float(row.get("rps_20"))
+    close = _safe_float(row.get("close"))
+    h52w = _safe_float(row.get("high_52w"))
+    l52w = _safe_float(row.get("low_52w"))
+    main_net = _safe_float(row.get("main_net"))
 
     if close <= 0 or ma5 <= 0 or ma10 <= 0 or ma20 <= 0:
         return -1
 
     # 入场条件（放宽版）
-    cond1 = (0.8 < vr < 12 and tr > 1.0 and ma5 > ma10 > ma20 and close > ma5)
-    cond2 = (pct > 3.0 and vr > 1.5 and close > ma5)
-    cond3 = (rps > 80 and vr > 1.0 and close > ma5)
+    cond1 = 0.8 < vr < 12 and tr > 1.0 and ma5 > ma10 > ma20 and close > ma5
+    cond2 = pct > 3.0 and vr > 1.5 and close > ma5
+    cond3 = rps > 80 and vr > 1.0 and close > ma5
     if not cond1 and not cond2 and not cond3:
         return -1
 
     sc = 0
     # 涨幅（原版权重）
-    if -3 <= pct < 0: sc += 30
-    elif 0 <= pct <= 3: sc += 25
-    elif 3 < pct <= 5: sc += 30
-    elif 5 < pct <= 10: sc += 20
-    else: return -1
+    if -3 <= pct < 0:
+        sc += 30
+    elif 0 <= pct <= 3:
+        sc += 25
+    elif 3 < pct <= 5:
+        sc += 30
+    elif 5 < pct <= 10:
+        sc += 20
+    else:
+        return -1
 
     # 量比
-    if vr > 3: sc += 30
-    elif vr > 1.5: sc += 25
-    elif vr > 1.0: sc += 10
+    if vr > 3:
+        sc += 30
+    elif vr > 1.5:
+        sc += 25
+    elif vr > 1.0:
+        sc += 10
 
     # 换手率
-    if 5 <= tr <= 10: sc += 20
-    elif 3 <= tr < 5: sc += 15
-    elif 2 <= tr < 3: sc += 8
-    elif tr > 20: sc += 5
+    if 5 <= tr <= 10:
+        sc += 20
+    elif 3 <= tr < 5:
+        sc += 15
+    elif 2 <= tr < 3:
+        sc += 8
+    elif tr > 20:
+        sc += 5
 
     # 均线
     sc += 30 if ma5 > ma10 > ma20 else 16
 
     # RPS
-    if rps >= 80: sc += 20
-    elif rps >= 60: sc += 15
-    elif rps >= 40: sc += 10
+    if rps >= 80:
+        sc += 20
+    elif rps >= 60:
+        sc += 15
+    elif rps >= 40:
+        sc += 10
 
     # 52周位置（高位不再排除，改扣分）
     if h52w and l52w and h52w > l52w > 0:
         pos = (close - l52w) / (h52w - l52w) * 100
-        if pos < 60: sc += 15
-        elif pos >= 85: sc -= 5
+        if pos < 60:
+            sc += 15
+        elif pos >= 85:
+            sc -= 5
 
     # 主力资金
-    if main_net > 5000: sc += 15
-    elif main_net > 1000: sc += 10
-    elif main_net > 0: sc += 5
+    if main_net > 5000:
+        sc += 15
+    elif main_net > 1000:
+        sc += 10
+    elif main_net > 0:
+        sc += 5
 
     return sc
 
@@ -2042,29 +2198,41 @@ def _dragon_holder_bonus(conn, ts_code, trade_date):
     bonus = 0
     cur = conn.cursor()
     try:
-        td_30 = (datetime.strptime(str(trade_date)[:10], '%Y-%m-%d') - timedelta(days=30)).strftime('%Y-%m-%d')
+        td_30 = (datetime.strptime(str(trade_date)[:10], "%Y-%m-%d") - timedelta(days=30)).strftime("%Y-%m-%d")
         # 龙虎榜机构
-        cur.execute("""
+        cur.execute(
+            """
             SELECT COALESCE(SUM(net_buy), 0) FROM dragon_tiger_inst
             WHERE ts_code = %s AND trade_date >= %s
-        """, (ts_code, td_30))
+        """,
+            (ts_code, td_30),
+        )
         inst_net = float(cur.fetchone()[0])
-        if inst_net > 30000000: bonus += 15
-        elif inst_net > 5000000: bonus += 12
+        if inst_net > 30000000:
+            bonus += 15
+        elif inst_net > 5000000:
+            bonus += 12
         else:
             cur.execute("SELECT COUNT(*) FROM dragon_tiger WHERE ts_code = %s AND trade_date >= %s", (ts_code, td_30))
-            if int(cur.fetchone()[0]) > 0: bonus += 8
+            if int(cur.fetchone()[0]) > 0:
+                bonus += 8
 
         # 股东集中度
-        cur.execute("""
+        cur.execute(
+            """
             SELECT end_date, holder_num_change FROM holder_change
             WHERE ts_code = %s ORDER BY end_date DESC LIMIT 4
-        """, (ts_code,))
+        """,
+            (ts_code,),
+        )
         rows = cur.fetchall()
         dec = sum(1 for _, c in rows if c and int(c) < 0)
-        if dec >= 3: bonus += 10
-        elif dec >= 2: bonus += 7
-        elif dec >= 1: bonus += 4
+        if dec >= 3:
+            bonus += 10
+        elif dec >= 2:
+            bonus += 7
+        elif dec >= 1:
+            bonus += 4
     except Exception as e:
         logger.warning(f"龙虎榜加分查询失败: {e}")
         pass
@@ -2077,12 +2245,15 @@ def _block_trade_bonus(conn, ts_code, trade_date):
     bonus = 0
     cur = conn.cursor()
     try:
-        td_30 = (datetime.strptime(str(trade_date)[:10], '%Y-%m-%d') - timedelta(days=30)).strftime('%Y-%m-%d')
-        cur.execute("""
+        td_30 = (datetime.strptime(str(trade_date)[:10], "%Y-%m-%d") - timedelta(days=30)).strftime("%Y-%m-%d")
+        cur.execute(
+            """
             SELECT COALESCE(AVG(premium_rate), 0), COALESCE(SUM(deal_amount), 0), COUNT(*)
             FROM block_trade
             WHERE ts_code = %s AND trade_date >= %s
-        """, (ts_code, td_30))
+        """,
+            (ts_code, td_30),
+        )
         row = cur.fetchone()
         avg_premium = float(row[0]) if row else 0
         total_amount = float(row[1]) if row else 0
@@ -2104,12 +2275,15 @@ def _block_trade_bonus(conn, ts_code, trade_date):
             bonus += 5  # 大额折价可能是有意压低价格，仍有信号
 
         # 机构席位买入加分
-        inst_keywords = ['机构', '证券', '资管', '基金']
+        inst_keywords = ["机构", "证券", "资管", "基金"]
         for kw in inst_keywords:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT COUNT(*) FROM block_trade
                 WHERE ts_code = %s AND trade_date >= %s AND buyer LIKE %s
-            """, (ts_code, td_30, f'%{kw}%'))
+            """,
+                (ts_code, td_30, f"%{kw}%"),
+            )
             inst_count = int(cur.fetchone()[0])
             if inst_count >= 3:
                 bonus += 8
@@ -2123,6 +2297,60 @@ def _block_trade_bonus(conn, ts_code, trade_date):
     finally:
         cur.close()
     return min(bonus, 20)  # 上限20分
+
+
+def _add_v11_2_regime_features(conn, feat_df, as_of_date):
+    """为 V11.2 模型添加市场状态交互特征（21个），feat_df 必须已有 V11.0 特征。"""
+    try:
+        trade_date_str = str(as_of_date)[:10] if as_of_date else ""
+        if not trade_date_str:
+            return feat_df
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT prob_bull, prob_bear, prob_panic, prob_range, prob_overheated,
+                   sh_trend, market_breadth, volatility, volume_trend, momentum_breadth, zt_ratio
+            FROM market_regime_daily
+            WHERE trade_date <= %s ORDER BY trade_date DESC LIMIT 1
+        """, (trade_date_str,))
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            logger.warning("V11.2: market_regime_daily 无数据，跳过交互特征")
+            return feat_df
+
+        rp = {
+            'prob_bull': float(row[0] or 0), 'prob_bear': float(row[1] or 0),
+            'prob_panic': float(row[2] or 0), 'prob_range': float(row[3] or 0),
+            'prob_overheated': float(row[4] or 0),
+            'sh_trend': float(row[5] or 0), 'market_breadth': float(row[6] or 0),
+            'volatility': float(row[7] or 0), 'volume_trend': float(row[8] or 0),
+            'momentum_breadth': float(row[9] or 0), 'zt_ratio': float(row[10] or 0),
+        }
+    except Exception as e:
+        logger.warning(f"V11.2 市场状态查询失败: {e}，跳过交互特征")
+        return feat_df
+
+    # 添加 11 个市场状态原始特征
+    for k, v in rp.items():
+        feat_df[k] = v
+
+    # 添加 11 个交互特征
+    feats = feat_df
+    feats['chg_5d_x_panic'] = feats.get('chg_5d', 0) * rp['prob_panic']
+    feats['chg_10d_x_panic'] = feats.get('chg_10d', 0) * rp['prob_panic']
+    feats['rsi_14_x_panic'] = feats.get('rsi_14', 0) * rp['prob_panic']
+    feats['volume_ratio_x_panic'] = feats.get('volume_ratio', 0) * rp['prob_panic']
+    if 'main_net_ratio' in feats.columns:
+        feats['main_net_ratio_x_panic'] = feats['main_net_ratio'] * rp['prob_panic']
+    if 'vol_price_divergence' in feats.columns:
+        feats['vol_price_divergence_x_panic'] = feats['vol_price_divergence'] * rp['prob_panic']
+    feats['volume_ratio_x_overheated'] = feats.get('volume_ratio', 0) * rp['prob_overheated']
+    feats['chg_5d_x_bull'] = feats.get('chg_5d', 0) * rp['prob_bull']
+    feats['breadth_x_main_net'] = rp['market_breadth'] * feats.get('main_net_ratio', 0)
+    feats['volatility_x_rsi'] = rp['volatility'] * feats.get('rsi_14', 0)
+
+    logger.info(f"V11.2 市场状态交互特征已添加（状态: {rp.get('prob_bull',0):.0%}牛/{rp.get('prob_bear',0):.0%}熊/{rp.get('prob_panic',0):.0%}恐慌）")
+    return feat_df
 
 
 def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
@@ -2141,7 +2369,6 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
         _build_features_for_stocks_v8_0,
         _build_features_for_stocks_v8_6,
         _build_features_for_stocks_v10_0,
-        _ensemble_predict,
         _ensemble_scores,
         _load_best_model,
     )
@@ -2156,9 +2383,9 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
         cur.close()
         return [], None
 
-    date_str = str(latest).replace('-', '')[:8] if '-' in str(latest) else str(latest)[:8]
-    display_date = str(latest)[:10] if '-' in str(latest) else f"{latest[:4]}-{latest[4:6]}-{latest[6:8]}"
-    query_date = str(latest)[:10] if '-' in str(latest) else f"{latest[:4]}-{latest[4:6]}-{latest[6:8]}"
+    date_str = str(latest).replace("-", "")[:8] if "-" in str(latest) else str(latest)[:8]
+    display_date = str(latest)[:10] if "-" in str(latest) else f"{latest[:4]}-{latest[4:6]}-{latest[6:8]}"
+    query_date = str(latest)[:10] if "-" in str(latest) else f"{latest[:4]}-{latest[4:6]}-{latest[6:8]}"
 
     # 市场筛选
     if market == "创业板":
@@ -2184,75 +2411,108 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
     if block_val:
         params.append(block_val)
 
-    # 取当日数据（纯ML模式按成交额排序，池子大小由市场状态决定最大500）
+    # 取当日数据（纯ML模式：简单成交额排序，不JOIN避免池子偏差）
     if PURE_ML_MODE:
-        order_clause = "ORDER BY d.amount DESC"
+        order_clause = "ORDER BY amount DESC"
         limit_clause = "LIMIT 500"
-        amount_col = ", d.amount"
+        # 用简单查询确保候选池与回测/推理一致
+        simple_query = f"""
+            SELECT ts_code, close, pct_chg, turnover_rate, volume_ratio, vol,
+                   ma5, ma10, ma20, rps_20, high_52w, low_52w,
+                   0 as main_net, '' as name, '' as industry, amount
+            FROM daily_price
+            WHERE trade_date = %s
+              AND LEFT(ts_code,1) NOT IN ('8','4','9')
+              AND close <= 200
+            {order_clause} {limit_clause}
+        """
+        cur.execute(simple_query, tuple(params))
     else:
         order_clause = ""
         limit_clause = ""
         amount_col = ""
+        cur.execute(
+            f"""
+            SELECT d.ts_code, d.close, d.pct_chg, d.turnover_rate, d.volume_ratio, d.vol,
+                   d.ma5, d.ma10, d.ma20, d.rps_20, d.high_52w, d.low_52w,
+                   COALESCE(m.main_net, 0) as main_net,
+                   s.name, s.industry
+            FROM daily_price d
+            LEFT JOIN moneyflow_daily m ON d.ts_code COLLATE utf8mb4_unicode_ci = m.ts_code COLLATE utf8mb4_unicode_ci AND d.trade_date = m.trade_date
+            JOIN stock_info s ON d.ts_code COLLATE utf8mb4_unicode_ci = s.ts_code COLLATE utf8mb4_unicode_ci
+            WHERE d.trade_date = %s
+              AND d.ts_code NOT LIKE '688%%' AND d.ts_code NOT LIKE '8%%'
+              AND d.ts_code NOT LIKE '4%%' AND d.ts_code NOT LIKE '9%%'
+              AND s.name NOT LIKE '%%ST%%' AND s.name NOT LIKE '%%退%%'
+              AND d.close <= 200
+              {market_clause}
+              {block_clause}
+              -- 业绩预告负面过滤
+              AND NOT EXISTS (
+                  SELECT 1 FROM stock_forecast sf
+                  WHERE sf.ts_code COLLATE utf8mb4_unicode_ci = d.ts_code COLLATE utf8mb4_unicode_ci
+                    AND sf.end_date = (SELECT MAX(sf2.end_date) FROM stock_forecast sf2 WHERE sf2.ts_code COLLATE utf8mb4_unicode_ci = sf.ts_code COLLATE utf8mb4_unicode_ci)
+                    AND sf.forecast_type IN ('首亏', '续亏', '预减')
+              )
+              {order_clause} {limit_clause}
+        """,
+            tuple(params),
+        )
 
-    cur.execute(f"""
-        SELECT d.ts_code, d.close, d.pct_chg, d.turnover_rate, d.volume_ratio, d.vol,
-               d.ma5, d.ma10, d.ma20, d.rps_20, d.high_52w, d.low_52w,
-               COALESCE(m.main_net, 0) as main_net,
-               s.name, s.industry
-               {amount_col}
-        FROM daily_price d
-        LEFT JOIN moneyflow_daily m ON d.ts_code COLLATE utf8mb4_unicode_ci = m.ts_code COLLATE utf8mb4_unicode_ci AND d.trade_date = m.trade_date
-        JOIN stock_info s ON d.ts_code COLLATE utf8mb4_unicode_ci = s.ts_code COLLATE utf8mb4_unicode_ci
-        WHERE d.trade_date = %s
-          AND d.ts_code NOT LIKE '688%%' AND d.ts_code NOT LIKE '8%%'
-          AND d.ts_code NOT LIKE '4%%' AND d.ts_code NOT LIKE '9%%'
-          AND s.name NOT LIKE '%%ST%%' AND s.name NOT LIKE '%%退%%'
-          AND d.close <= 200
-          {market_clause}
-          {block_clause}
-          -- 业绩预告负面过滤：排除最近一期预亏/续亏/预减
-          AND NOT EXISTS (
-              SELECT 1 FROM stock_forecast sf
-              WHERE sf.ts_code COLLATE utf8mb4_unicode_ci = d.ts_code COLLATE utf8mb4_unicode_ci
-                AND sf.end_date = (
-                    SELECT MAX(sf2.end_date) FROM stock_forecast sf2
-                    WHERE sf2.ts_code COLLATE utf8mb4_unicode_ci = sf.ts_code COLLATE utf8mb4_unicode_ci
-                )
-                AND sf.forecast_type IN ('首亏', '续亏', '预减')
-          )
-          {order_clause} {limit_clause}
-    """, tuple(params))
-
-    cols = ['ts_code','close','pct_chg','turnover_rate','volume_ratio','vol',
-            'ma5','ma10','ma20','rps_20','high_52w','low_52w','main_net','name','industry']
+    cols = [
+        "ts_code",
+        "close",
+        "pct_chg",
+        "turnover_rate",
+        "volume_ratio",
+        "vol",
+        "ma5",
+        "ma10",
+        "ma20",
+        "rps_20",
+        "high_52w",
+        "low_52w",
+        "main_net",
+        "name",
+        "industry",
+    ]
     if PURE_ML_MODE:
-        cols.append('amount')
+        cols.append("amount")
     rows = cur.fetchall()
     cur.close()
 
     df = pd.DataFrame(rows, columns=cols)
     for c in cols[1:13]:
-        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
     # 批查询成交量历史（过去 1-2 个月低量基准）
-    codes = df['ts_code'].tolist()
+    codes = df["ts_code"].tolist()
     vol_base = {}
     if codes:
-        placeholders = ','.join(['%s'] * len(codes))
+        placeholders = ",".join(["%s"] * len(codes))
+        cur2 = None
         try:
             cur2 = conn.cursor()
-            lookback = (datetime.strptime(query_date, '%Y-%m-%d') - timedelta(days=60)).strftime('%Y%m%d')
-            cur2.execute(f"""
+            lookback = (datetime.strptime(query_date, "%Y-%m-%d") - timedelta(days=60)).strftime("%Y%m%d")
+            cur2.execute(
+                f"""
                 SELECT ts_code, AVG(vol) as avg_vol
                 FROM daily_price
                 WHERE ts_code IN ({placeholders})
                   AND trade_date < %s AND trade_date >= %s
                 GROUP BY ts_code
-            """, codes + [date_str, lookback])
+            """,
+                codes + [date_str, lookback],
+            )
             vol_base = {row[0]: float(row[1]) for row in cur2.fetchall() if row[1]}
-            cur2.close()
         except Exception as e:
             logger.warning(f"成交量历史查询失败: {e}")
+        finally:
+            if cur2 is not None:
+                try:
+                    cur2.close()
+                except Exception:
+                    pass
 
     # V4 评分 + 龙虎榜/股东加分
     candidates = []
@@ -2260,67 +2520,70 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
         v4sc = _v4_score_single(row)
         if v4sc < 0:
             continue
-        bonus = _dragon_holder_bonus(conn, row['ts_code'], display_date)
+        bonus = _dragon_holder_bonus(conn, row["ts_code"], display_date)
         v4sc += bonus
 
         # 大宗交易溢价加分（V6.6 新增）
-        bt_bonus = _block_trade_bonus(conn, row['ts_code'], display_date)
+        bt_bonus = _block_trade_bonus(conn, row["ts_code"], display_date)
         v4sc += bt_bonus
 
         # 量比放量苏醒加分（低量横盘后放量）
-        avg_vol = vol_base.get(row['ts_code'], 0)
-        current_vol = float(row.get('vol', 0) or 0)
+        avg_vol = vol_base.get(row["ts_code"], 0)
+        current_vol = float(row.get("vol", 0) or 0)
         vol_bonus = 0
         if avg_vol > 0 and current_vol > avg_vol * 1.5:
             vol_bonus = 10  # 从低量期醒来，放量 1.5 倍以上
         elif avg_vol > 0 and current_vol > avg_vol:
-            vol_bonus = 5   # 放量但幅度不大
+            vol_bonus = 5  # 放量但幅度不大
         v4sc += vol_bonus
 
-        candidates.append({
-            'ts_code': row['ts_code'],
-            'name': row['name'],
-            'industry': row['industry'],
-            'close': float(row['close']),
-            'pct_chg': float(row['pct_chg']),
-            'volume_ratio': float(row['volume_ratio']),
-            'turnover_rate': float(row['turnover_rate']),
-            'rps_20': float(row['rps_20']),
-            'main_net': float(row['main_net']),
-            'v4_score': v4sc,
-            'vol_bonus': vol_bonus,
-            'high_52w': float(row.get('high_52w', 0) or 0),
-            'low_52w': float(row.get('low_52w', 0) or 0),
-        })
+        candidates.append(
+            {
+                "ts_code": row["ts_code"],
+                "name": row["name"],
+                "industry": row["industry"],
+                "close": float(row["close"]),
+                "pct_chg": float(row["pct_chg"]),
+                "volume_ratio": float(row["volume_ratio"]),
+                "turnover_rate": float(row["turnover_rate"]),
+                "rps_20": float(row["rps_20"]),
+                "main_net": float(row["main_net"]),
+                "v4_score": v4sc,
+                "vol_bonus": vol_bonus,
+                "high_52w": float(row.get("high_52w", 0) or 0),
+                "low_52w": float(row.get("low_52w", 0) or 0),
+            }
+        )
 
-    candidates.sort(key=lambda x: x['v4_score'], reverse=True)
-    candidates = candidates[:limit * 2]  # 初筛放宽，ML过滤后截断
+    candidates.sort(key=lambda x: x["v4_score"], reverse=True)
+    candidates = candidates[: limit * 2]  # 初筛放宽，ML过滤后截断
 
     # 纯 ML 模式：跳过 V4 评分，直接按成交额取候选池
     # 市场状态自适应：弱市放小池子（保守），强市放大池子（积极）
     if PURE_ML_MODE:
-        # 先获取市场状态来决定池子大小
-        try:
-            _ms = unified_market_state(conn)
-            _state = _ms.get('state', 'range')
-        except Exception:
-            _state = 'range'
-        _pool_sizes = {'trend_up': 500, 'range': 400, 'trend_down': 300, 'panic': 200, 'overheated': 300}
-        _pool_size = _pool_sizes.get(_state, 400)
+        # 固定500只候选（与V11.1训练/推理一致，确保排名特征稳定）
+        _pool_size = 500
 
         pure_ml_cands = []
         for _, row in df.head(_pool_size).iterrows():
-            pure_ml_cands.append({
-                'ts_code': row['ts_code'], 'name': row['name'],
-                'industry': row['industry'], 'close': float(row['close']),
-                'pct_chg': float(row['pct_chg']), 'volume_ratio': float(row['volume_ratio']),
-                'turnover_rate': float(row['turnover_rate']), 'rps_20': float(row['rps_20']),
-                'main_net': float(row.get('main_net', 0) or 0), 'v4_score': 0,
-                'high_52w': float(row.get('high_52w', 0) or 0),
-                'low_52w': float(row.get('low_52w', 0) or 0),
-            })
+            pure_ml_cands.append(
+                {
+                    "ts_code": row["ts_code"],
+                    "name": row["name"],
+                    "industry": row["industry"],
+                    "close": float(row["close"]),
+                    "pct_chg": float(row["pct_chg"]),
+                    "volume_ratio": float(row["volume_ratio"]),
+                    "turnover_rate": float(row["turnover_rate"]),
+                    "rps_20": float(row["rps_20"]),
+                    "main_net": float(row.get("main_net", 0) or 0),
+                    "v4_score": 0,
+                    "high_52w": float(row.get("high_52w", 0) or 0),
+                    "low_52w": float(row.get("low_52w", 0) or 0),
+                }
+            )
         candidates = pure_ml_cands
-        logger.info(f"纯 ML 模式: {len(candidates)} 只候选（成交额Top{_pool_size}, 市场={_state}）")
+        logger.info(f"纯 ML 模式: {len(candidates)} 只候选（成交额Top500）")
     else:
         if not candidates:
             logger.info("V4 初筛无候选")
@@ -2336,20 +2599,20 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
     # 市场状态自适应百分位阈值
     try:
         market_state_info = unified_market_state(conn)
-        market_state = market_state_info.get('state', 'range')
-        state_params = market_state_info.get('params', {})
+        market_state = market_state_info.get("state", "range")
+        market_state_info.get("params", {})
 
         # 各市场状态的 ML 百分位阈值和 ML 权重（状态越差，阈值越高 = 过滤越严格）
         state_params_map = {
-            'trend_up':    {'pct': 0.05, 'bw': 0.15},  # 趋势好，多给ML权重
-            'range':       {'pct': ML_PERCENTILE_THRESHOLD, 'bw': ML_BLEND_WEIGHT},  # 震荡，默认
-            'trend_down':  {'pct': 0.20, 'bw': 0.15},  # 趋势差，提高过滤
-            'panic':       {'pct': 0.30, 'bw': 0.05},  # 恐慌，严格过滤+低ML权重
-            'overheated':  {'pct': 0.20, 'bw': 0.05},  # 过热，保守
+            "trend_up": {"pct": 0.05, "bw": 0.15},  # 趋势好，多给ML权重
+            "range": {"pct": ML_PERCENTILE_THRESHOLD, "bw": ML_BLEND_WEIGHT},  # 震荡，默认
+            "trend_down": {"pct": 0.20, "bw": 0.15},  # 趋势差，提高过滤
+            "panic": {"pct": 0.30, "bw": 0.05},  # 恐慌，严格过滤+低ML权重
+            "overheated": {"pct": 0.20, "bw": 0.05},  # 过热，保守
         }
-        sp = state_params_map.get(market_state, state_params_map['range'])
-        pct_threshold = sp['pct']
-        blend_weight = sp['bw']
+        sp = state_params_map.get(market_state, state_params_map["range"])
+        pct_threshold = sp["pct"]
+        blend_weight = sp["bw"]
         # 纯 ML 模式：纯 ML 排序，不混 V4，过滤低于横截面中位数的
         if PURE_ML_MODE:
             pct_threshold = 0.50  # 只保留高于横截面中位数的
@@ -2357,14 +2620,18 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
         logger.info(f"市场状态: {market_state}, ML百分位阈值: {pct_threshold}, ML权重: {blend_weight}")
     except Exception as e:
         logger.warning(f"市场状态获取失败: {e}，使用默认值")
-        market_state = 'range'
+        market_state = "range"
         pct_threshold = ML_PERCENTILE_THRESHOLD
         blend_weight = ML_BLEND_WEIGHT
 
-    cands_codes = [c['ts_code'] for c in candidates]
+    cands_codes = [c["ts_code"] for c in candidates]
     try:
         # 按模型版本选择特征构建函数
-        if version == "v11.0":
+        if version == "v11.2":
+            feat_df = build_features_v11_inference(conn, cands_codes, as_of_date=display_date)
+            if feat_df is not None and not feat_df.empty:
+                feat_df = _add_v11_2_regime_features(conn, feat_df, display_date)
+        elif version == "v11.0":
             feat_df = build_features_v11_inference(conn, cands_codes, as_of_date=display_date)
         elif version == "v10.0":
             feat_df = _build_features_for_stocks_v10_0(conn, cands_codes, as_of_date=display_date)
@@ -2382,35 +2649,38 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
         if feat_df is not None and not feat_df.empty:
             scores_df = _ensemble_scores(feat_df, bundle)
             # scores_df 的 index 是 0..N-1，按位置对齐 feat_df 的 ts_code
-            feat_codes = feat_df['ts_code'].tolist()
+            feat_codes = feat_df["ts_code"].tolist()
             scores_map = {}
             for i, (_, row) in enumerate(scores_df.iterrows()):
                 code = feat_codes[i] if i < len(feat_codes) else str(i)
                 scores_map[code] = {
-                    'ml_score': round(float(row['ml_score']), 3),
-                    'ml_percentile': round(float(row['rank_pct']), 3),
-                    'ml_probability': round(float(row['probability']), 3),
+                    "ml_score": round(float(row["ml_score"]), 3),
+                    "ml_percentile": round(float(row["rank_pct"]), 3),
+                    "ml_probability": round(float(row["probability"]), 3),
                 }
 
             passed = []
             for i, c in enumerate(candidates):
-                code = c['ts_code']
+                code = c["ts_code"]
                 s = scores_map.get(code, {})
-                ml_raw = s.get('ml_score', 0.0)
-                ml_pct = s.get('ml_percentile', 0.5)
-                c['ml_score'] = ml_raw
-                c['ml_percentile'] = ml_pct
-                c['ml_probability'] = s.get('ml_probability', 0.5)
-                c['market_state'] = market_state
+                ml_raw = s.get("ml_score", 0.0)
+                ml_pct = s.get("ml_percentile", 0.5)
+                c["ml_score"] = ml_raw
+                c["ml_percentile"] = ml_pct
+                c["ml_probability"] = s.get("ml_probability", 0.5)
+                c["market_state"] = market_state
                 # _scores_to_percentile(-raw): ml越高 → pct越小 → 越好
                 # 用 1-pct 转为正向分数（越大越好）
                 ml_score_forward = 1.0 - ml_pct
-                if ml_score_forward >= pct_threshold or PURE_ML_MODE:
+                if ml_score_forward >= pct_threshold:
                     if PURE_ML_MODE:
-                        c['blended_score'] = round(ml_raw, 3)
+                        c["blended_score"] = round(ml_raw, 3)
                     else:
-                        blend = c['v4_score'] * (1 - blend_weight) + ml_score_forward * 100 * blend_weight
-                        c['blended_score'] = round(blend, 2)
+                        blend = c["v4_score"] * (1 - blend_weight) + ml_score_forward * 100 * blend_weight
+                        c["blended_score"] = round(blend, 2)
+                    # 跳过 ML 评分为 0 且百分位为 0.5 的无效候选（特征构建失败）
+                    if abs(ml_raw) < 0.0001 and abs(ml_pct - 0.5) < 0.001:
+                        continue
                     passed.append(c)
 
             logger.info(
@@ -2420,253 +2690,76 @@ def generate_v4_ml_candidates(conn, market=None, block=None, limit=50):
 
             # 按 ml_score 降序排列（lh 方案：LambdaRank 原始分越大越好）
             if PURE_ML_MODE:
-                passed.sort(key=lambda x: x['ml_score'], reverse=True)
+                passed.sort(key=lambda x: x["ml_score"], reverse=True)
             else:
-                passed.sort(key=lambda x: x['blended_score'], reverse=True)
+                passed.sort(key=lambda x: x["blended_score"], reverse=True)
 
             # ===== 主力资金信息记录（仅供参考，不拦截）=====
             # 回测确认：5日主力累计过滤会误杀好票（夏普2.44→0.01），故仅记录不拦截
+            _cur_mf = None
             try:
-                _mf_codes = [c['ts_code'] for c in passed]
+                _mf_codes = [c["ts_code"] for c in passed]
                 _cur_mf = conn.cursor()
-                _ph = ','.join(['%s'] * len(_mf_codes))
-                _cur_mf.execute(f"""
+                _ph = ",".join(["%s"] * len(_mf_codes))
+                _cur_mf.execute(
+                    f"""
                     SELECT ts_code, SUM(main_net)
                     FROM moneyflow_daily
                     WHERE ts_code IN ({_ph})
                       AND trade_date < %s AND trade_date >= DATE_SUB(%s, INTERVAL 5 DAY)
                     GROUP BY ts_code
-                """, _mf_codes + [query_date, query_date])
+                """,
+                    _mf_codes + [query_date, query_date],
+                )
                 _cum5_map = {r[0]: float(r[1]) for r in _cur_mf.fetchall()}
-                _cur_mf.close()
                 for c in passed:
-                    c['main_cum5'] = round(_cum5_map.get(c['ts_code'], 0), 0)
+                    c["main_cum5"] = round(_cum5_map.get(c["ts_code"], 0), 0)
             except Exception:
                 pass
+            finally:
+                if _cur_mf is not None:
+                    try:
+                        _cur_mf.close()
+                    except Exception:
+                        pass
 
-            # Pure ML 风控过滤：排除当日追高品种（按市场状态分级）
-            if PURE_ML_MODE:
-                # 获取市场状态：弱市(恐慌/下跌/过热)启用严格风控，趋势/震荡放宽
-                _ms_risk = unified_market_state(conn) if conn else {}
-                _risk_state = _ms_risk.get('state', 'range') if _ms_risk else 'range'
-                _tight_mode = _risk_state in ('trend_down', 'panic', 'overheated')
-
-                before_filter = passed[:]
-                risk_filtered = []
-                for c in passed:
-                    risks = []
-                    # 1. 当日涨幅 > 9% → 排除（接近涨停，次日低开概率大）
-                    if c.get('pct_chg', 0) > 9:
-                        risks.append('涨停追高')
-                    # 2. 52周位置检查（仅弱市启用）
-                    if _tight_mode:
-                        h52w = c.get('high_52w', 0)
-                        l52w = c.get('low_52w', 0)
-                        if h52w > l52w > 0:
-                            pos_52w = (c['close'] - l52w) / (h52w - l52w) * 100
-                            if pos_52w > 85:
-                                risks.append(f'52周高位({pos_52w:.0f}%)')
-                    # 3. 量比 > 5 且涨幅 > 5% → 排除（异常放量拉升）
-                    if c.get('pct_chg', 0) > 5 and c.get('volume_ratio', 0) > 5:
-                        risks.append('异常放量')
-                    # 4. RPS_20 > 95 且涨幅 > 4%（仅弱市启用）
-                    if _tight_mode and c.get('rps_20', 0) > 95 and c.get('pct_chg', 0) > 4:
-                        risks.append('短期过热(RPS>95+涨4%)')
-                    if risks:
-                        c['risk_filtered'] = True
-                        c['risk_reason'] = '; '.join(risks)
-                        logger.info(f"风控过滤[{_risk_state}]: {c['name']}({c['ts_code']}) {'; '.join(risks)}")
-                    else:
-                        risk_filtered.append(c)
-                passed = risk_filtered
-                if not passed:
-                    logger.warning("Pure ML 全部被风控过滤，降级为宽松模式（仅保留涨停追高）")
-                    # 宽松模式：仅排除涨停追高，放开其他风控
-                    relaxed = []
-                    for c in before_filter:
-                        risks = []
-                        if c.get('pct_chg', 0) > 9:
-                            risks.append('涨停追高')
-                        if risks:
-                            c['risk_filtered'] = True
-                            c['risk_reason'] = '; '.join(risks)
-                        else:
-                            relaxed.append(c)
-                    passed = relaxed if relaxed else before_filter
-
-            # 游资收割票排除：判断拉升阶段vs出货阶段（≥40分排除）
-            try:
-                _hm_cur = conn.cursor()
-                _hm_codes = [c['ts_code'] for c in passed]
-                if _hm_codes:
-                    _hm_ph = ','.join(['%s'] * len(_hm_codes))
-                    _hm_dt = display_date or datetime.now().strftime('%Y-%m-%d')
-                    # 1. 连板数据（60天内最高连板）
-                    _hm_cur.execute("""
-                        SELECT ts_code, COALESCE(MAX(last_board), 0) as max_board
-                        FROM zt_pool
-                        WHERE ts_code IN (""" + _hm_ph + """)
-                          AND trade_date >= DATE_SUB(%s, INTERVAL 60 DAY)
-                          AND last_board > 0
-                        GROUP BY ts_code
-                    """, (*_hm_codes, _hm_dt))
-                    _hm_board = {r[0]: r[1] or 0 for r in _hm_cur.fetchall()}
-
-                    # 2. 封单萎缩：zt_pool最近两次比较
-                    _hm_cur.execute("""
-                        SELECT ts_code, trade_date, seal_amount
-                        FROM zt_pool
-                        WHERE ts_code IN (""" + _hm_ph + """)
-                          AND trade_date >= DATE_SUB(%s, INTERVAL 30 DAY)
-                        ORDER BY ts_code, trade_date DESC
-                    """, (*_hm_codes, _hm_dt))
-                    _hm_seal = {}
-                    for r in _hm_cur.fetchall():
-                        _hm_seal.setdefault(r[0], []).append(float(r[2] or 0))
-
-                    # 3. 15日内涨停+跌停 + 先后顺序
-                    _hm_cur.execute("""
-                        SELECT ts_code,
-                               SUM(CASE WHEN pct_chg >= 9.5 THEN 1 ELSE 0 END) as up_cnt,
-                               SUM(CASE WHEN pct_chg <= -9.5 THEN 1 ELSE 0 END) as down_cnt,
-                               MIN(CASE WHEN pct_chg >= 9.5 THEN trade_date END) as first_up,
-                               MAX(CASE WHEN pct_chg <= -9.5 THEN trade_date END) as last_down
-                        FROM daily_price
-                        WHERE ts_code IN (""" + _hm_ph + """)
-                          AND trade_date >= DATE_SUB(%s, INTERVAL 15 DAY)
-                          AND trade_date <= %s
-                        GROUP BY ts_code
-                    """, (*_hm_codes, _hm_dt, _hm_dt))
-                    _hm_ud = {}
-                    for r in _hm_cur.fetchall():
-                        _hm_ud[r[0]] = {'up': r[1] or 0, 'down': r[2] or 0, 'first_up': r[3], 'last_down': r[4]}
-
-                    # 4. 换手率
-                    _hm_cur.execute("""
-                        SELECT ts_code, AVG(turnover_rate) as avg_tr, MAX(turnover_rate) as max_tr
-                        FROM daily_price
-                        WHERE ts_code IN (""" + _hm_ph + """)
-                          AND trade_date >= DATE_SUB(%s, INTERVAL 10 DAY)
-                          AND trade_date <= %s
-                        GROUP BY ts_code
-                    """, (*_hm_codes, _hm_dt, _hm_dt))
-                    _hm_tr = {r[0]: {'avg': r[1] or 0, 'max': r[2] or 0} for r in _hm_cur.fetchall()}
-
-                    # 5. 主力资金
-                    _hm_cur.execute("""
-                        SELECT ts_code, COALESCE(SUM(main_net), 0) as total
-                        FROM moneyflow_daily
-                        WHERE ts_code IN (""" + _hm_ph + """)
-                          AND trade_date >= DATE_SUB(%s, INTERVAL 10 DAY)
-                        GROUP BY ts_code
-                    """, (*_hm_codes, _hm_dt))
-                    _hm_main = {r[0]: r[1] or 0 for r in _hm_cur.fetchall()}
-
-                    # 评分
-                    _hm_excluded = set()
-                    for c in passed:
-                        tc = c['ts_code']
-                        board = _hm_board.get(tc, 0)
-                        seals = _hm_seal.get(tc, [])
-                        ud = _hm_ud.get(tc, {})
-                        tr = _hm_tr.get(tc, {})
-                        main_net = _hm_main.get(tc, 0)
-
-                        score = 0
-                        reasons = []
-
-                        # ① 连板分
-                        if board >= 4:
-                            score += 30; reasons.append('高连板' + str(board))
-                        elif board == 3:
-                            score += 15; reasons.append('连板3次')
-
-                        # ② 封单萎缩50%+
-                        if len(seals) >= 2 and seals[1] > 0 and seals[0] < seals[1] * 0.5:
-                            ratio = (1 - seals[0]/seals[1]) * 100
-                            score += 30; reasons.append('封单萎缩' + str(int(ratio)) + '%')
-
-                        # ③ 先涨停再跌停（出货）
-                        if ud.get('up', 0) > 0 and ud.get('down', 0) > 0:
-                            fu = ud.get('first_up')
-                            ld = ud.get('last_down')
-                            if fu and ld and fu < ld:
-                                score += 20; reasons.append('涨停后跌停')
-
-                        # ④ 高换手
-                        avg_tr = tr.get('avg', 0)
-                        max_tr = tr.get('max', 0)
-                        if avg_tr > 20:
-                            score += 15; reasons.append('高换手' + str(int(avg_tr)) + '%')
-                        elif avg_tr > 15 and max_tr > 25:
-                            score += 10; reasons.append('换手异常')
-
-                        # ⑤ 主力资金流出
-                        if main_net < -30000000:
-                            score += 15; reasons.append('主力流出')
-
-                        if score >= 40:
-                            _hm_excluded.add(tc)
-                            c['risk_filtered'] = True
-                            c['risk_reason'] = '游资出货: ' + '; '.join(reasons) + '(' + str(score) + '分)'
-                            logger.info("游资出货排除: %s(%s) %d分 %s", c['name'], tc, score, '; '.join(reasons))
-
-                    if _hm_excluded:
-                        passed = [c for c in passed if c['ts_code'] not in _hm_excluded]
-
-                    # 基本面过滤：最新财报净利润同比 <-30% 排除
-                    _hm_cur.execute("""
-                        SELECT e.ts_code, e.net_profit_yoy
-                        FROM earnings_report e
-                        WHERE e.ts_code IN (""" + _hm_ph + """)
-                          AND e.report_date = (
-                            SELECT MAX(e2.report_date) FROM earnings_report e2 
-                            WHERE e2.ts_code = e.ts_code
-                          )
-                    """, _hm_codes)
-                    _hm_profit = {}
-                    for r in _hm_cur.fetchall():
-                        profit = float(r[1] or 0)
-                        _hm_profit[r[0]] = profit
-                        if profit < -30:
-                            c = next((x for x in passed if x['ts_code'] == r[0]), None)
-                            if c:
-                                c['risk_filtered'] = True
-                                c['risk_reason'] = '业绩暴雷(利润' + str(int(profit)) + '%)'
-                                logger.info("业绩排除: %s(%s) 利润%.0f%%", c['name'], r[0], profit)
-                    if _hm_profit:
-                        _hm_bad = [tc for tc, p in _hm_profit.items() if p < -30]
-                        if _hm_bad:
-                            passed = [c for c in passed if c['ts_code'] not in _hm_bad]
-                _hm_cur.close()
-            except Exception as e:
-                logger.warning("游资判定失败: %s", e)
-
+            # ===== 风控已禁用（回测确认：规则风控会误杀ML高收益标的，夏普5.61→0.01）=====
+            # 启用方法：删掉下面这行 return 并取消注释风控过滤段
+            # ================================================================
             # 行业分散约束（V11.0 新增）：限制单一行业集中度
             try:
                 for c in passed:
-                    c['blend'] = c.get('blended_score', 0)  # 行业分散按此字段排序
+                    c["blend"] = c.get("blended_score", 0)  # 行业分散按此字段排序
                 from scripts.sector_rotation_filter import apply_sector_diversification
+
                 passed = apply_sector_diversification(passed, conn, display_date)
             except Exception as e:
                 logger.warning(f"行业分散约束失败: {e}")
 
             # ML 筛选明细日志
             if passed:
-                _top5_before = [(c['name'], c['ts_code'], round(c.get('blended_score', c.get('v4_score', 0)), 1))
-                               for c in passed[:min(5, len(passed))]]
-                _filtered_count = sum(1 for c in passed if c.get('risk_filtered'))
-                logger.info("ML选股明细: 通过%d只 | Top5: %s",
-                           len(passed),
-                           ' → '.join([f'{n}({s})' for n, _, s in _top5_before]))
+                _top5_before = [
+                    (c["name"], c["ts_code"], round(c.get("blended_score", c.get("v4_score", 0)), 1))
+                    for c in passed[: min(5, len(passed))]
+                ]
+                _filtered_count = sum(1 for c in passed if c.get("risk_filtered"))
+                logger.info(
+                    "ML选股明细: 通过%d只 | Top5: %s",
+                    len(passed),
+                    " → ".join([f"{n}({s})" for n, _, s in _top5_before]),
+                )
                 if _filtered_count > 0:
                     _reason_groups = {}
                     for c in passed:
-                        r = c.get('risk_reason', '')
+                        r = c.get("risk_reason", "")
                         if r:
-                            key = '游资' if '游资' in r else ('业绩' if '业绩' in r else ('风控' if '风控' in r else '其他'))
+                            key = (
+                                "游资"
+                                if "游资" in r
+                                else ("业绩" if "业绩" in r else ("风控" if "风控" in r else "其他"))
+                            )
                             _reason_groups[key] = _reason_groups.get(key, 0) + 1
-                    logger.info("ML过滤汇总: %s", ', '.join([f'{k}{v}只' for k, v in _reason_groups.items()]))
+                    logger.info("ML过滤汇总: %s", ", ".join([f"{k}{v}只" for k, v in _reason_groups.items()]))
 
             return passed[:limit], display_date
         else:
@@ -2681,7 +2774,7 @@ def generate_v4_ml_top5(conn, top_n=V4_TOP_N):
     """
     V4 + ML 过滤选股 — 生产策略 (Top5)
     调用通用候选生成器，截取 Top N 并格式化
-    ml_score <= 0 的候选已在 generate_v4_ml_candidates 中过滤（纯ML模式）
+    纯ML模式下按横截面百分位中位数(0.50)过滤，低于中位数的候选被排除
     """
     candidates, display_date = generate_v4_ml_candidates(conn, limit=max(top_n * 2, V4_CANDIDATE_LIMIT))
 
@@ -2692,31 +2785,32 @@ def generate_v4_ml_top5(conn, top_n=V4_TOP_N):
     actual_n = min(top_n, len(candidates))
     result = candidates[:actual_n]
     for i, s in enumerate(result):
-        s['rank'] = i + 1
-        s['date'] = display_date
-        s['price'] = f"{s['close']:.2f}"
-        s['total_score'] = s.get('blended_score', s['v4_score'])
+        s["rank"] = i + 1
+        s["date"] = display_date
+        s["price"] = f"{s['close']:.2f}"
+        s["total_score"] = s.get("blended_score", s["v4_score"])
         if PURE_ML_MODE:
-            s['reasons'] = [f"ML得分{s.get('ml_score', 0):+.3f}"]
-            if s.get('risk_filtered'):
-                s['reasons'].append(f"⚠️ {s.get('risk_reason', '风控过滤')}")
+            s["reasons"] = [f"ML得分{s.get('ml_score', 0):+.3f}"]
+            if s.get("risk_filtered"):
+                s["reasons"].append(f"⚠️ {s.get('risk_reason', '风控过滤')}")
         else:
-            s['reasons'] = [f"V4评分{s['v4_score']}"]
-        if s.get('ml_percentile', 0) > 0:
-            s['reasons'].append(f"ML概率{s.get('ml_probability', 0):.1%}")
-        if s.get('main_net', 0) > 1000:
-            s['reasons'].append(f"主力净流入{s['main_net']:.0f}万")
-        if s['volume_ratio'] > 2:
-            s['reasons'].append(f"量比{s['volume_ratio']:.2f}")
-        if s['rps_20'] >= 60:
-            s['reasons'].append(f"RPS{s['rps_20']:.0f}")
-        if s.get('vol_bonus', 0) >= 10:
-            s['reasons'].append("低量苏醒")
+            s["reasons"] = [f"V4评分{s['v4_score']}"]
+        if s.get("ml_percentile", 0) > 0:
+            s["reasons"].append(f"ML概率{s.get('ml_probability', 0):.1%}")
+        if s.get("main_net", 0) > 1000:
+            s["reasons"].append(f"主力净流入{s['main_net']:.0f}万")
+        if s["volume_ratio"] > 2:
+            s["reasons"].append(f"量比{s['volume_ratio']:.2f}")
+        if s["rps_20"] >= 60:
+            s["reasons"].append(f"RPS{s['rps_20']:.0f}")
+        if s.get("vol_bonus", 0) >= 10:
+            s["reasons"].append("低量苏醒")
 
     return result
 
 
 # ========== 底部苏醒策略（独立于 V4） ==========
+
 
 def generate_bottom_awakening_candidates(conn, limit=50):
     """
@@ -2741,13 +2835,14 @@ def generate_bottom_awakening_candidates(conn, limit=50):
         cur.close()
         return [], None
 
-    date_str = str(latest).replace('-', '')[:8] if '-' in str(latest) else str(latest)[:8]
-    display_date = str(latest)[:10] if '-' in str(latest) else f"{latest[:4]}-{latest[4:6]}-{latest[6:8]}"
-    query_date = str(latest)[:10] if '-' in str(latest) else f"{latest[:4]}-{latest[4:6]}-{latest[6:8]}"
+    date_str = str(latest).replace("-", "")[:8] if "-" in str(latest) else str(latest)[:8]
+    display_date = str(latest)[:10] if "-" in str(latest) else f"{latest[:4]}-{latest[4:6]}-{latest[6:8]}"
+    query_date = str(latest)[:10] if "-" in str(latest) else f"{latest[:4]}-{latest[4:6]}-{latest[6:8]}"
 
     # 核心查询：取当日行情 + 资金流 + 基本面
     # 用子查询实时计算 52 周高低价，不依赖可能过期的预计算字段
-    cur.execute("""
+    cur.execute(
+        """
         SELECT d.ts_code, d.close, d.pct_chg, d.turnover_rate, d.volume_ratio, d.vol,
                d.ma5, d.ma10, d.ma20, d.rps_20,
                COALESCE(m.main_net, 0) as main_net,
@@ -2763,35 +2858,54 @@ def generate_bottom_awakening_candidates(conn, limit=50):
           AND d.ts_code NOT LIKE '4%%' AND d.ts_code NOT LIKE '9%%'
           AND s.name NOT LIKE '%%ST%%' AND s.name NOT LIKE '%%退%%'
           AND d.close > 5
-    """, (query_date,))
+    """,
+        (query_date,),
+    )
 
-    cols = ['ts_code', 'close', 'pct_chg', 'turnover_rate', 'volume_ratio', 'vol',
-            'ma5', 'ma10', 'ma20', 'rps_20', 'main_net', 'name', 'industry']
+    cols = [
+        "ts_code",
+        "close",
+        "pct_chg",
+        "turnover_rate",
+        "volume_ratio",
+        "vol",
+        "ma5",
+        "ma10",
+        "ma20",
+        "rps_20",
+        "main_net",
+        "name",
+        "industry",
+    ]
     rows = cur.fetchall()
     cur.close()
 
     df = pd.DataFrame(rows, columns=cols)
     for c in cols[1:11]:
-        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
     # 实时查询 52 周高低价
-    codes = df['ts_code'].tolist()
+    codes = df["ts_code"].tolist()
     range_52w = {}
     if codes:
-        placeholders = ','.join(['%s'] * len(codes))
-        lookback_52w = (datetime.strptime(query_date, '%Y-%m-%d') - timedelta(days=365)).strftime('%Y%m%d')
+        placeholders = ",".join(["%s"] * len(codes))
+        lookback_52w = (datetime.strptime(query_date, "%Y-%m-%d") - timedelta(days=365)).strftime("%Y%m%d")
         try:
             cur2 = conn.cursor()
-            cur2.execute(f"""
+            cur2.execute(
+                f"""
                 SELECT ts_code, MAX(high) as h52w, MIN(low) as l52w
                 FROM daily_price
                 WHERE ts_code IN ({placeholders})
                   AND trade_date < %s AND trade_date >= %s
                 GROUP BY ts_code
-            """, codes + [date_str, lookback_52w])
+            """,
+                codes + [date_str, lookback_52w],
+            )
             range_52w = {
                 row[0]: (float(row[1]), float(row[2]))
-                for row in cur2.fetchall() if row[1] and row[2] and float(row[1]) > float(row[2]) > 0
+                for row in cur2.fetchall()
+                if row[1] and row[2] and float(row[1]) > float(row[2]) > 0
             }
             cur2.close()
         except Exception as e:
@@ -2801,8 +2915,8 @@ def generate_bottom_awakening_candidates(conn, limit=50):
     positions = []
     keep_indices = []
     for i, (_, row) in enumerate(df.iterrows()):
-        ts_code = row['ts_code']
-        close = float(row['close'])
+        ts_code = row["ts_code"]
+        close = float(row["close"])
         r = range_52w.get(ts_code)
         if r and r[1] > 0:
             pos = max(0, (close - r[1]) / (r[0] - r[1]) * 100)  # 钳位到 0%
@@ -2816,25 +2930,28 @@ def generate_bottom_awakening_candidates(conn, limit=50):
     if df_clean.empty:
         return [], display_date
 
-    df_clean['pos_52w'] = [positions[i] for i in keep_indices]
-    df_clean['high_52w'] = [range_52w.get(df.iloc[i]['ts_code'], (0, 0))[0] for i in keep_indices]
-    df_clean['low_52w'] = [range_52w.get(df.iloc[i]['ts_code'], (0, 0))[1] for i in keep_indices]
+    df_clean["pos_52w"] = [positions[i] for i in keep_indices]
+    df_clean["high_52w"] = [range_52w.get(df.iloc[i]["ts_code"], (0, 0))[0] for i in keep_indices]
+    df_clean["low_52w"] = [range_52w.get(df.iloc[i]["ts_code"], (0, 0))[1] for i in keep_indices]
 
     # 查询 60 日均量
-    codes = df_clean['ts_code'].tolist()
+    codes = df_clean["ts_code"].tolist()
     vol_base = {}
     if codes:
-        placeholders = ','.join(['%s'] * len(codes))
+        placeholders = ",".join(["%s"] * len(codes))
         try:
             cur2 = conn.cursor()
-            lookback = (datetime.strptime(query_date, '%Y-%m-%d') - timedelta(days=60)).strftime('%Y%m%d')
-            cur2.execute(f"""
+            lookback = (datetime.strptime(query_date, "%Y-%m-%d") - timedelta(days=60)).strftime("%Y%m%d")
+            cur2.execute(
+                f"""
                 SELECT ts_code, AVG(vol) as avg_vol
                 FROM daily_price
                 WHERE ts_code IN ({placeholders})
                   AND trade_date < %s AND trade_date >= %s
                 GROUP BY ts_code
-            """, codes + [date_str, lookback])
+            """,
+                codes + [date_str, lookback],
+            )
             vol_base = {row[0]: float(row[1]) for row in cur2.fetchall() if row[1]}
             cur2.close()
         except Exception as e:
@@ -2847,7 +2964,7 @@ def generate_bottom_awakening_candidates(conn, limit=50):
         logger.info(f"底部苏醒-2.0倍阈值仅 {len(candidates)} 只，降级到 1.5 倍")
         candidates = _score_bottom_awakening(df_clean, vol_base, vol_threshold=1.5)
 
-    candidates.sort(key=lambda x: x['awakening_score'], reverse=True)
+    candidates.sort(key=lambda x: x["awakening_score"], reverse=True)
     candidates = candidates[:limit]
     return candidates, display_date
 
@@ -2856,21 +2973,21 @@ def _score_bottom_awakening(df, vol_base, vol_threshold=2.0):
     """底部苏醒评分核心（独立评分，不依赖 V4 评分函数）"""
     candidates = []
     for _, row in df.iterrows():
-        close = float(row['close'])
-        pct = float(row['pct_chg'])
-        vr = float(row['volume_ratio'])
-        tr = float(row['turnover_rate'])
-        ma5 = float(row['ma5'])
-        ma10 = float(row['ma10'])
-        ma20 = float(row['ma20'])
-        h52w = float(row['high_52w'])
-        l52w = float(row['low_52w'])
-        rps = float(row['rps_20'])
-        main_net = float(row['main_net'])
-        current_vol = float(row.get('vol', 0) or 0)
-        ts_code = row['ts_code']
-        name = row['name']
-        industry = row['industry']
+        close = float(row["close"])
+        pct = float(row["pct_chg"])
+        vr = float(row["volume_ratio"])
+        tr = float(row["turnover_rate"])
+        ma5 = float(row["ma5"])
+        ma10 = float(row["ma10"])
+        ma20 = float(row["ma20"])
+        h52w = float(row["high_52w"])
+        l52w = float(row["low_52w"])
+        rps = float(row["rps_20"])
+        main_net = float(row["main_net"])
+        current_vol = float(row.get("vol", 0) or 0)
+        ts_code = row["ts_code"]
+        name = row["name"]
+        industry = row["industry"]
 
         if close <= 0 or ma5 <= 0:
             continue
@@ -2933,21 +3050,23 @@ def _score_bottom_awakening(df, vol_base, vol_threshold=2.0):
         entry_parts.append(f"底部{pos:.0f}%")
         entry_reason = " | ".join(entry_parts)
 
-        candidates.append({
-            'ts_code': ts_code,
-            'name': name,
-            'industry': industry,
-            'close': close,
-            'pct_chg': pct,
-            'volume_ratio': vr,
-            'turnover_rate': tr,
-            'rps_20': rps,
-            'main_net': main_net,
-            'awakening_score': total_score,
-            'vol_expansion': round(vol_expansion, 2),
-            'position_52w': round(pos, 2),
-            'entry_reason': entry_reason,
-        })
+        candidates.append(
+            {
+                "ts_code": ts_code,
+                "name": name,
+                "industry": industry,
+                "close": close,
+                "pct_chg": pct,
+                "volume_ratio": vr,
+                "turnover_rate": tr,
+                "rps_20": rps,
+                "main_net": main_net,
+                "awakening_score": total_score,
+                "vol_expansion": round(vol_expansion, 2),
+                "position_52w": round(pos, 2),
+                "entry_reason": entry_reason,
+            }
+        )
 
     return candidates
 
@@ -2963,13 +3082,11 @@ def generate_bottom_awakening_top5(conn, top_n=5):
 
     result = candidates[:top_n]
     for i, s in enumerate(result):
-        s['rank'] = i + 1
-        s['date'] = display_date
-        s['price'] = f"{s['close']:.2f}"
-        s['total_score'] = s['awakening_score']
-        s['reasons'] = s['entry_reason']
-        s['vol_ratio'] = s['volume_ratio']
+        s["rank"] = i + 1
+        s["date"] = display_date
+        s["price"] = f"{s['close']:.2f}"
+        s["total_score"] = s["awakening_score"]
+        s["reasons"] = s["entry_reason"]
+        s["vol_ratio"] = s["volume_ratio"]
 
     return result
-
-

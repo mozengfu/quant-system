@@ -3,15 +3,18 @@
 - 用线程池加速（Tushare 要求逐只股票查询）
 - 支持断点续传（跳过已有数据）
 """
-import os, sys, time, math, logging
-from datetime import datetime
-from pathlib import Path
+import logging
+import math
+import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from quant_app.utils.config import get_db_config
-import tushare as ts
 import pymysql
+import tushare as ts
+
+from quant_app.utils.config import get_db_config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -73,7 +76,7 @@ def sync_period(period, max_workers=8):
 
         # 获取需补充的股票列表（排除ST/688/北交所）
         cur.execute("""SELECT DISTINCT d.ts_code FROM daily_price d
-                       JOIN stock_info s ON CONVERT(d.ts_code USING utf8mb4) = CONVERT(s.ts_code USING utf8mb4)
+                       JOIN stock_info s ON d.ts_code COLLATE utf8mb4_unicode_ci = s.ts_code COLLATE utf8mb4_unicode_ci
                        WHERE d.trade_date = (SELECT MAX(trade_date) FROM daily_price)
                          AND s.name NOT LIKE '%ST%'
                          AND d.ts_code NOT LIKE '688%%'

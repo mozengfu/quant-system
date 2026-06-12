@@ -7,8 +7,7 @@
     <link rel="icon" href="/static/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/static/icon-192.png">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+    <style>* { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #1a2332; min-height: 100vh; }
         .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; }
         .header h1 { font-size: 22px; color: #ffffff; font-weight: 600; }
@@ -72,10 +71,10 @@
 </head>
 <body>
     <div class="header">
-        <h1>📊 访问分析</h1>
+        <h1>访问分析</h1>
         <nav>
-            <a href="/admin">🔧 管理员后台</a>
-            <a href="/">🏠 首页</a>
+            <a href="/admin">管理员后台</a>
+            <a href="/">首页</a>
         </nav>
     </div>
 
@@ -99,30 +98,30 @@
         <!-- 图表 -->
         <div class="charts-grid">
             <div class="chart-card chart-full">
-                <h3>📈 访问趋势（按天）</h3>
+                <h3>访问趋势（按天）</h3>
                 <canvas id="trendChart"></canvas>
             </div>
             <div class="chart-card">
-                <h3>👥 用户访问排行 Top 10</h3>
+                <h3>用户访问排行 Top 10</h3>
                 <canvas id="userChart"></canvas>
             </div>
             <div class="chart-card">
-                <h3>🎯 操作类型分布</h3>
+                <h3>操作类型分布</h3>
                 <canvas id="actionChart"></canvas>
             </div>
             <div class="chart-card">
-                <h3>📦 模块分布</h3>
+                <h3>模块分布</h3>
                 <canvas id="moduleChart"></canvas>
             </div>
             <div class="chart-card">
-                <h3>🔔 模块分布（环形图）</h3>
+                <h3>模块分布（环形图）</h3>
                 <canvas id="moduleDonutChart"></canvas>
             </div>
         </div>
 
         <!-- 最近访问日志 -->
         <div class="log-table-card">
-            <h3>📋 最近访问日志（Top 50）</h3>
+            <h3>最近访问日志（Top 50）</h3>
             <div class="filter-bar">
                 <div class="filter-group">
                     <label>用户</label>
@@ -149,8 +148,7 @@
         </div>
     </div>
 
-    <script>
-        let trendChart, userChart, actionChart, moduleChart, moduleDonutChart;
+    <script>let trendChart, userChart, actionChart, moduleChart, moduleDonutChart;
 
         const COLORS = ['#667eea','#764ba2','#4caf50','#ff9800','#f44336','#2196f3','#9c27b0','#00bcd4','#ffc107','#8bc34a','#e91e63','#3f51b5','#009688','#ff5722','#607d8b'];
 
@@ -183,7 +181,7 @@
 
         function renderCharts(data) {
             // 更新模块筛选下拉
-            if (data.module_counts && data.module_counts.length > 0) {
+            if (data.module_counts && data.module_counts.length >0) {
                 populateModuleFilter(data.module_counts);
             }
             // 访问趋势折线图
@@ -273,7 +271,7 @@
             const sel = document.getElementById('filterUser');
             const currentVal = sel.value;
             sel.innerHTML = '<option value="">全部用户</option>';
-            users.forEach(u => {
+            users.forEach(u =>{
                 const opt = document.createElement('option');
                 opt.value = u;
                 opt.textContent = u;
@@ -286,7 +284,7 @@
             const sel = document.getElementById('filterAction');
             const currentVal = sel.value;
             sel.innerHTML = '<option value="">全部操作</option>';
-            actions.forEach(a => {
+            actions.forEach(a =>{
                 const opt = document.createElement('option');
                 opt.value = a;
                 opt.textContent = a;
@@ -322,13 +320,20 @@
             const currentVal = sel.value;
             currentModuleOptions = modules;
             sel.innerHTML = '<option value="">全部模块</option>';
-            modules.forEach(m => {
+            modules.forEach(m =>{
                 const opt = document.createElement('option');
                 opt.value = m.module;
                 opt.textContent = m.module;
                 sel.appendChild(opt);
             });
             sel.value = currentVal;
+        }
+
+        function escapeHtml(str) {
+            if (typeof str !== 'string') return str;
+            const div = document.createElement('div');
+            div.appendChild(document.createTextNode(str));
+            return div.innerHTML;
         }
 
         function renderTable(logs) {
@@ -339,7 +344,7 @@
             let html = '<table><thead><tr><th>时间</th><th>用户</th><th>IP</th><th>操作</th><th>模块</th></tr></thead><tbody>';
             for (const log of logs) {
                 const ts = log.timestamp ? String(log.timestamp).replace('T', ' ').substring(0, 19) : '-';
-                html += `<tr><td>${ts}</td><td>${log.username || '-'}</td><td>${log.ip || '-'}</td><td>${log.action || '-'}</td><td><span class="module-tag">${log.module || '-'}</span></td></tr>`;
+                html += `<tr><td>${escapeHtml(ts)}</td><td>${escapeHtml(log.username || '-')}</td><td>${escapeHtml(log.ip || '-')}</td><td>${escapeHtml(log.action || '-')}</td><td><span class="module-tag">${escapeHtml(log.module || '-')}</span></td></tr>`;
             }
             html += '</tbody></table>';
             document.getElementById('logTable').innerHTML = html;
@@ -351,7 +356,7 @@
         }
 
         // 日期按钮
-        document.querySelectorAll('.date-btn').forEach(btn => {
+        document.querySelectorAll('.date-btn').forEach(btn =>{
             btn.addEventListener('click', () => {
                 document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');

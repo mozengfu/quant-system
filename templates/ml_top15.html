@@ -5,39 +5,38 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ML Top15 智能选股 - 量化系统</title>
     <link rel="icon" href="/static/favicon.ico" sizes="any">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #1a2332; min-height: 100vh; }
-        .header { background: linear-gradient(135deg, #00bcd4 0%, #006064 100%); padding: 20px 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; }
+    <link rel="stylesheet" href="/static/css/main.css">
+    <style>body { background: #f0f2f5; color: var(--text-primary); }
+        .header { background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%); padding: 20px 30px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; }
         .header h1 { font-size: 22px; color: #ffffff; font-weight: 600; }
         .header .user { color: rgba(255,255,255,0.9); font-size: 14px; }
         .header a { color: rgba(255,255,255,0.7); text-decoration: none; font-size: 13px; }
         .header a:hover { color: #fff; }
         .main { padding: 24px 30px; max-width: 1400px; margin: 0 auto; }
-        .card { background: white; border-radius: 12px; padding: 24px; margin-bottom: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
-        .card h2 { font-size: 18px; color: #333; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px solid #00bcd4; }
-        .notice { background: #e0f7fa; color: #006064; padding: 12px; border-radius: 6px; margin-bottom: 20px; font-size: 13px; line-height: 1.6; }
-        .refresh-btn { background: #00bcd4; color: white; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; margin-bottom: 20px; font-size: 14px; }
-        .refresh-btn:hover { background: #0097a7; }
+        .card { background: var(--bg-card); border-radius: var(--border-radius); padding: 24px; margin-bottom: 24px; box-shadow: var(--shadow-card); }
+        .card h2 { font-size: 18px; color: var(--text-primary); margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px solid var(--primary); }
+        .notice { background: rgba(79, 195, 247, 0.1); color: var(--primary-dark); padding: 12px; border-radius: 6px; margin-bottom: 20px; font-size: 13px; line-height: 1.6; border: 1px solid rgba(79, 195, 247, 0.2); }
+        .refresh-btn { background: var(--primary); color: #fff; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; margin-bottom: 20px; font-size: 14px; transition: background 0.2s ease; }
+        .refresh-btn:hover { background: var(--primary-dark); }
         .refresh-btn:disabled { background: #b0bec5; cursor: not-allowed; }
         table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #f0f0f0; }
-        th { background: #f8f9fa; color: #555; font-weight: 500; font-size: 13px; }
-        td { font-size: 14px; }
-        .prob-high { color: #4caf50; font-weight: bold; font-size: 16px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border-color); }
+        th { background: #f5f7fa; color: var(--text-secondary); font-weight: 600; font-size: 13px; }
+        td { font-size: 14px; color: var(--text-primary); }
+        .prob-high { color: var(--loss); font-weight: bold; font-size: 16px; }
         .prob-medium { color: #ff9800; font-weight: bold; }
-        .profit { color: #ef5350; }
-        .loss { color: #66bb6a; }
-        .loading { text-align: center; padding: 40px; color: #00bcd4; }
-        .empty { color: #888; text-align: center; padding: 40px; }
+        .profit { color: var(--profit); }
+        .loss { color: var(--loss); }
+        .loading { text-align: center; padding: 40px; color: var(--text-muted); }
+        .empty { color: var(--text-muted); text-align: center; padding: 40px; }
         .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
-        .badge-ml { background: #e0f7fa; color: #006064; }
+        .badge-ml { background: rgba(79, 195, 247, 0.15); color: var(--primary-dark); }
         .badge-v41 { background: #f3e5f5; color: #6a1b9a; }
         .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
-        .stat-card { background: white; border-radius: 10px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); text-align: center; }
-        .stat-card .label { color: #888; font-size: 12px; margin-bottom: 6px; }
-        .stat-card .value { font-size: 24px; font-weight: 600; color: #00bcd4; }
-        .stat-card .sub { color: #999; font-size: 11px; margin-top: 4px; }
+        .stat-card { background: var(--bg-card); border-radius: 10px; padding: 16px; box-shadow: var(--shadow-card); text-align: center; }
+        .stat-card .label { color: var(--text-secondary); font-size: 12px; margin-bottom: 6px; }
+        .stat-card .value { font-size: 24px; font-weight: 600; color: var(--primary-dark); }
+        .stat-card .sub { color: var(--text-muted); font-size: 11px; margin-top: 4px; }
         @media (max-width: 768px) {
             .main { padding: 16px; }
             .header { padding: 16px; }
@@ -49,15 +48,15 @@
 <body>
     <div class="header">
         <a href="/">← 返回首页</a>
-        <h1>🤖 ML Top15 智能选股</h1>
+        <h1>ML Top15 智能选股</h1>
         <div class="user">莫增富</div>
     </div>
 
     <div class="main">
-        <button class="refresh-btn" onclick="refreshData()" id="refreshBtn">🔄 刷新数据</button>
+        <button class="refresh-btn" onclick="refreshData()" id="refreshBtn">刷新数据</button>
 
         <div class="notice">
-            <strong>ML V8.1 模型</strong>：LightGBM + LambdaRank + 市场状态感知，115维特征（技术+资金+涨停+行业动量+财务+龙虎榜+市场状态）。
+            <strong>ML V11.2 模型</strong>：LightGBM + LambdaRank + 均值回复 + 市场状态感知，126维特征（技术+资金+涨停+行业动量+财务+龙虎榜+市场状态+反转型）。
             回测验证：纯ML排序选股（成交额Top300候选池），夏普4.23，胜率74.6%。
         </div>
 
@@ -65,7 +64,7 @@
 
         <div class="card">
             <h2>ML Top15 选股列表</h2>
-            <div id="loading" class="loading">加载中...</div>
+            <div id="loading" class="loading"><div class="spinner"></div>加载中...</div>
             <div id="content" style="display: none;">
                 <table>
                     <thead>
@@ -86,7 +85,11 @@
                     <tbody id="tableBody"></tbody>
                 </table>
             </div>
-            <div id="empty" class="empty" style="display: none;">暂无符合条件的股票</div>
+            <div id="empty" class="empty" style="display: none;">
+                <div class="empty-icon">-</div>
+                <div class="empty-text">暂无符合条件的股票</div>
+                <button onclick="refreshData()">刷新数据</button>
+            </div>
         </div>
 
         <div class="card">
@@ -103,14 +106,14 @@
                 </thead>
                 <tbody>
                     <tr>
-                        <td><span class="badge badge-v41">V4.1</span> 技术+资金</td>
+                        <td><span class="badge badge-v41">V4.1</span>技术+资金</td>
                         <td>45.8%</td>
                         <td>+0.61%</td>
                         <td>中小盘活跃股</td>
                         <td>短线进攻型，量价配合</td>
                     </tr>
                     <tr>
-                        <td><span class="badge badge-ml">ML V8.1</span> 115维特征+市场状态</td>
+                        <td><span class="badge badge-ml">ML V11.2</span>147维特征+市场状态交互</td>
                         <td>74.6%</td>
                         <td>+6.43%（5日）</td>
                         <td>大盘强势股</td>
@@ -121,8 +124,7 @@
         </div>
     </div>
 
-    <script>
-        function formatPct(val) {
+    <script>function formatPct(val) {
             const n = parseFloat(val);
             if (isNaN(n)) return '-';
             const cls = n >= 0 ? 'profit' : 'loss';
@@ -147,7 +149,7 @@
         async function loadData() {
             const btn = document.getElementById('refreshBtn');
             btn.disabled = true;
-            btn.textContent = '⏳ 加载中...';
+            btn.textContent = '加载中...';
 
             try {
                 const response = await fetch('/api/ml_top15', {credentials: 'include'});
@@ -167,7 +169,7 @@
                 document.getElementById('content').style.display = 'block';
 
                 // Stats
-                const avgProb = stocks.reduce((s, st) => s + st.ml_prob, 0) / stocks.length;
+                const avgProb = stocks.reduce((s, st) =>s + st.ml_prob, 0) / stocks.length;
                 const avgPct = stocks.reduce((s, st) => s + (st.pct_chg || 0), 0) / stocks.length;
                 const avgTurnover = stocks.reduce((s, st) => s + (st.turnover_rate || 0), 0) / stocks.length;
                 const cacheLabel = data.cache ? '（缓存）' : '（实时预测）';
@@ -190,8 +192,7 @@
                     <div class="stat-card">
                         <div class="label">平均换手率</div>
                         <div class="value">${avgTurnover.toFixed(1)}%</div>
-                    </div>
-                `;
+                    </div>`;
 
                 const tbody = document.getElementById('tableBody');
                 tbody.innerHTML = '';
@@ -211,8 +212,7 @@
                         <td>${formatPct(s.pct_chg)}</td>
                         <td>${s.volume_ratio ? s.volume_ratio.toFixed(2) : '-'}</td>
                         <td>${s.turnover_rate ? s.turnover_rate.toFixed(1) + '%' : '-'}</td>
-                        <td>${s.rps_20 ? s.rps_20.toFixed(0) : '-'}</td>
-                    `;
+                        <td>${s.rps_20 ? s.rps_20.toFixed(0) : '-'}</td>`;
                     tbody.appendChild(tr);
                 });
 
@@ -221,7 +221,7 @@
                 document.getElementById('loading').textContent = '加载失败: ' + err.message;
             } finally {
                 btn.disabled = false;
-                btn.textContent = '🔄 刷新数据';
+                btn.textContent = '刷新数据';
             }
         }
 

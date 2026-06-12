@@ -9,6 +9,7 @@
 
 移植自 quant_app/services/strategy_service.py (lines ~2480-2625)。
 """
+
 import logging
 
 import pymysql
@@ -209,7 +210,9 @@ def filter_hot_money(
             c["risk_reason"] = "游资出货: " + "; ".join(info["reasons"]) + f"({info['score']}分)"
             logger.info(
                 "游资排除: %s(%s) %d分 %s",
-                c["name"], c["ts_code"], info["score"],
+                c["name"],
+                c["ts_code"],
+                info["score"],
                 "; ".join(info["reasons"]),
             )
 

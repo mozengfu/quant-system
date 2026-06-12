@@ -1,6 +1,7 @@
 """
 策略选股 API 路由 — 扫描 / 筛选 / ML预测
 """
+
 import json
 import logging
 import os
@@ -11,12 +12,15 @@ from pathlib import Path
 from fastapi import APIRouter, Cookie, HTTPException
 from fastapi import Request as FastAPIRequest
 
-from app_core import (
-    get_client_ip,
-    get_current_user,
-    save_access_log,
+from quant_app.routes.auth import get_current_user
+from quant_app.services.strategy_service import (
     scan_daily_pool,
     strategy_scan,
+)
+from quant_app.utils.config import db_connection
+from quant_app.utils.persistence import (
+    get_client_ip,
+    save_access_log,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,6 +32,7 @@ router = APIRouter(tags=["scanning"])
 
 
 # ========== 策略选股 ==========
+
 
 @router.get("/api/scan")
 def scan(request: FastAPIRequest, block: str = "", market: str = "", token: str = Cookie(None)):
@@ -61,63 +66,58 @@ def scan_strong(request: FastAPIRequest, block: str = "", market: str = "", toke
     save_access_log(user, get_client_ip(request), "查看强势活跃股票池")
 
     try:
-        import pymysql
+        with db_connection(connect_timeout=3) as conn:
+            cursor = conn.cursor()
 
-        from quant_app.utils.config import get_db_config
-        db_config = get_db_config(connect_timeout=3)
-        conn = pymysql.connect(**db_config)
-        cursor = conn.cursor()
+            # 最新扫描日期
+            cursor.execute("SELECT MAX(snap_date) FROM quant_db.stock_pool_snap")
+            latest_date = cursor.fetchone()[0]
+            if not latest_date:
+                return {"stocks": [], "scan_type": "强势活跃策略", "error": "股票池为空，请先执行扫描"}
 
-        # 最新扫描日期
-        cursor.execute("SELECT MAX(snap_date) FROM quant_db.stock_pool_snap")
-        latest_date = cursor.fetchone()[0]
-        if not latest_date:
-            return {"stocks": [], "scan_type": "强势活跃策略", "error": "股票池为空，请先执行扫描"}
+            # 市场过滤
+            market_filter = ""
+            market_pattern = None
+            if market == "创业板":
+                market_filter = " AND ts_code LIKE %s"
+                market_pattern = "30%"
+            elif market == "沪市主板":
+                market_filter = " AND ts_code LIKE %s"
+                market_pattern = "60%"
+            elif market == "深市主板":
+                market_filter = " AND (ts_code LIKE %s OR ts_code LIKE %s)"
+                market_pattern = ("00%", "01%")
+            elif market == "科创板":
+                market_filter = " AND ts_code LIKE %s"
+                market_pattern = "68%"
 
-        # 市场过滤
-        market_filter = ""
-        market_pattern = None
-        if market == "创业板":
-            market_filter = " AND ts_code LIKE %s"
-            market_pattern = "30%"
-        elif market == "沪市主板":
-            market_filter = " AND ts_code LIKE %s"
-            market_pattern = "60%"
-        elif market == "深市主板":
-            market_filter = " AND (ts_code LIKE %s OR ts_code LIKE %s)"
-            market_pattern = ("00%", "01%")
-        elif market == "科创板":
-            market_filter = " AND ts_code LIKE %s"
-            market_pattern = "68%"
+            # 板块过滤
+            block_filter = ""
+            block_pattern = None
+            if block and block not in ["沪市主板", "深市主板", "创业板", "科创板"]:
+                block_filter = " AND industry LIKE %s"
+                block_pattern = f"%{block}%"
 
-        # 板块过滤
-        block_filter = ""
-        block_pattern = None
-        if block and block not in ['沪市主板', '深市主板', '创业板', '科创板']:
-            block_filter = " AND industry LIKE %s"
-            block_pattern = f"%{block}%"
+            # 构建参数列表
+            params = [latest_date]
+            if isinstance(market_pattern, tuple):
+                params.extend(market_pattern)
+            elif market_pattern:
+                params.append(market_pattern)
+            if block_pattern:
+                params.append(block_pattern)
 
-        # 构建参数列表
-        params = [latest_date]
-        if isinstance(market_pattern, tuple):
-            params.extend(market_pattern)
-        elif market_pattern:
-            params.append(market_pattern)
-        if block_pattern:
-            params.append(block_pattern)
-
-        sql = f"""
-            SELECT snap_date, ts_code, name, industry, price, change_pct,
-                   turnover_rate, vol_ratio, quick_score, entry_reason, today_rank
-            FROM quant_db.stock_pool_snap
-            WHERE snap_date = %s{market_filter}{block_filter}
-            ORDER BY quick_score DESC, today_rank ASC
-            LIMIT 100
-        """
-        cursor.execute(sql, params)
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
+            sql = f"""
+                SELECT snap_date, ts_code, name, industry, price, change_pct,
+                       turnover_rate, vol_ratio, quick_score, entry_reason, today_rank
+                FROM quant_db.stock_pool_snap
+                WHERE snap_date = %s{market_filter}{block_filter}
+                ORDER BY quick_score DESC, today_rank ASC
+                LIMIT 100
+            """
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+            cursor.close()
 
         stocks = []
         for r in rows:
@@ -129,34 +129,36 @@ def scan_strong(request: FastAPIRequest, block: str = "", market: str = "", toke
             vr = float(r[7]) if r[7] else 0
             score = float(r[8]) if r[8] else 0
 
-            stocks.append({
-                "代码": code_full,
-                "交易所": mkt,
-                "名称": r[2] or "",
-                "行业": r[3] or "",
-                "现价": float(r[4]) if r[4] else 0,
-                "涨跌幅": f"{pct:+.2f}%",
-                "换手率": f"{tr:.2f}%",
-                "量比": f"{vr:.2f}",
-                "综合评分": round(score, 0),
-                "入选理由": r[9] or "",
-                "今日排名": r[10] or 0,
-            })
+            stocks.append(
+                {
+                    "代码": code_full,
+                    "交易所": mkt,
+                    "名称": r[2] or "",
+                    "行业": r[3] or "",
+                    "现价": float(r[4]) if r[4] else 0,
+                    "涨跌幅": f"{pct:+.2f}%",
+                    "换手率": f"{tr:.2f}%",
+                    "量比": f"{vr:.2f}",
+                    "综合评分": round(score, 0),
+                    "入选理由": r[9] or "",
+                    "今日排名": r[10] or 0,
+                }
+            )
 
         # ML增强评分
         try:
             from ml_predict import ml_enhanced_score
-            conn2 = pymysql.connect(**db_config)
-            stocks = ml_enhanced_score(stocks, db_conn=conn2)
-            conn2.close()
+
+            with db_connection(connect_timeout=3) as ml_conn:
+                stocks = ml_enhanced_score(stocks, db_conn=ml_conn)
         except Exception as e:
-            logger.info(f"ML增强不可用: {e}")
+            logger.info("ML增强不可用: %s", e)
             for s in stocks:
-                s['ml概率'] = 0.5
-                s['增强评分'] = s.get('综合评分', 0)
-                s['市场状态'] = ''
-                s['热点板块'] = ''
-                s['资金趋势'] = ''
+                s["ml概率"] = 0.5
+                s["增强评分"] = s.get("综合评分", 0)
+                s["市场状态"] = ""
+                s["热点板块"] = ""
+                s["资金趋势"] = ""
 
         # 获取板块趋势信息
         top5_concepts = []
@@ -168,20 +170,21 @@ def scan_strong(request: FastAPIRequest, block: str = "", market: str = "", toke
                 if "top5_concepts" in concept_data:
                     top5_concepts = concept_data["top5_concepts"]
         except Exception as e:
-            logger.error(f"读取概念趋势失败: {e}")
+            logger.error("读取概念趋势失败: %s", e)
 
         # 大盘情绪
         try:
-            from market_state import get_market_state
+            from quant_app.services.market_state import get_market_state
+
             ms_strong = get_market_state()
-            ms_name = ms_strong.get('state_name', '')
-            ms_advice = ms_strong.get('advice', '')
+            ms_name = ms_strong.get("state_name", "")
+            ms_advice = ms_strong.get("advice", "")
             market_stance = f"{ms_name}，{ms_advice}" if ms_name else "震荡整理"
         except Exception:
             market_stance = "震荡整理"
 
         return {
-            "scan_date": latest_date.strftime("%Y%m%d") if hasattr(latest_date, 'strftime') else str(latest_date),
+            "scan_date": latest_date.strftime("%Y%m%d") if hasattr(latest_date, "strftime") else str(latest_date),
             "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "total_candidates": len(stocks),
             "stocks": stocks,
@@ -190,7 +193,8 @@ def scan_strong(request: FastAPIRequest, block: str = "", market: str = "", toke
             "market_stance": market_stance,
         }
     except Exception as e:
-        return {"stocks": [], "scan_type": "强势活跃策略", "error": str(e)}
+        logger.error("强势活跃扫描失败: %s", e, exc_info=True)
+        return {"stocks": [], "scan_type": "强势活跃策略", "error": "扫描失败，请稍后重试"}
 
 
 @router.get("/api/scan/aimodel")
@@ -203,117 +207,112 @@ def scan_aimodel(request: FastAPIRequest, block: str = "", market: str = "", tok
 
     try:
         import numpy as np
-        import pymysql
-
-        from quant_app.utils.config import get_db_config
-
-        db_config = get_db_config(connect_timeout=3)
-        conn = pymysql.connect(**db_config)
 
         # ML模型选股 — 自动选择最佳模型(V6.2 > V6)
         from ml_predict import _build_features_for_stocks_v6, _build_features_for_stocks_v6_2, _load_best_model
 
         bundle, version = _load_best_model()
         if bundle is None:
-            conn.close()
             return {"stocks": [], "error": "ML模型不可用"}
 
-        # 获取全市场 ts_code 列表
-        cur = conn.cursor()
-        cur.execute("SELECT ts_code FROM stock_info WHERE ts_code NOT LIKE '688%%' AND ts_code NOT LIKE '8%%' AND ts_code NOT LIKE '4%%' AND ts_code NOT LIKE '9%%'")
-        all_codes = [r[0] for r in cur.fetchall()]
-        cur.close()
+        with db_connection(connect_timeout=3) as conn:
+            # 获取全市场 ts_code 列表
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT ts_code FROM stock_info WHERE ts_code NOT LIKE '688%%' AND ts_code NOT LIKE '8%%' AND ts_code NOT LIKE '4%%' AND ts_code NOT LIKE '9%%'"
+            )
+            all_codes = [r[0] for r in cur.fetchall()]
+            cur.close()
 
-        # 根据版本选择特征构建器和推理方式
-        if version == "v6.2":
-            features = _build_features_for_stocks_v6_2(conn, all_codes)
-        else:
-            features = _build_features_for_stocks_v6(conn, all_codes)
-        if features.empty:
-            conn.close()
-            return {"stocks": [], "error": "特征构建失败"}
+            # 根据版本选择特征构建器和推理方式
+            if version == "v6.2":
+                features = _build_features_for_stocks_v6_2(conn, all_codes)
+            else:
+                features = _build_features_for_stocks_v6(conn, all_codes)
+            if features.empty:
+                return {"stocks": [], "error": "特征构建失败"}
 
-        latest_date = features['trade_date'].max() if 'trade_date' in features.columns else None
+            latest_date = features["trade_date"].max() if "trade_date" in features.columns else None
 
-        feature_cols = bundle['feature_cols']
-        medians = bundle.get('global_medians', {})
-        for col in feature_cols:
-            if col not in features.columns:
-                features[col] = medians.get(col, 0.0)
-            elif features[col].isna().any():
-                features[col] = features[col].fillna(medians.get(col, 0.0))
+            feature_cols = bundle["feature_cols"]
+            medians = bundle.get("global_medians", {})
+            for col in feature_cols:
+                if col not in features.columns:
+                    features[col] = medians.get(col, 0.0)
+                elif features[col].isna().any():
+                    features[col] = features[col].fillna(medians.get(col, 0.0))
 
-        X = features[feature_cols].values.astype(np.float32)
+            X = features[feature_cols].values.astype(np.float32)
 
-        if version == "v6.2" and 'models' in bundle:
-            # 集成预测：所有子模型取均值
-            preds = np.zeros((len(X), len(bundle['models'])))
-            for i, model in enumerate(bundle['models']):
-                preds[:, i] = model.predict(X)
-            pred_returns = np.mean(preds, axis=1)
-        else:
-            pred_returns = bundle['model'].predict(X)
-        features['ml_score'] = pred_returns
-        features['rank_pct'] = (pred_returns.argsort().argsort() + 1) / len(pred_returns) * 100
+            if version == "v6.2" and "models" in bundle:
+                preds = np.zeros((len(X), len(bundle["models"])))
+                for i, model in enumerate(bundle["models"]):
+                    preds[:, i] = model.predict(X)
+                pred_returns = np.mean(preds, axis=1)
+            else:
+                pred_returns = bundle["model"].predict(X)
+            features["ml_score"] = pred_returns
+            features["rank_pct"] = (pred_returns.argsort().argsort() + 1) / len(pred_returns) * 100
 
-        # 按ML得分排序
-        features = features.sort_values('ml_score', ascending=False)
+            features = features.sort_values("ml_score", ascending=False)
 
-        # 先关联stock_info获取industry（用于板块过滤）
-        cursor = conn.cursor()
-        cursor.execute("SELECT ts_code, industry FROM stock_info")
-        industry_map = {r[0]: r[1] for r in cursor.fetchall()}
-        features['industry'] = features['ts_code'].map(industry_map).fillna('')
+            cursor = conn.cursor()
+            cursor.execute("SELECT ts_code, industry FROM stock_info")
+            industry_map = {r[0]: r[1] for r in cursor.fetchall()}
+            features["industry"] = features["ts_code"].map(industry_map).fillna("")
 
-        # 市场过滤
-        if market == "创业板":
-            features = features[features['ts_code'].str.startswith('30')]
-        elif market == "沪市主板":
-            features = features[features['ts_code'].str.startswith('60')]
-        elif market == "深市主板":
-            features = features[features['ts_code'].str.startswith(('00', '01'))]
-        elif market == "科创板":
-            features = features[features['ts_code'].str.startswith('68')]
-        elif block and block not in ['沪市主板', '深市主板', '创业板', '科创板', '全市场']:
-            features = features[features['industry'].astype(str).str.contains(block, na=False)]
+            # 市场过滤
+            if market == "创业板":
+                features = features[features["ts_code"].str.startswith("30")]
+            elif market == "沪市主板":
+                features = features[features["ts_code"].str.startswith("60")]
+            elif market == "深市主板":
+                features = features[features["ts_code"].str.startswith(("00", "01"))]
+            elif market == "科创板":
+                features = features[features["ts_code"].str.startswith("68")]
+            elif block and block not in ["沪市主板", "深市主板", "创业板", "科创板", "全市场"]:
+                features = features[features["industry"].astype(str).str.contains(block, na=False)]
 
-        # 取Top 50
-        top_stocks = features.head(50).copy()
+            top_stocks = features.head(50).copy()
 
-        # 获取最新价格数据 + 股票名称
-        latest_str = latest_date.strftime('%Y%m%d') if hasattr(latest_date, 'strftime') else str(latest_date).replace('-', '')
-        cursor = conn.cursor()
+            latest_str = (
+                latest_date.strftime("%Y%m%d") if hasattr(latest_date, "strftime") else str(latest_date).replace("-", "")
+            )
+            cursor = conn.cursor()
 
-        top_codes = list(top_stocks['ts_code'])
-        placeholders = ','.join(['%s'] * len(top_codes))
+            top_codes = list(top_stocks["ts_code"])
+            placeholders = ",".join(["%s"] * len(top_codes))
 
-        cursor.execute(f"""
-            SELECT ts_code, name, industry FROM stock_info WHERE ts_code IN ({placeholders})
-        """, top_codes)
-        name_map = {}
-        for row in cursor.fetchall():
-            name_map[row[0]] = {'name': row[1], 'industry': row[2]}
+            cursor.execute(
+                f"""
+                SELECT ts_code, name, industry FROM stock_info WHERE ts_code IN ({placeholders})
+            """,
+                top_codes,
+            )
+            name_map = {}
+            for row in cursor.fetchall():
+                name_map[row[0]] = {"name": row[1], "industry": row[2]}
 
-        cursor.execute("""
-            SELECT ts_code, close, pct_chg, turnover_rate, volume_ratio
-            FROM daily_price WHERE trade_date = %s
-        """, (latest_str,))
-        price_map = {}
-        for row in cursor.fetchall():
-            price_map[row[0]] = {
-                'close': row[1], 'pct_chg': row[2],
-                'turnover_rate': row[3], 'volume_ratio': row[4]
-            }
-        cursor.close()
+            cursor.execute(
+                """
+                SELECT ts_code, close, pct_chg, turnover_rate, volume_ratio
+                FROM daily_price WHERE trade_date = %s
+            """,
+                (latest_str,),
+            )
+            price_map = {}
+            for row in cursor.fetchall():
+                price_map[row[0]] = {"close": row[1], "pct_chg": row[2], "turnover_rate": row[3], "volume_ratio": row[4]}
+            cursor.close()
 
         stocks = []
         for _, row in top_stocks.iterrows():
-            code = row['ts_code']
-            code_short = code.split('.')[0]
+            code = row["ts_code"]
+            code_short = code.split(".")[0]
             info = name_map.get(code, {})
             p = price_map.get(code, {})
 
-            rank_pct = row['rank_pct']
+            rank_pct = row["rank_pct"]
             if rank_pct >= 99:
                 reason = "⭐ AI强推荐"
             elif rank_pct >= 95:
@@ -321,20 +320,20 @@ def scan_aimodel(request: FastAPIRequest, block: str = "", market: str = "", tok
             else:
                 reason = "✅ AI关注"
 
-            stocks.append({
-                "code": code_short,
-                "name": info.get('name', code_short),
-                "industry": info.get('industry', ''),
-                "price": f"{p.get('close', 0):.2f}" if p.get('close') else '--',
-                "change_pct": f"{p.get('pct_chg', 0):+.2f}%" if p.get('pct_chg') is not None else '--',
-                "turnover_rate": f"{p.get('turnover_rate', 0):.1f}%" if p.get('turnover_rate') else '--',
-                "vol_ratio": f"{p.get('volume_ratio', 0):.2f}" if p.get('volume_ratio') else '--',
-                "ml_score": float(row['ml_score']),
-                "rank_pct": float(rank_pct),
-                "reason": reason,
-            })
-
-        conn.close()
+            stocks.append(
+                {
+                    "code": code_short,
+                    "name": info.get("name", code_short),
+                    "industry": info.get("industry", ""),
+                    "price": f"{p.get('close', 0):.2f}" if p.get("close") else "--",
+                    "change_pct": f"{p.get('pct_chg', 0):+.2f}%" if p.get("pct_chg") is not None else "--",
+                    "turnover_rate": f"{p.get('turnover_rate', 0):.1f}%" if p.get("turnover_rate") else "--",
+                    "vol_ratio": f"{p.get('volume_ratio', 0):.2f}" if p.get("volume_ratio") else "--",
+                    "ml_score": float(row["ml_score"]),
+                    "rank_pct": float(rank_pct),
+                    "reason": reason,
+                }
+            )
 
         return {
             "stocks": stocks,
@@ -346,12 +345,12 @@ def scan_aimodel(request: FastAPIRequest, block: str = "", market: str = "", tok
             "total_returned": len(stocks),
         }
     except Exception as e:
-        import traceback
-        logger.error(f"AI模型选股失败: {e}\n{traceback.format_exc()}")
-        return {"stocks": [], "error": f"扫描失败: {str(e)}"}
+        logger.error("AI模型选股失败: %s", e, exc_info=True)
+        return {"stocks": [], "error": "扫描失败，请稍后重试"}
 
 
 # ========== AI每日精选 TOP5 ==========
+
 
 @router.get("/api/scan/top5")
 def scan_top5_daily(request: FastAPIRequest, token: str = Cookie(None)):
@@ -362,15 +361,10 @@ def scan_top5_daily(request: FastAPIRequest, token: str = Cookie(None)):
     save_access_log(user, get_client_ip(request), "AI每日精选TOP5")
 
     try:
-        import pymysql
-
         from quant_app.services.strategy_service import generate_v4_ml_top5
-        from quant_app.utils.config import get_db_config
 
-        db_config = get_db_config(connect_timeout=3)
-        conn = pymysql.connect(**db_config)
-        top5 = generate_v4_ml_top5(conn)
-        conn.close()
+        with db_connection(connect_timeout=3) as conn:
+            top5 = generate_v4_ml_top5(conn)
 
         return {
             "stocks": top5,
@@ -379,12 +373,12 @@ def scan_top5_daily(request: FastAPIRequest, token: str = Cookie(None)):
             "strategy": "Pure ML Filter" if os.environ.get("PURE_ML", "0") == "1" else "V4+ML Filter",
         }
     except Exception as e:
-        import traceback
-        logger.error(f"AI精选TOP5失败: {e}\n{traceback.format_exc()}")
-        return {"stocks": [], "error": str(e)}
+        logger.error("AI精选TOP5失败: %s", e, exc_info=True)
+        return {"stocks": [], "error": "查询失败，请稍后重试"}
 
 
 # ========== AI模拟组合 API ==========
+
 
 @router.get("/api/ai_sim/performance")
 def ai_sim_performance(request: FastAPIRequest, token: str = Cookie(None)):
@@ -395,24 +389,18 @@ def ai_sim_performance(request: FastAPIRequest, token: str = Cookie(None)):
     save_access_log(user, get_client_ip(request), "AI模拟组合查询")
 
     try:
-        import pymysql
-
         from ai_sim_trading import compute_summary, get_performance_report, init_tables, update_performance
-        from quant_app.utils.config import get_db_config
 
-        db_config = get_db_config(connect_timeout=3)
-        conn = pymysql.connect(**db_config)
-        init_tables(conn)
-        update_performance(conn)
-        compute_summary(conn)
-        report = get_performance_report(conn)
-        conn.close()
+        with db_connection(connect_timeout=3) as conn:
+            init_tables(conn)
+            update_performance(conn)
+            compute_summary(conn)
+            report = get_performance_report(conn)
 
         return report
     except Exception as e:
-        import traceback
-        logger.error(f"AI模拟组合查询失败: {e}\n{traceback.format_exc()}")
-        return {"error": str(e)}
+        logger.error("AI模拟组合查询失败: %s", e, exc_info=True)
+        return {"error": "查询失败，请稍后重试"}
 
 
 @router.post("/api/ai_sim/run")
@@ -424,27 +412,22 @@ def ai_sim_run_today(request: FastAPIRequest, token: str = Cookie(None)):
     save_access_log(user, get_client_ip(request), "AI模拟组合记录")
 
     try:
-        import pymysql
-
         from ai_sim_trading import compute_summary, init_tables, record_daily_top5, update_performance
-        from quant_app.utils.config import get_db_config
 
-        db_config = get_db_config(connect_timeout=3)
-        conn = pymysql.connect(**db_config)
-        init_tables(conn)
-        record_daily_top5(conn)
-        update_performance(conn)
-        compute_summary(conn)
-        conn.close()
+        with db_connection(connect_timeout=3) as conn:
+            init_tables(conn)
+            record_daily_top5(conn)
+            update_performance(conn)
+            compute_summary(conn)
 
         return {"status": "ok", "message": "今日AI精选已记录"}
     except Exception as e:
-        import traceback
-        logger.error(f"AI模拟组合记录失败: {e}\n{traceback.format_exc()}")
-        return {"error": str(e)}
+        logger.error("AI模拟组合记录失败: %s", e, exc_info=True)
+        return {"error": "操作失败，请稍后重试"}
 
 
 # ========== 底部起步 / 组合策略 ==========
+
 
 @router.get("/api/combo_scan")
 def scan_combo(request: FastAPIRequest, block: str = "", market: str = "", token: str = Cookie(None)):
@@ -455,85 +438,81 @@ def scan_combo(request: FastAPIRequest, block: str = "", market: str = "", token
     save_access_log(user, get_client_ip(request), f"组合策略扫描 {block or market}")
 
     try:
-        import pymysql
-
         from quant_app.services.strategy_service import generate_v4_ml_candidates
-        from quant_app.utils.config import get_db_config
-        db_config = get_db_config(connect_timeout=3)
-        conn = pymysql.connect(**db_config)
 
-        candidates, display_date = generate_v4_ml_candidates(
-            conn, market=market if market else None,
-            block=block if block else None, limit=50
-        )
-        conn.close()
+        with db_connection(connect_timeout=3) as conn:
+            candidates, display_date = generate_v4_ml_candidates(
+                conn, market=market if market else None, block=block if block else None, limit=50
+            )
 
         if not candidates:
             return {
                 "stocks": [],
                 "scan_type": "ML选股策略",
-                "scan_date": display_date or datetime.now().strftime('%Y-%m-%d'),
-                "error": "技术筛选无结果"
+                "scan_date": display_date or datetime.now().strftime("%Y-%m-%d"),
+                "error": "技术筛选无结果",
             }
 
         stocks = []
         for c in candidates:
-            ts_code = c['ts_code']
+            ts_code = c["ts_code"]
             code_raw = ts_code.split(".")[0]
             mkt = "sz" if ts_code.endswith(".SZ") else "sh"
             code_full = f"{mkt.upper()}{code_raw}"
 
             # ML 得分 → 排序强度 / ml概率 映射
-            ml_score = c.get('ml_score', 0)
+            ml_score = c.get("ml_score", 0)
             # ml_score 为模型预测收益，概率用 sigmoid 简单映射
             import math
+
             ml_prob = 1 / (1 + math.exp(-ml_score)) if ml_score != 0 else 0.5
 
             reasons = []
-            if c.get('main_net', 0) > 1000:
+            if c.get("main_net", 0) > 1000:
                 reasons.append(f"主力净流入{c['main_net']:.0f}万")
-            if c['volume_ratio'] > 2:
+            if c["volume_ratio"] > 2:
                 reasons.append(f"量比{c['volume_ratio']:.2f}")
-            if c['rps_20'] >= 60:
+            if c["rps_20"] >= 60:
                 reasons.append(f"RPS{c['rps_20']:.0f}")
             if not reasons:
                 reasons.append("V4+ML达标")
 
-            stocks.append({
-                "代码": code_full,
-                "交易所": mkt,
-                "名称": c['name'],
-                "行业": c.get('industry', ''),
-                "现价": c['close'],
-                "涨跌幅": f"{c['pct_chg']:+.2f}%",
-                "换手率": f"{c['turnover_rate']:.2f}%",
-                "量比": f"{c['volume_ratio']:.2f}",
-                "V4评分": c.get('v4_score', 0),
-                "ML得分": ml_score,
-                "综合评分": c.get('blended_score', c.get('v4_score', 0)),
-                "预测收益": round(ml_score, 2),
-                "排序强度": round(ml_score, 2),
-                "ml概率": round(ml_prob, 4),
-                "主力评分": 0,
-                "阶段判断": "",
-                "龙虎榜加分": 0,
-                "股东加分": 0,
-                "入选理由": " | ".join(reasons),
-                "入选原因": " | ".join(reasons),
-                "ts_code": ts_code,
-            })
+            stocks.append(
+                {
+                    "代码": code_full,
+                    "交易所": mkt,
+                    "名称": c["name"],
+                    "行业": c.get("industry", ""),
+                    "现价": c["close"],
+                    "涨跌幅": f"{c['pct_chg']:+.2f}%",
+                    "换手率": f"{c['turnover_rate']:.2f}%",
+                    "量比": f"{c['volume_ratio']:.2f}",
+                    "V4评分": c.get("v4_score", 0),
+                    "ML得分": ml_score,
+                    "综合评分": c.get("blended_score", c.get("v4_score", 0)),
+                    "预测收益": round(ml_score, 2),
+                    "排序强度": round(ml_score, 2),
+                    "ml概率": round(ml_prob, 4),
+                    "主力评分": 0,
+                    "阶段判断": "",
+                    "龙虎榜加分": 0,
+                    "股东加分": 0,
+                    "入选理由": " | ".join(reasons),
+                    "入选原因": " | ".join(reasons),
+                    "ts_code": ts_code,
+                }
+            )
 
         return {
-            "scan_date": display_date or datetime.now().strftime('%Y-%m-%d'),
+            "scan_date": display_date or datetime.now().strftime("%Y-%m-%d"),
             "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "total_candidates": len(stocks),
             "stocks": stocks,
             "scan_type": "ML选股策略",
         }
     except Exception as e:
-        import traceback
-        logger.error(f"combo_scan error: {traceback.format_exc()}")
-        return {"stocks": [], "scan_type": "ML选股策略", "error": str(e)}
+        logger.error("combo_scan error: %s", e, exc_info=True)
+        return {"stocks": [], "scan_type": "ML选股策略", "error": "扫描失败，请稍后重试"}
 
 
 @router.get("/api/scan/v5")
@@ -545,26 +524,25 @@ def scan_v5(request: FastAPIRequest, block: str = "", market: str = "", token: s
     save_access_log(user, get_client_ip(request), f"V5缩量回踩扫描 {block or market}")
 
     try:
-        import pymysql
+        with db_connection(connect_timeout=3) as conn:
+            cursor = conn.cursor()
 
-        from quant_app.utils.config import get_db_config
-        db_config = get_db_config(connect_timeout=3)
-        conn = pymysql.connect(**db_config)
-        cursor = conn.cursor()
+            cursor.execute("SELECT MAX(trade_date) FROM quant_db.daily_price")
+            latest_date = cursor.fetchone()[0]
+            if not latest_date:
+                return {"stocks": [], "scan_type": "V5缩量回踩", "error": "无交易数据"}
+            today_str = str(latest_date)
 
-        cursor.execute("SELECT MAX(trade_date) FROM quant_db.daily_price")
-        latest_date = cursor.fetchone()[0]
-        if not latest_date:
-            return {"stocks": [], "scan_type": "V5缩量回踩", "error": "无交易数据"}
-        today_str = str(latest_date)
-
-        # 获取前一个交易日
-        cursor.execute("""
-            SELECT trade_date FROM quant_db.daily_price
-            WHERE trade_date < %s ORDER BY trade_date DESC LIMIT 1
-        """, (today_str,))
-        prev_row = cursor.fetchone()
-        prev_date = str(prev_row[0]) if prev_row else None
+            # 获取前一个交易日
+            cursor.execute(
+                """
+                SELECT trade_date FROM quant_db.daily_price
+                WHERE trade_date < %s ORDER BY trade_date DESC LIMIT 1
+            """,
+                (today_str,),
+            )
+            prev_row = cursor.fetchone()
+            prev_date = str(prev_row[0]) if prev_row else None
 
         if market == "创业板":
             market_clause = " AND d.ts_code LIKE '30%%'"
@@ -577,7 +555,7 @@ def scan_v5(request: FastAPIRequest, block: str = "", market: str = "", token: s
         else:
             market_clause = ""
 
-        if block and block not in ['沪市主板', '深市主板', '创业板', '科创板']:
+        if block and block not in ["沪市主板", "深市主板", "创业板", "科创板"]:
             block_clause = " AND s.industry LIKE %s"
             block_val = f"%{block}%"
         else:
@@ -617,11 +595,14 @@ def scan_v5(request: FastAPIRequest, block: str = "", market: str = "", token: s
         prev_data = {}
         if prev_date and candidates:
             codes = [r[0] for r in candidates]
-            placeholders = ','.join(['%s'] * len(codes))
-            cursor.execute(f"""
+            placeholders = ",".join(["%s"] * len(codes))
+            cursor.execute(
+                f"""
                 SELECT ts_code, pct_chg FROM quant_db.daily_price
                 WHERE trade_date = %s AND ts_code IN ({placeholders})
-            """, (prev_date, *codes))
+            """,
+                (prev_date, *codes),
+            )
             for r in cursor.fetchall():
                 prev_data[r[0]] = float(r[1]) if r[1] else 0
 
@@ -629,23 +610,29 @@ def scan_v5(request: FastAPIRequest, block: str = "", market: str = "", token: s
         recent_vr = {}
         if candidates:
             codes = [r[0] for r in candidates]
-            placeholders = ','.join(['%s'] * len(codes))
+            placeholders = ",".join(["%s"] * len(codes))
             # 获取近3个交易日数据
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT trade_date FROM quant_db.daily_price
                 WHERE trade_date <= %s ORDER BY trade_date DESC LIMIT 3
-            """, (today_str,))
+            """,
+                (today_str,),
+            )
             recent_dates = [str(r[0]) for r in cursor.fetchall()]
 
             if len(recent_dates) >= 2 and codes:
-                date_placeholders = ','.join(['%s'] * len(recent_dates))
-                code_placeholders = ','.join(['%s'] * len(codes))
-                cursor.execute(f"""
+                date_placeholders = ",".join(["%s"] * len(recent_dates))
+                code_placeholders = ",".join(["%s"] * len(codes))
+                cursor.execute(
+                    f"""
                     SELECT ts_code, trade_date, volume_ratio FROM quant_db.daily_price
                     WHERE trade_date IN ({date_placeholders})
                     AND trade_date < %s
                     AND ts_code IN ({code_placeholders})
-                """, (*recent_dates, today_str, *codes))
+                """,
+                    (*recent_dates, today_str, *codes),
+                )
                 for r in cursor.fetchall():
                     key = r[0]
                     if key not in recent_vr:
@@ -653,7 +640,6 @@ def scan_v5(request: FastAPIRequest, block: str = "", market: str = "", token: s
                     recent_vr[key].append(float(r[2]) if r[2] else 0)
 
         cursor.close()
-        conn.close()
 
         # 第二步：Python 中应用 V5 精细过滤
         stocks = []
@@ -689,36 +675,46 @@ def scan_v5(request: FastAPIRequest, block: str = "", market: str = "", token: s
 
             # 综合评分
             score = 0
-            if vol_ratio > 2.0: score += 20
-            elif vol_ratio > 1.5: score += 15
-            else: score += 8
-            if d10 < 0.02: score += 20
-            elif d20 < 0.03: score += 15
-            else: score += 5
-            if rps >= 80: score += 10
-            elif rps >= 70: score += 8
+            if vol_ratio > 2.0:
+                score += 20
+            elif vol_ratio > 1.5:
+                score += 15
+            else:
+                score += 8
+            if d10 < 0.02:
+                score += 20
+            elif d20 < 0.03:
+                score += 15
+            else:
+                score += 5
+            if rps >= 80:
+                score += 10
+            elif rps >= 70:
+                score += 8
 
             code_raw = ts_code.split(".")[0]
             mkt = "sz" if ts_code.endswith(".SZ") else "sh"
             code_full = f"{mkt.upper()}{code_raw}"
 
-            stocks.append({
-                "代码": code_full,
-                "交易所": mkt,
-                "名称": name,
-                "行业": industry,
-                "现价": price,
-                "涨跌幅": f"{pct_chg:+.2f}%",
-                "换手率": f"{turnover:.2f}%",
-                "量比": f"{vol_ratio:.2f}",
-                "RPS": int(rps),
-                "综合评分": score,
-                "ts_code": ts_code,
-                "前日涨幅": f"{prev_data.get(ts_code, 0):+.2f}%",
-            })
+            stocks.append(
+                {
+                    "代码": code_full,
+                    "交易所": mkt,
+                    "名称": name,
+                    "行业": industry,
+                    "现价": price,
+                    "涨跌幅": f"{pct_chg:+.2f}%",
+                    "换手率": f"{turnover:.2f}%",
+                    "量比": f"{vol_ratio:.2f}",
+                    "RPS": int(rps),
+                    "综合评分": score,
+                    "ts_code": ts_code,
+                    "前日涨幅": f"{prev_data.get(ts_code, 0):+.2f}%",
+                }
+            )
 
         # 按综合评分排序
-        stocks.sort(key=lambda x: x.get('综合评分', 0), reverse=True)
+        stocks.sort(key=lambda x: x.get("综合评分", 0), reverse=True)
 
         return {
             "scan_date": latest_date.strftime("%Y%m%d") if hasattr(latest_date, "strftime") else today_str,
@@ -728,12 +724,12 @@ def scan_v5(request: FastAPIRequest, block: str = "", market: str = "", token: s
             "scan_type": "V5缩量回踩",
         }
     except Exception as e:
-        import traceback
-        logger.error(f"scan_v5 error: {traceback.format_exc()}")
-        return {"stocks": [], "scan_type": "V5缩量回踩", "error": str(e)}
+        logger.error("scan_v5 error: %s", e, exc_info=True)
+        return {"stocks": [], "scan_type": "V5缩量回踩", "error": "扫描失败，请稍后重试"}
 
 
 # ========== 大盘状态 ==========
+
 
 @router.get("/api/market_state")
 @router.get("/api/market/state")
@@ -742,32 +738,34 @@ def api_market_state(token: str = Cookie(None)):
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")
     try:
-        from market_state import get_market_state
         from ml_predict import get_market_info
+        from quant_app.services.market_state import get_market_state
+
         ms = get_market_state()
         rt = get_market_info()
         return {
-            'success': True,
-            'state': ms.get('state', 'range'),
-            'state_name': ms.get('state_name', '震荡'),
-            'score': ms.get('score', 0),
-            'advice': ms.get('advice', ''),
-            'params': ms.get('params', {}),
-            'mkt_chg': rt.get('mkt_chg', 0),
-            'breadth_ratio': rt.get('breadth_ratio', 50),
-            'up_cnt': rt.get('up_cnt', 0),
-            'total_cnt': rt.get('total_cnt', 0),
-            'date': rt.get('date', ''),
-            'source': rt.get('source', ''),
+            "success": True,
+            "state": ms.get("state", "range"),
+            "state_name": ms.get("state_name", "震荡"),
+            "score": ms.get("score", 0),
+            "advice": ms.get("advice", ""),
+            "params": ms.get("params", {}),
+            "mkt_chg": rt.get("mkt_chg", 0),
+            "breadth_ratio": rt.get("breadth_ratio", 50),
+            "up_cnt": rt.get("up_cnt", 0),
+            "total_cnt": rt.get("total_cnt", 0),
+            "date": rt.get("date", ""),
+            "source": rt.get("source", ""),
         }
     except Exception as e:
-        return {'success': False, 'error': str(e)}
+        logger.error("market_state查询失败: %s", e, exc_info=True)
+        return {"success": False, "error": "查询失败，请稍后重试"}
 
-
-# ========== 合并后的选股 API（P0）==========
 
 @router.get("/api/scan/rule")
-def scan_rule(request: FastAPIRequest, mode: str = "bottom", block: str = "", market: str = "", token: str = Cookie(None)):
+def scan_rule(
+    request: FastAPIRequest, mode: str = "bottom", block: str = "", market: str = "", token: str = Cookie(None)
+):
     """
     统一规则选股 API — 合并底部起步/强势活跃/组合策略
     mode: bottom | strong | combo
@@ -801,30 +799,29 @@ def scan_ml(request: FastAPIRequest, mode: str = "all", block: str = "", market:
     save_access_log(user, get_client_ip(request), f"AI选股({mode}) {block or market}")
 
     if mode == "top5":
-        import pymysql
-
         from quant_app.services.strategy_service import generate_v4_ml_top5
-        from quant_app.utils.config import get_db_config
-        _conn = pymysql.connect(**get_db_config())
-        top5 = generate_v4_ml_top5(_conn)
-        _conn.close()
+
+        with db_connection() as _conn:
+            top5 = generate_v4_ml_top5(_conn)
 
         stocks = []
         for s in top5:
-            code = s['ts_code'].split('.')[0]
-            stocks.append({
-                'rank': s.get('rank', 0),
-                'code': code,
-                'name': s['name'],
-                'industry': s.get('industry', ''),
-                'price': f"{s['close']:.2f}",
-                'change': f"{s['pct_chg']:+.2f}%",
-                'ml_score': s.get('ml_score', 0),
-                'total_score': s.get('total_score', s.get('v4_score', 0)),
-                'reasons': s.get('reasons', []),
-            })
+            code = s["ts_code"].split(".")[0]
+            stocks.append(
+                {
+                    "rank": s.get("rank", 0),
+                    "code": code,
+                    "name": s["name"],
+                    "industry": s.get("industry", ""),
+                    "price": f"{s['close']:.2f}",
+                    "change": f"{s['pct_chg']:+.2f}%",
+                    "ml_score": s.get("ml_score", 0),
+                    "total_score": s.get("total_score", s.get("v4_score", 0)),
+                    "reasons": s.get("reasons", []),
+                }
+            )
 
-        return {"stocks": stocks, "date": top5[0].get('date', datetime.now().strftime('%Y-%m-%d')) if top5 else ''}
+        return {"stocks": stocks, "date": top5[0].get("date", datetime.now().strftime("%Y-%m-%d")) if top5 else ""}
     else:
         # 复用 AI模型选股管道，取 top 10 或 top 50
         return scan_aimodel(request, block=block, market=market, token=token)
@@ -839,47 +836,45 @@ def scan_bottom_awakening(request: FastAPIRequest, token: str = Cookie(None)):
     save_access_log(user, get_client_ip(request), "底部苏醒选股")
 
     try:
-        import pymysql
-
         from quant_app.services.strategy_service import generate_bottom_awakening_top5
-        from quant_app.utils.config import get_db_config
 
-        db_config = get_db_config(connect_timeout=3)
-        conn = pymysql.connect(**db_config)
-        top5 = generate_bottom_awakening_top5(conn)
-        conn.close()
+        with db_connection(connect_timeout=3) as conn:
+            top5 = generate_bottom_awakening_top5(conn)
 
         stocks = []
         for s in top5:
-            code = s['ts_code'].split('.')[0]
-            stocks.append({
-                'rank': s.get('rank', 0),
-                'code': code,
-                'name': s['name'],
-                'industry': s.get('industry', ''),
-                'price': f"{s['close']:.2f}",
-                'change_pct': f"{s['pct_chg']:+.2f}%",
-                'turnover_rate': f"{s['turnover_rate']:.2f}%",
-                'vol_ratio': round(float(s.get('volume_ratio', 0)), 2),
-                'vol_expansion': round(float(s.get('vol_expansion', 0)), 2),
-                'position_52w': round(float(s.get('position_52w', 0)), 1),
-                'awakening_score': s.get('awakening_score', 0),
-                'rps_20': round(float(s.get('rps_20', 0)), 1),
-                'main_net': f"{float(s.get('main_net', 0)):.0f}万",
-                'reasons': s.get('entry_reason', '') if isinstance(s.get('entry_reason'), str) else ' | '.join(s.get('reasons', [])),
-                'ts_code': s['ts_code'],
-            })
+            code = s["ts_code"].split(".")[0]
+            stocks.append(
+                {
+                    "rank": s.get("rank", 0),
+                    "code": code,
+                    "name": s["name"],
+                    "industry": s.get("industry", ""),
+                    "price": f"{s['close']:.2f}",
+                    "change_pct": f"{s['pct_chg']:+.2f}%",
+                    "turnover_rate": f"{s['turnover_rate']:.2f}%",
+                    "vol_ratio": round(float(s.get("volume_ratio", 0)), 2),
+                    "vol_expansion": round(float(s.get("vol_expansion", 0)), 2),
+                    "position_52w": round(float(s.get("position_52w", 0)), 1),
+                    "awakening_score": s.get("awakening_score", 0),
+                    "rps_20": round(float(s.get("rps_20", 0)), 1),
+                    "main_net": f"{float(s.get('main_net', 0)):.0f}万",
+                    "reasons": s.get("entry_reason", "")
+                    if isinstance(s.get("entry_reason"), str)
+                    else " | ".join(s.get("reasons", [])),
+                    "ts_code": s["ts_code"],
+                }
+            )
 
         return {
             "stocks": stocks,
-            "scan_date": top5[0].get('date', '') if top5 else '',
+            "scan_date": top5[0].get("date", "") if top5 else "",
             "count": len(stocks),
             "scan_type": "底部苏醒策略",
         }
     except Exception as e:
-        import traceback
-        logger.error(f"底部苏醒扫描失败: {e}\n{traceback.format_exc()}")
-        return {"stocks": [], "error": str(e)}
+        logger.error("底部苏醒扫描失败: %s", e, exc_info=True)
+        return {"stocks": [], "error": "扫描失败，请稍后重试"}
 
 
 def _pick_best_from_combo(db_config, conn, latest_date):
@@ -930,8 +925,8 @@ def _pick_best_from_combo(db_config, conn, latest_date):
             try:
                 mf = calculate_mainforce_score(ts_code, latest_date)
             except Exception:
-                mf = {'score': 0}
-            mainforce_score = mf.get('score', 0)
+                mf = {"score": 0}
+            mainforce_score = mf.get("score", 0)
 
             code_raw = ts_code.split(".")[0]
             mkt = "sz" if ts_code.endswith(".SZ") else "sh"
@@ -941,21 +936,23 @@ def _pick_best_from_combo(db_config, conn, latest_date):
                 reasons.append("均线多头")
             if float(r[6] or 0) > 1.5:
                 reasons.append("量比充足")
-            if mf.get('net_flow', 0) > 0:
+            if mf.get("net_flow", 0) > 0:
                 reasons.append("主力净流入")
 
-            stocks.append({
-                "代码": code_full,
-                "名称": r[1] or "",
-                "行业": r[2] or "",
-                "现价": float(r[3]) if r[3] else 0,
-                "涨跌幅": f"{float(r[4]):+.2f}%",
-                "换手率": f"{float(r[5] or 0):.2f}%",
-                "量比": f"{float(r[6] or 0):.2f}",
-                "综合评分": mainforce_score,
-                "主力评分": mainforce_score,
-                "入选理由": " + ".join(reasons) if reasons else "技术面达标",
-            })
+            stocks.append(
+                {
+                    "代码": code_full,
+                    "名称": r[1] or "",
+                    "行业": r[2] or "",
+                    "现价": float(r[3]) if r[3] else 0,
+                    "涨跌幅": f"{float(r[4]):+.2f}%",
+                    "换手率": f"{float(r[5] or 0):.2f}%",
+                    "量比": f"{float(r[6] or 0):.2f}",
+                    "综合评分": mainforce_score,
+                    "主力评分": mainforce_score,
+                    "入选理由": " + ".join(reasons) if reasons else "技术面达标",
+                }
+            )
 
         if not stocks:
             return None
@@ -963,47 +960,50 @@ def _pick_best_from_combo(db_config, conn, latest_date):
         # ML增强
         try:
             from ml_predict import ml_enhanced_score
+
             stocks = ml_enhanced_score(stocks, db_conn=conn)
         except Exception:
             for s in stocks:
-                s['ml概率'] = 0.5
-                s['排序强度'] = 0.0
-                s['增强评分'] = round(s.get('综合评分', 0), 1)
-                s['热点板块'] = ''
-                s['资金趋势'] = ''
+                s["ml概率"] = 0.5
+                s["排序强度"] = 0.0
+                s["增强评分"] = round(s.get("综合评分", 0), 1)
+                s["热点板块"] = ""
+                s["资金趋势"] = ""
 
         # V11.0 ML排序：按排序强度降序
-        stocks.sort(key=lambda x: x.get('排序强度', 0), reverse=True)
+        stocks.sort(key=lambda x: x.get("排序强度", 0), reverse=True)
         top3 = stocks[:3]
 
         result = []
         for best in top3:
-            pred_ret = best.get('排序强度', 0)
+            pred_ret = best.get("排序强度", 0)
             if pred_ret > 0:
-                signal = '强'
+                signal = "强"
             elif pred_ret > -1:
-                signal = '中'
+                signal = "中"
             else:
-                signal = '弱'
-            price = best.get('现价', 0)
+                signal = "弱"
+            price = best.get("现价", 0)
 
-            result.append({
-                "代码": best.get('代码', ''),
-                "名称": best.get('名称', ''),
-                "行业": best.get('行业', ''),
-                "现价": price,
-                "涨跌幅": best.get('涨跌幅', ''),
-                "换手率": best.get('换手率', ''),
-                "量比": best.get('量比', ''),
-                "综合评分": best.get('综合评分', 0),
-                "预测收益": best.get('排序强度', 0),
-                "ml概率": best.get('ml概率', 0.5),
-                "热点板块": best.get('热点板块', ''),
-                "资金趋势": best.get('资金趋势', ''),
-                "信号强度": signal,
-                "入选理由": best.get('入选理由', ''),
-                "止损价": round(price * 0.97, 2),
-            })
+            result.append(
+                {
+                    "代码": best.get("代码", ""),
+                    "名称": best.get("名称", ""),
+                    "行业": best.get("行业", ""),
+                    "现价": price,
+                    "涨跌幅": best.get("涨跌幅", ""),
+                    "换手率": best.get("换手率", ""),
+                    "量比": best.get("量比", ""),
+                    "综合评分": best.get("综合评分", 0),
+                    "预测收益": best.get("排序强度", 0),
+                    "ml概率": best.get("ml概率", 0.5),
+                    "热点板块": best.get("热点板块", ""),
+                    "资金趋势": best.get("资金趋势", ""),
+                    "信号强度": signal,
+                    "入选理由": best.get("入选理由", ""),
+                    "止损价": round(price * 0.93, 2)  # 7%止损,
+                }
+            )
         return result
     except Exception as e:
         logger.info(f"组合策略推荐失败: {e}")
@@ -1011,6 +1011,7 @@ def _pick_best_from_combo(db_config, conn, latest_date):
 
 
 # ========== 股票池管理 ==========
+
 
 @router.get("/api/pool")
 def get_pool(token: str = Cookie(None)):
@@ -1030,12 +1031,13 @@ def clear_pool(token: str = Cookie(None)):
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")
     pool_file = os.path.join(DATA_DIR, "stock_pool.json")
-    with open(pool_file, 'w') as f:
+    with open(pool_file, "w") as f:
         json.dump({"last_scan": None, "stocks": [], "strategy": None}, f, ensure_ascii=False, indent=2)
     return {"ok": True}
 
 
 # ========== ML Top15 独立选股 ==========
+
 
 @router.get("/api/ml_top15")
 def ml_top15_scan(request: FastAPIRequest, token: str = Cookie(None)):
@@ -1046,157 +1048,166 @@ def ml_top15_scan(request: FastAPIRequest, token: str = Cookie(None)):
     save_access_log(user, get_client_ip(request), "ML Top15选股")
 
     try:
-        import pymysql
-
-        from quant_app.utils.config import get_db_config
-        db_config = get_db_config(connect_timeout=3)
-        conn = pymysql.connect(**db_config)
-        cursor = conn.cursor()
-
-        # 先查缓存（当天）
-        cursor.execute("SELECT MAX(trade_date) FROM daily_price")
-        latest_date = cursor.fetchone()[0]
-        if not latest_date:
-            return {"stocks": [], "model": "none", "error": "无交易数据"}
-
-        date_str = str(latest_date)
-
-        # 查 ml_predictions 表是否有当天数据
-        cursor.execute("SELECT COUNT(*) FROM ml_predictions WHERE trade_date = %s", (date_str,))
-        if cursor.fetchone()[0] > 0:
-            # 用缓存数据
-            cursor.execute("""
-                SELECT ts_code, _ml_pred, predicted_return, model_type
-                FROM ml_predictions WHERE trade_date = %s
-                ORDER BY _ml_pred DESC LIMIT 15
-            """, (date_str,))
-            ml_rows = cursor.fetchall()
-
-            if ml_rows:
-                codes = [r[0] for r in ml_rows]
-                placeholders = ','.join(['%s'] * len(codes))
-                cursor.execute(f"""
-                    SELECT s.ts_code, name, industry, close, pct_chg,
-                           volume_ratio, turnover_rate, rps_20, amount
-                    FROM stock_info s
-                    JOIN daily_price d ON s.ts_code COLLATE utf8mb4_unicode_ci = d.ts_code COLLATE utf8mb4_unicode_ci AND d.trade_date = %s
-                    WHERE s.ts_code IN ({placeholders})
-                """, (date_str, *codes))
-                stock_map = {}
-                for r in cursor.fetchall():
-                    stock_map[r[0]] = {
-                        'ts_code': r[0], 'name': r[1], 'industry': r[2],
-                        'close': float(r[3] or 0), 'pct_chg': float(r[4] or 0),
-                        'volume_ratio': float(r[5] or 0), 'turnover_rate': float(r[6] or 0),
-                        'rps_20': float(r[7] or 0), 'amount': float(r[8] or 0),
-                    }
-
-                stocks = []
-                for row in ml_rows:
-                    tc, pred, ret, mtype = row
-                    info = stock_map.get(tc, {})
-                    stocks.append({
-                        'ts_code': tc,
-                        'name': info.get('name', ''),
-                        'industry': info.get('industry', ''),
-                        'close': info.get('close', 0),
-                        'pct_chg': info.get('pct_chg', 0),
-                        'volume_ratio': info.get('volume_ratio', 0),
-                        'turnover_rate': info.get('turnover_rate', 0),
-                        'rps_20': info.get('rps_20', 0),
-                        'amount': info.get('amount', 0),
-                        'ml_prob': round(pred, 3),
-                        'ml_pred_return': round(ret, 2),
-                    '排序强度': round(ret, 2),
-                        'model_type': mtype,
-                    })
-
-                cursor.close()
-                conn.close()
-                return {
-                    "stocks": stocks,
-                    "scan_date": date_str,
-                    "model": ml_rows[0][3] if ml_rows else "unknown",
-                    "cache": True,
-                }
-
-        # 无缓存，实时预测（与建仓推荐一致：纯ML成交额Top300排序）
-        cursor.close()
-        conn.close()
+        import math
 
         from quant_app.services.strategy_service import generate_v4_ml_candidates
-        # PURE_ML=1 由环境变量控制（默认开启）
-        conn2 = pymysql.connect(**db_config)
-        candidates, _ = generate_v4_ml_candidates(conn2, limit=15)
 
-        if not candidates:
-            conn2.close()
-            return {"stocks": [], "model": "v11.0", "error": "无候选股"}
+        with db_connection(connect_timeout=3) as conn:
+            cursor = conn.cursor()
 
-        top15_data = []
-        for c in candidates[:15]:
-            ml_score = c.get('ml_score', 0)
-            import math
-            prob = 1 / (1 + math.exp(-ml_score)) if ml_score != 0 else 0.5
-            top15_data.append((c['ts_code'], prob, ml_score, 'v11.0'))
+            # 先查缓存（当天）
+            cursor.execute("SELECT MAX(trade_date) FROM daily_price")
+            latest_date = cursor.fetchone()[0]
+            if not latest_date:
+                return {"stocks": [], "model": "none", "error": "无交易数据"}
 
-        # 写入库（全量写入，异步缓存用）
-        conn3 = pymysql.connect(**db_config)
-        cursor3 = conn3.cursor()
-        try:
-            cursor3.execute("DELETE FROM ml_predictions WHERE trade_date = %s", (date_str,))
-            for tc, prob, ret, mt in top15_data:
-                cursor3.execute(
-                    """INSERT INTO ml_predictions (ts_code, trade_date, _ml_pred, predicted_return, model_type)
-                       VALUES (%s, %s, %s, %s, %s)""",
-                    (tc, date_str, prob, ret, mt)
+            date_str = str(latest_date)
+
+            # 查 ml_predictions 表是否有当天数据
+            cursor.execute("SELECT COUNT(*) FROM ml_predictions WHERE trade_date = %s", (date_str,))
+            if cursor.fetchone()[0] > 0:
+                cursor.execute(
+                    """
+                    SELECT ts_code, _ml_pred, predicted_return, model_type
+                    FROM ml_predictions WHERE trade_date = %s
+                    ORDER BY _ml_pred DESC LIMIT 15
+                """,
+                    (date_str,),
                 )
-            conn3.commit()
-        except Exception:
-            pass  # 写入失败不影响返回结果
-        cursor3.close()
-        conn3.close()
+                ml_rows = cursor.fetchall()
 
-        # 获取股票信息
-        top_codes = [tc for tc, _, _, _ in top15_data]
-        placeholders = ','.join(['%s'] * len(top_codes))
-        cursor2 = conn2.cursor()
-        cursor2.execute(f"""
-            SELECT s.ts_code, name, industry, close, pct_chg,
-                   volume_ratio, turnover_rate, rps_20, amount
-            FROM stock_info s
-            JOIN daily_price d ON s.ts_code COLLATE utf8mb4_unicode_ci = d.ts_code COLLATE utf8mb4_unicode_ci AND d.trade_date = %s
-            WHERE s.ts_code IN ({placeholders})
-        """, (date_str, *top_codes))
-        stock_map = {}
-        for r in cursor2.fetchall():
-            stock_map[r[0]] = {
-                'name': r[1], 'industry': r[2], 'close': float(r[3] or 0),
-                'pct_chg': float(r[4] or 0), 'volume_ratio': float(r[5] or 0),
-                'turnover_rate': float(r[6] or 0), 'rps_20': float(r[7] or 0),
-                'amount': float(r[8] or 0),
-            }
-        cursor2.close()
-        conn2.close()
+                if ml_rows:
+                    codes = [r[0] for r in ml_rows]
+                    placeholders = ",".join(["%s"] * len(codes))
+                    cursor.execute(
+                        f"""
+                        SELECT s.ts_code, name, industry, close, pct_chg,
+                               volume_ratio, turnover_rate, rps_20, amount
+                        FROM stock_info s
+                        JOIN daily_price d ON s.ts_code = d.ts_code AND d.trade_date = %s
+                        WHERE s.ts_code IN ({placeholders})
+                    """,
+                        (date_str, *codes),
+                    )
+                    stock_map = {}
+                    for r in cursor.fetchall():
+                        stock_map[r[0]] = {
+                            "name": r[1],
+                            "industry": r[2],
+                            "close": float(r[3] or 0),
+                            "pct_chg": float(r[4] or 0),
+                            "volume_ratio": float(r[5] or 0),
+                            "turnover_rate": float(r[6] or 0),
+                            "rps_20": float(r[7] or 0),
+                            "amount": float(r[8] or 0),
+                        }
+
+                    stocks = []
+                    for row in ml_rows:
+                        tc, pred, ret, mtype = row
+                        info = stock_map.get(tc, {})
+                        stocks.append(
+                            {
+                                "ts_code": tc,
+                                "name": info.get("name", ""),
+                                "industry": info.get("industry", ""),
+                                "close": info.get("close", 0),
+                                "pct_chg": info.get("pct_chg", 0),
+                                "volume_ratio": info.get("volume_ratio", 0),
+                                "turnover_rate": info.get("turnover_rate", 0),
+                                "rps_20": info.get("rps_20", 0),
+                                "amount": info.get("amount", 0),
+                                "ml_prob": round(pred, 3),
+                                "ml_pred_return": round(ret, 2),
+                                "排序强度": round(ret, 2),
+                                "model_type": mtype,
+                            }
+                        )
+
+                    cursor.close()
+                    return {
+                        "stocks": stocks,
+                        "scan_date": date_str,
+                        "model": ml_rows[0][3] if ml_rows else "unknown",
+                        "cache": True,
+                    }
+
+            # 无缓存，实时预测
+            cursor.close()
+
+            candidates, _ = generate_v4_ml_candidates(conn, limit=15)
+            if not candidates:
+                return {"stocks": [], "model": "v11.0", "error": "无候选股"}
+
+            top15_data = []
+            for c in candidates[:15]:
+                ml_score = c.get("ml_score", 0)
+                prob = 1 / (1 + math.exp(-ml_score)) if ml_score != 0 else 0.5
+                top15_data.append((c["ts_code"], prob, ml_score, "v11.0"))
+
+            # 写入缓存表
+            try:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM ml_predictions WHERE trade_date = %s", (date_str,))
+                for tc, prob, ret, mt in top15_data:
+                    cur.execute(
+                        """INSERT INTO ml_predictions (ts_code, trade_date, _ml_pred, predicted_return, model_type)
+                           VALUES (%s, %s, %s, %s, %s)""",
+                        (tc, date_str, prob, ret, mt),
+                    )
+                conn.commit()
+                cur.close()
+            except Exception:
+                pass
+
+            # 获取股票信息
+            top_codes = [tc for tc, _, _, _ in top15_data]
+            placeholders = ",".join(["%s"] * len(top_codes))
+            cur2 = conn.cursor()
+            cur2.execute(
+                f"""
+                SELECT s.ts_code, name, industry, close, pct_chg,
+                       volume_ratio, turnover_rate, rps_20, amount
+                FROM stock_info s
+                JOIN daily_price d ON s.ts_code = d.ts_code AND d.trade_date = %s
+                WHERE s.ts_code IN ({placeholders})
+            """,
+                (date_str, *top_codes),
+            )
+            stock_map = {}
+            for r in cur2.fetchall():
+                stock_map[r[0]] = {
+                    "name": r[1],
+                    "industry": r[2],
+                    "close": float(r[3] or 0),
+                    "pct_chg": float(r[4] or 0),
+                    "volume_ratio": float(r[5] or 0),
+                    "turnover_rate": float(r[6] or 0),
+                    "rps_20": float(r[7] or 0),
+                    "amount": float(r[8] or 0),
+                }
+            cur2.close()
 
         stocks = []
         for tc, prob, ret, mt in top15_data:
             info = stock_map.get(tc, {})
-            stocks.append({
-                'ts_code': tc,
-                'name': info.get('name', ''),
-                'industry': info.get('industry', ''),
-                'close': info.get('close', 0),
-                'pct_chg': info.get('pct_chg', 0),
-                'volume_ratio': info.get('volume_ratio', 0),
-                'turnover_rate': info.get('turnover_rate', 0),
-                'rps_20': info.get('rps_20', 0),
-                'amount': info.get('amount', 0),
-                'ml_prob': round(prob, 3),
-                'ml_pred_return': round(ret, 2),
-                '排序强度': round(ret, 2),
-                'model_type': mt,
-            })
+            stocks.append(
+                {
+                    "ts_code": tc,
+                    "name": info.get("name", ""),
+                    "industry": info.get("industry", ""),
+                    "close": info.get("close", 0),
+                    "pct_chg": info.get("pct_chg", 0),
+                    "volume_ratio": info.get("volume_ratio", 0),
+                    "turnover_rate": info.get("turnover_rate", 0),
+                    "rps_20": info.get("rps_20", 0),
+                    "amount": info.get("amount", 0),
+                    "ml_prob": round(prob, 3),
+                    "ml_pred_return": round(ret, 2),
+                    "排序强度": round(ret, 2),
+                    "model_type": mt,
+                }
+            )
 
         return {
             "stocks": stocks,
@@ -1205,8 +1216,6 @@ def ml_top15_scan(request: FastAPIRequest, token: str = Cookie(None)):
             "cache": False,
         }
 
-    except Exception as e:
-        logger.error(f"ML Top15 扫描失败: {e}")
-        import traceback
-        traceback.print_exc()
-        return {"stocks": [], "error": str(e)}
+    except Exception:
+        logger.exception("ML Top15 扫描失败")
+        return {"stocks": [], "error": "内部错误"}

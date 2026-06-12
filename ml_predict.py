@@ -3,17 +3,31 @@
 ML选股模型推理 V6 - 回归模型（按预测收益率排序，无需顺/逆市切换）
 """
 
-import os, json, logging, warnings, threading
+import json
+import logging
+import os
+import threading
+import warnings
 from datetime import datetime
+
 from dotenv import load_dotenv
+
 load_dotenv()
 
-from quant_app.utils.model_loader import load_model
-
-from quant_app.utils.config import get_db_config, MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, MYSQL_SOCKET
-
-import numpy as np, pandas as pd, pymysql
+import numpy as np
+import pandas as pd
 from sqlalchemy import create_engine, text
+
+from quant_app.utils.config import (
+    MYSQL_DATABASE,
+    MYSQL_HOST,
+    MYSQL_PASSWORD,
+    MYSQL_PORT,
+    MYSQL_SOCKET,
+    MYSQL_USER,
+    get_db_config,
+)
+from quant_app.utils.model_loader import load_model
 
 logger = logging.getLogger(__name__)
 warnings.filterwarnings('ignore', category=UserWarning, module='pandas')
@@ -246,7 +260,10 @@ def _fetch_realtime_market_data():
     无需 API Key，纯 Python urllib 实现。
     """
     try:
-        import urllib.request, json, re, time
+        import json
+        import re
+        import time
+        import urllib.request
 
         def _retry_urlopen(req, max_retries=3, timeout=5):
             """带重试的 urlopen"""
@@ -267,7 +284,7 @@ def _fetch_realtime_market_data():
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'http://finance.qq.com'})
             with _retry_urlopen(req) as resp:
                 content = resp.read().decode('gbk', errors='replace')
-            
+
             # 腾讯格式: v_sh000001="1~上证指数~000001~4083.47~4086.34~4076.14~...~涨跌幅%"
             match = re.search(r'v_sh000001="(.+?)";', content)
             if match:
@@ -299,7 +316,7 @@ def _fetch_realtime_market_data():
         total_down = 0
         total_cnt = 0
         breadth_ratio = 50.0  # 默认中性值
-        
+
         try:
             # 沪市 + 深市
             for node in ['sh_a', 'sz_a']:
@@ -318,7 +335,7 @@ def _fetch_realtime_market_data():
                             total_up += 1
                         elif change < 0:
                             total_down += 1
-            
+
             if total_cnt > 0:
                 breadth_ratio = round((total_up / total_cnt * 100), 1)
                 logger.info(f"新浪涨跌比: {breadth_ratio}% (涨{total_up}/跌{total_down}/共{total_cnt})")
@@ -1144,8 +1161,8 @@ def _build_features_for_stocks_v6_2(conn, ts_codes, as_of_date=None):
 
 def _ensemble_predict(feat_df, bundle):
     """集成模型预测：支持 dict/list 两种模型结构，支持加权融合"""
-    import xgboost as xgb
     import lightgbm as lgb
+    import xgboost as xgb
 
     feature_cols = bundle['feature_cols']
     medians = bundle.get('global_medians', {})
@@ -1330,7 +1347,7 @@ def _build_features_for_stocks_v6_3(conn, ts_codes, as_of_date=None):
         stock_ind = pd.read_sql(f"""
             SELECT ts_code, board_code FROM board_industry_cons
             WHERE ts_code IN ({placeholders}) AND is_latest=1
-        """, conn, params=ts_codes)
+        """, conn, params=tuple(ts_codes))
         if not stock_ind.empty:
             bcodes = stock_ind['board_code'].unique().tolist()
             bc_placeholders = ','.join(['%s'] * len(bcodes))
@@ -1374,7 +1391,7 @@ def _build_features_for_stocks_v6_3(conn, ts_codes, as_of_date=None):
             SELECT ts_code, COUNT(DISTINCT board_code) as concept_count
             FROM board_concept_cons WHERE ts_code IN ({placeholders}) AND is_latest=1
             GROUP BY ts_code
-        """, conn, params=ts_codes)
+        """, conn, params=tuple(ts_codes))
         if not concept_count.empty:
             result = result.merge(concept_count, on='ts_code', how='left')
             result['concept_count'] = result['concept_count'].fillna(0)
@@ -1404,7 +1421,7 @@ def _build_features_for_stocks_v6_3(conn, ts_codes, as_of_date=None):
                    CAST(net_margin AS DECIMAL(12,4)) as net_margin
             FROM earnings_report WHERE ts_code IN ({placeholders})
             ORDER BY ts_code, report_date DESC
-        """, conn, params=ts_codes)
+        """, conn, params=tuple(ts_codes))
         if not earnings.empty:
             earnings = earnings.drop_duplicates(subset='ts_code', keep='first')
             for col in ['eps', 'revenue_yoy', 'net_profit_yoy', 'roe', 'gross_margin', 'net_margin']:
@@ -1500,10 +1517,10 @@ def _build_features_for_stocks_v6_6(conn, ts_codes, as_of_date=None):
         stock_ind = pd.read_sql(f"""
             SELECT ts_code, industry FROM stock_info
             WHERE ts_code IN ({placeholders})
-        """, conn, params=ts_codes)
+        """, conn, params=tuple(ts_codes))
 
         if not stock_ind.empty:
-            sector_mf = pd.read_sql(f"""
+            sector_mf = pd.read_sql("""
                 SELECT trade_date, sector_name, net_amount, buy_elg_amount,
                        sell_elg_amount, pct_change
                 FROM sector_moneyflow
@@ -1540,7 +1557,7 @@ def _build_features_for_stocks_v6_6(conn, ts_codes, as_of_date=None):
         stock_concepts = pd.read_sql(f"""
             SELECT ts_code, board_code FROM board_concept_cons
             WHERE ts_code IN ({placeholders}) AND is_latest=1
-        """, conn, params=ts_codes)
+        """, conn, params=tuple(ts_codes))
 
         if not stock_concepts.empty:
             bcodes = stock_concepts['board_code'].unique().tolist()
@@ -1617,7 +1634,7 @@ def _build_features_for_stocks_v6_6(conn, ts_codes, as_of_date=None):
             FROM stock_forecast
             WHERE ts_code IN ({placeholders})
             ORDER BY ts_code, report_date DESC
-        """, conn, params=ts_codes)
+        """, conn, params=tuple(ts_codes))
 
         if not forecast_df.empty:
             forecast_latest = forecast_df.drop_duplicates(subset='ts_code', keep='first')
@@ -1874,7 +1891,7 @@ def _build_features_for_stocks_v10_0(conn, ts_codes, as_of_date=None):
         """, conn, params=(*ts_codes, lookback, lookback))
 
         try:
-            alpha = pd.read_sql(f"""
+            alpha = pd.read_sql("""
                 SELECT ts_code, signal_date, max_boost
                 FROM alpha_signals
                 WHERE signal_date <= %s
@@ -2184,7 +2201,7 @@ def ml_enhanced_score(stocks_list, db_conn=None):
         codes.append(ts_code); code_map[ts_code] = s
     if not codes: return stocks_list
     predictions = predict_batch(codes, db_conn=db_conn)
-    from sector_rotation import get_fund_flow_continuity, get_sector_bonus, get_hot_sectors, _build_industry_map
+    from sector_rotation import _build_industry_map, get_fund_flow_continuity, get_hot_sectors, get_sector_bonus
     hot_sectors = get_hot_sectors(top_n=8, db_conn=db_conn)
     industry_map = _build_industry_map(list(code_map.keys()), db_conn)  # 批量加载，避免N次SQL
     # 批量扫描结果写入缓存（供个股分析页面直接引用）

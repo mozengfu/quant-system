@@ -5,9 +5,14 @@
 - 止盈止损预警：实时监控持仓触发飞书提醒
 - 收盘推送（15:05）：持仓日报 + 明日关注
 """
-import os, sys, json, logging, pymysql
+import json
+import logging
+import os
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+
+import pymysql
 
 # 添加父目录到路径
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -16,6 +21,7 @@ sys.path.insert(0, os.path.dirname(_script_dir))
 from alicloud_api import get_stock_realtime
 
 from quant_app.utils.config import get_db_config
+
 DB_CONFIG = get_db_config()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -96,7 +102,7 @@ def send_morning_alert(top_n=5):
 
         # 近期买入信号
         if signals:
-            msg += f"\n🆕 最近买入信号:\n"
+            msg += "\n🆕 最近买入信号:\n"
             seen = set()
             for r in signals:
                 ts_code = r[0]
@@ -142,12 +148,12 @@ def check_position_alerts(alerted_state_file=None):
     """
     if alerted_state_file is None:
         alerted_state_file = BASE_DIR / "data" / "alert_state.json"
-    
+
     # 加载已提醒状态（防止重复通知）
     alerted = {}
     if os.path.exists(alerted_state_file):
         try:
-            with open(alerted_state_file, 'r') as f:
+            with open(alerted_state_file) as f:
                 alerted = json.load(f)
         except Exception:
             alerted = {}
@@ -157,7 +163,7 @@ def check_position_alerts(alerted_state_file=None):
         logger.warning("positions.json 不存在")
         return
 
-    with open(POSITIONS_FILE, 'r') as f:
+    with open(POSITIONS_FILE) as f:
         data = json.load(f)
     positions = data.get("positions", [])
 
@@ -284,7 +290,7 @@ def send_daily_report():
         send_feishu("📋 收盘日报：无持仓数据")
         return
 
-    with open(POSITIONS_FILE, 'r') as f:
+    with open(POSITIONS_FILE) as f:
         data = json.load(f)
     positions = data.get("positions", [])
 
@@ -329,7 +335,7 @@ def send_daily_report():
     msg += "━" * 28 + "\n"
     msg += "\n".join(report_lines)
     msg += "\n" + "━" * 28 + "\n"
-    
+
     total_direction = "🔴 亏损" if total_pnl < 0 else "🟢 盈利"
     msg += f"\n💰 当日盈亏汇总: {total_direction} {total_pnl:+.2f}元"
 
@@ -337,7 +343,7 @@ def send_daily_report():
     nav_file = BASE_DIR / "data" / "nav_history.json"
     if nav_file.exists():
         try:
-            with open(nav_file, 'r') as f:
+            with open(nav_file) as f:
                 nav_data = json.load(f)
             if nav_data:
                 current = nav_data[-1]
@@ -395,7 +401,7 @@ def send_daily_report():
         cursor = conn.cursor()
         cursor.execute("SELECT MAX(trade_date) FROM quant_db.daily_price")
         latest_date = cursor.fetchone()[0]
-        
+
         if latest_date:
             today_str = str(latest_date)
             sql = """
@@ -427,7 +433,7 @@ def send_daily_report():
         logger.warning(f"获取明日关注失败: {e}")
 
     msg += "\n⚡ 祝投资顺利！"
-    
+
     send_feishu(msg)
     logger.info("收盘推送完成")
 

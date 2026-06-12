@@ -1,0 +1,807 @@
+#!/usr/bin/env python3
+"""
+实盘交易调度器 — QMT实盘交易
+用法: python3 scripts/live_trading_scheduler.py scan|morning|monitor|status|ping
+"""
+
+import argparse, logging, os, sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
+
+import pymysql
+from quant_app.services.notification_service import send_feishu
+from quant_app.trading.config import trading_config
+from quant_app.trading.executor import create_executor
+from quant_app.utils.config import get_db_config
+DB_CONFIG = get_db_config()
+
+from scripts.sim_trading import (
+    _count_trading_days_since, _record_nav_snapshot,
+    get_market_state_for_sim, get_stock_realtime, record_signal,
+    sync_positions_to_json, get_market_params as _get_market_params
+)
+
+def _is_trading_day(for_intraday=False):
+    import datetime
+    today = datetime.date.today()
+    if today.weekday() >= 5: return False
+    try:
+        conn = pymysql.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        if for_intraday:
+            cur.execute("SELECT MAX(trade_date) FROM daily_price")
+            last_date = cur.fetchone()[0]
+            if last_date:
+                return (today - last_date).days <= 3
+            return False
+        cur.execute("SELECT COUNT(*) FROM daily_price WHERE trade_date=%s", (today.strftime("%Y%m%d"),))
+        return cur.fetchone()[0] > 100
+    except: return today.weekday() < 5
+    finally:
+        try: cur.close(); conn.close()
+        except: pass
+
+def _notify_trade(action, name, code, price, qty, reason=""):
+    if not trading_config.is_real_trading_enabled: return
+    icon = "卖出" if action == "卖出" else "买入"
+    send_feishu(f"{icon} 实盘{action}\n股票: {name}({code})\n价格: {price:.2f}  数量: {qty}股\n原因: {reason}")
+
+def get_executor():
+    return create_executor()
+
+def get_holding_positions_from_executor(executor):
+    try:
+        positions = executor.get_positions()
+        return [{"ts_code": p.ts_code, "stock_name": p.name, "shares": p.quantity,
+                 "cost_price": p.cost_price, "current_price": p.current_price,
+                 "market_value": p.market_value, "profit_loss": p.pnl} for p in positions]
+    except: return []
+
+def _executor_sell_and_record(executor, pos, price, shares, label, reason):
+    try:
+        executor.sell(pos["ts_code"], price, shares)
+        record_signal(label, pos["ts_code"], pos["stock_name"], price, shares,
+                     "持仓管理", 0, 0, pos.get("market_state",""), reason, "已平仓")
+    except Exception as e:
+        logger.error("卖出失败: %s", e)
+
+def cmd_scan():
+    from quant_app.trading.orders import Balance
+    executor = get_executor()
+    mode_label = "实盘" if trading_config.is_live else "模拟"
+    logger.info("=== 交易调度器每日扫描开始 [%s] ===", mode_label)
+    
+    # 1. 获取市场状态
+    mkt_info = get_market_state_for_sim()
+    market_params = _get_market_params()
+    logger.info("市场状态: %s 涨跌%.2f%% 止损%.0f%% 止盈%.0f%% 最大持仓%d",
+               mkt_info["state_name"], mkt_info["mkt_chg"],
+               market_params["stop_loss_pct"]*-100, market_params["take_profit_pct"]*100,
+               market_params["max_positions"])
+    
+    # 2. 获取当前持仓
+    current_holds = get_holding_positions_from_executor(executor)
+    balance = executor.get_balance()
+    
+    # 3. 选股
+    candidates_for_morning = []
+    _mp_buy = _get_market_params()
+    available_slots = _mp_buy["max_positions"] - len(current_holds)
+    
+    if available_slots <= 0:
+        logger.info("已满仓(%d/%d)", len(current_holds), _mp_buy["max_positions"])
+    elif balance and balance.profit_pct < -0.15:
+        logger.warning("回撤断路器: %.1f%%", balance.profit_pct*100)
+    elif not balance:
+        logger.warning("远程服务不可用")
+    else:
+        if mkt_info["is_bear"]:
+            logger.info("逆市状态，提高选股门槛(threshold=%.2f)", mkt_info["threshold"])
+            eff_slots = max(1, available_slots // 2)
+            eff_min_score = mkt_info.get("threshold", 0.40)
+        else:
+            eff_slots = available_slots
+            eff_min_score = 0
+        candidates = _v11_scan_recommend(top_n=max(eff_slots, 3),
+                                        min_score=eff_min_score)
+        if candidates:
+            for pick in candidates:
+                ts_code = pick["ts_code"]
+                name = pick["name"]
+                price = pick.get("price", 0)
+                if available_slots > 0 and balance.available > 0:
+                    shares = int(balance.available / available_slots / price / 100) * 100
+                else:
+                    shares = 0
+                if shares < 100: continue
+                record_signal("买入候选", ts_code, name, price, shares,
+                            f"纯ML({pick.get('model_ver','V11.2')})",
+                            pick.get("ml_prob",0), pick.get("ml_score",0),
+                            _mp_buy.get("state","常态"),
+                            f"{pick.get('model_ver','V11.2')}排序{pick.get('ml_score',0):.3f}",
+                            status="待执行")
+                candidates_for_morning.append(pick)
+                logger.info("候选: %s %.2f ML=%.3f", name, price, pick.get('ml_score',0))
+    
+    # 4. 飞书通知
+    if candidates_for_morning and trading_config.is_real_trading_enabled:
+        lines = ["明日买入候选"]
+        for p in candidates_for_morning:
+            lines.append(f"  {p['name']}({p['ts_code']}) ML={p.get('ml_score',0):.3f}")
+        send_feishu("\n".join(lines))
+    
+    logger.info("=== 扫描完成 [%s] ===", mode_label)
+
+def cmd_monitor():
+    """
+    盘中持仓监控 — 止盈止损自动执行
+
+    每5分钟运行一次，检查所有持仓的当前价格，
+    触发止损/止盈时通过 executor 自动卖出。
+    """
+    if not _is_trading_day(for_intraday=True):
+        logger.info("今日非交易日, 跳过监控")
+        return
+    executor = get_executor()
+    mode_label = "实盘" if trading_config.is_real_trading_enabled else (f"模拟({trading_config.trade_mode})")
+
+    logger.info("=== 持仓监控开始 [%s] ===", mode_label)
+
+    # 从市场状态获取动态止盈止损参数
+    market_params = _get_market_params()
+    sl_pct = market_params["stop_loss_pct"]  # 默认 -0.03
+    logger.info("风控参数: 止损%.0f%% 止盈%.0f%%", sl_pct * -100, market_params["take_profit_pct"] * 100)
+
+    positions = get_holding_positions_from_executor(executor)
+    if not positions:
+        logger.info("当前无持仓")
+        return
+
+    for pos in positions:
+        code = pos["ts_code"].split(".")[0]
+        market = pos["market"]
+        quote = get_stock_realtime(code, market)
+
+        if not quote:
+            logger.warning("无法获取 %s 行情，跳过", pos["ts_code"])
+            continue
+
+        price = quote["现价"]
+        shares = int(pos["shares"])
+        cost_price = float(pos["cost_price"])
+        pct_chg = (price - cost_price) / cost_price * 100
+
+        stop_price = round(cost_price * (1 + sl_pct), 2)
+
+        buy_date = pos.get("buy_date")
+        days_held = _count_trading_days_since(buy_date) if buy_date else 0
+
+        if price <= stop_price:
+            _executor_sell_and_record(executor, pos, price, shares, "止损", "盘中止损")
+            _notify_trade("卖出", pos["stock_name"], pos["ts_code"], price, shares, "盘中止损")
+            logger.info(" 盘中自动止损(%s): %s 买入%.2f->现价%.2f (%.1f%%)",
+                        mode_label, pos["stock_name"], cost_price, price, pct_chg)
+            continue
+
+        # === 动态退出策略 ===
+        # 用今日盘中最高价 + 历史最高价 综合计算峰值
+        today_high = quote.get("最高", 0) or 0
+        peak_price = max(cost_price, price, today_high)
+        try:
+            conn_pk = pymysql.connect(**DB_CONFIG)
+            cur_pk = conn_pk.cursor()
+            cur_pk.execute(
+                "SELECT MAX(high) FROM daily_price WHERE ts_code=%s AND trade_date>=%s",
+                (pos["ts_code"], buy_date),
+            )
+            row_pk = cur_pk.fetchone()
+            cur_pk.close()
+            conn_pk.close()
+            if row_pk and row_pk[0]:
+                peak_price = max(float(row_pk[0]), price)
+        except Exception:
+            pass
+
+        peak_profit = (peak_price - cost_price) / cost_price * 100 if cost_price > 0 else 0
+
+        should_sell = False
+        sell_reason = ""
+        sell_label = ""
+
+        # a) 移动止盈：峰值盈利>5%的股，回落3.5%即锁利（不分持有天数）
+        if peak_profit > 5.0 and price <= peak_price * 0.965:
+            should_sell = True
+            sell_reason = f"移动止盈: 峰值{peak_profit:.0f}%回落至{pct_chg:.1f}%"
+            sell_label = "移动止盈"
+
+        # b) 超时卖出：持有>=5天且盈利<3%（弱股不耗时间）
+        elif days_held >= 5 and pct_chg < 3.0:
+            should_sell = True
+            sell_reason = f"超时卖出: 持有{days_held}天仅{pct_chg:.1f}%"
+            sell_label = "超时"
+
+        # c) 绝对持有上限：8天强制平仓
+        elif days_held > 8:
+            should_sell = True
+            sell_reason = f"强制平仓: 持有{days_held}天"
+            sell_label = "强制平仓"
+
+        if should_sell:
+            _executor_sell_and_record(executor, pos, price, shares, sell_label, sell_reason)
+            _notify_trade("卖出", pos["stock_name"], pos["ts_code"], price, shares, sell_label)
+            logger.info(" %s(%s): %s 买入%.2f->现价%.2f (%.1f%%) 持有%d天 峰值%.1f%%",
+                        sell_label, mode_label, pos["stock_name"], cost_price, price, pct_chg,
+                        days_held, peak_profit)
+        else:
+            logger.info("  持仓正常(%s): %s 成本%.2f 现价%.2f (%.1f%%) 持有%d天 峰值%.1f%%",
+                        mode_label, pos["stock_name"], cost_price, price, pct_chg, days_held, peak_profit)
+
+    # 飞书通知：持仓状态（每30分钟一次，避免刷屏）
+    if trading_config.is_real_trading_enabled and positions:
+        import time as _time
+        now_ts = int(_time.time())
+        last_notify = getattr(cmd_monitor, "_last_feishu_ts", 0)
+        if now_ts - last_notify >= 3600:  # 1小时
+            cmd_monitor._last_feishu_ts = now_ts
+            total_mv = sum(p["market_value"] for p in positions if "market_value" in p)
+            total_pnl = sum(p["profit_loss"] for p in positions if "profit_loss" in p)
+            lines_msg = [f"持仓监控 ({len(positions)}只)"]
+            for p in positions:
+                name = p.get("stock_name", p.get("name", ""))
+                code = p.get("ts_code", "").split(".")[0]
+                qty = int(p.get("shares", 0))
+                cost = float(p.get("cost_price", 0))
+                cur = float(p.get("current_price", 0))
+                pnl = float(p.get("profit_loss", 0))
+                pnl_str = f"{pnl:+.0f}"
+                lines_msg.append(f"  {name}({code}) {qty}股 成本{cost:.2f} 现价{cur:.2f} {pnl_str}")
+            send_feishu("\n".join(lines_msg))
+    logger.info("=== 持仓监控完成 [%s] ===", mode_label)
+
+
+def cmd_morning_execute():
+    """
+    早盘执行（9:35） - 读取昨日 PENDING 候选，实时择时买入
+
+    对每只候选检查三项条件：
+    a) 开盘跳空方向：高开>2%等回落，低开<-2%跳过，平开直接买
+    b) 开盘量能：量比 > 0.8 有资金关注
+    c) 大盘状态：上证实时跌>0.5%减仓
+    """
+    if not _is_trading_day(for_intraday=True):
+        logger.info("今日非交易日, 跳过早盘执行")
+        return
+
+    import datetime
+    now = datetime.datetime.now()
+    hour, minute = now.hour, now.minute
+    # 只在 9:25-10:30 窗口内执行
+    trading_hours = (hour == 9 and minute >= 25) or (hour == 10 and minute <= 30)
+    if not trading_hours:
+        logger.info("当前时间 %02d:%02d 不在早盘窗口(9:25-10:30)，跳过", hour, minute)
+        return
+
+    executor = get_executor()
+    mode_label = "实盘" if trading_config.is_real_trading_enabled else (f"模拟({trading_config.trade_mode})")
+    logger.info("=== 早盘择时执行开始 [%s] ===", mode_label)
+
+    # 1. 大盘实时状态
+    mkt_info = get_market_state_for_sim()
+    logger.info("大盘实时状态: %s (涨跌幅: %.2f%%)", mkt_info["state_name"], mkt_info["mkt_chg"])
+    is_market_bear = mkt_info["is_bear"]
+
+    # 2. 读取 PENDING 候选（最近一批）
+    conn = pymysql.connect(**DB_CONFIG)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, ts_code, stock_name, price, shares, ml_prob, enhanced_score,
+               market_state, strategy, reason
+        FROM sim_signals
+        WHERE status = '待执行' AND signal_type = '买入候选'
+        ORDER BY signal_date DESC, signal_time DESC
+        LIMIT 5
+    """)
+    pending_rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    if not pending_rows:
+        logger.info("没有待执行的买入候选")
+        return
+
+    logger.info("发现 %d 只待执行候选", len(pending_rows))
+
+    # 3. 获取账户信息
+    balance = executor.get_balance()
+    if balance is None:
+        logger.error("无法获取账户资金")
+        return
+    current_holds = get_holding_positions_from_executor(executor)
+    avail = _get_market_params()["max_positions"] - len(current_holds)
+    if is_market_bear and avail > 1:
+        avail = max(1, avail // 2)
+        logger.info("逆市减仓: slots=%d", avail)
+    available_slots = avail
+
+    if available_slots <= 0:
+        logger.info("已满仓(%d/%d)，跳过所有候选", len(current_holds), _get_market_params()["max_positions"])
+        return
+
+    if balance and balance.profit_pct < -0.15:
+        logger.warning("回撤断路器触发: 总亏损 %.1f%%，暂停新买入", balance.profit_pct * 100)
+        return
+
+    executed = []
+    skipped = []
+
+    for row in pending_rows:
+        sig_id, ts_code, stock_name, ref_price, shares, ml_prob, enhanced_score, market_state, strategy, reason = row
+        code = ts_code.split(".")[0]
+        market = "sz" if ts_code.endswith(".SZ") else "sh"
+
+        # 检查是否已持仓
+        if any(p["ts_code"] == ts_code for p in current_holds):
+            skipped.append((stock_name, ts_code, "已持仓"))
+            logger.info("%s(%s) 已持仓，跳过", stock_name, ts_code)
+            continue
+
+        # 获取实时行情（包含开盘价）
+        symbol = "%s%s" % (market, code)
+        # 优先用QMT实时价
+        qmt_p = _get_qmt_price(code)
+        if qmt_p and qmt_p > 0:
+            return {"name": "", "code": code, "price": qmt_p, "close": qmt_p, "chg_pct": 0}
+        url = "http://qt.gtimg.cn/q=" + symbol
+        current_price = ref_price
+        open_price = ref_price
+        yesterday_close = ref_price
+        volume_ratio = 0
+        pct_chg = 0
+        try:
+            import urllib.request
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp = urllib.request.urlopen(req, timeout=10)
+            data = resp.read().decode("gbk")
+            if "~" in data:
+                parts = data.strip().rstrip(";").split("~")
+                current_price = float(parts[3]) if parts[3] else ref_price
+                yesterday_close = float(parts[4]) if parts[4] else ref_price
+                open_price = float(parts[5]) if len(parts) > 5 and parts[5] else current_price
+                pct_chg = float(parts[32]) if len(parts) > 32 and parts[32] else 0
+                volume_ratio = float(parts[39]) if len(parts) > 39 and parts[39] else 0
+        except Exception as e:
+            skipped.append((stock_name, ts_code, "获取实时行情失败"))
+            logger.warning("%s(%s) 获取实时行情失败: %s", stock_name, ts_code, e)
+            continue
+
+        # ==== 条件检查 ====
+        skip_reason = None
+
+        # a) 开盘跳空检查
+        gap_pct = (open_price - yesterday_close) / yesterday_close * 100 if yesterday_close > 0 else 0
+        if gap_pct > 2.0:
+            skip_reason = f"高开{gap_pct:.1f}% > 2%，等回落"
+        elif gap_pct < -2.0:
+            skip_reason = f"低开{gap_pct:.1f}% < -2%，弱势不赌"
+        else:
+            logger.info("  %s 开盘跳空: %.1f%% (合理范围)", stock_name, gap_pct)
+
+        # b) 量能检查
+        if not skip_reason and volume_ratio < 0.8:
+            skip_reason = f"量比{volume_ratio:.2f} < 0.8"
+        elif not skip_reason:
+            logger.info("  %s 量比: %.2f (活跃)", stock_name, volume_ratio)
+
+        # c) 实时涨幅是否为涨停
+        if not skip_reason and pct_chg >= 9.0:
+            skip_reason = f"实时涨幅{pct_chg:.1f}%已近涨停"
+
+        # d) 大盘状态：逆市时收紧条件而非直接跳过
+        if not skip_reason and is_market_bear:
+            if volume_ratio < 1.5:
+                skip_reason = f"大盘逆市+量比{volume_ratio:.2f}<1.5"
+            elif gap_pct > 1.0:
+                skip_reason = f"大盘逆市+高开{gap_pct:.1f}%>1%"
+            else:
+                logger.info("  %s 逆市谨慎买入(threshold=%.2f)", stock_name, mkt_info.get("threshold",0.4))
+
+        if skip_reason:
+            skipped.append((stock_name, ts_code, skip_reason))
+            logger.info("跳过 %s(%s): %s", stock_name, ts_code, skip_reason)
+            conn2 = pymysql.connect(**DB_CONFIG)
+            cur2 = conn2.cursor()
+            cur2.execute(
+                "UPDATE sim_signals SET status='跳过', reason=%s WHERE id=%s",
+                (f"择时跳过: {skip_reason}", sig_id),
+            )
+            conn2.commit()
+            cur2.close()
+            conn2.close()
+            continue
+
+        # ==== 执行买入 ====
+        if available_slots <= 0:
+            skipped.append((stock_name, ts_code, "仓位已满"))
+            continue
+        max_shares = int(balance.available / available_slots / current_price / 100) * 100
+        if max_shares < 100:
+            skipped.append((stock_name, ts_code, f"资金不足买100股(可用{balance.available:.0f})"))
+            continue
+
+        # 修复: 如果 shares 为 0（旧版本 scan 遗留），按余额重新计算
+        if not shares or shares <= 0:
+            shares = max_shares
+        buy_shares = min(shares, max_shares)
+
+        # 防御：确保 buy_shares 永不为 0（避免向远程服务器发送无效订单）
+        if buy_shares < 100:
+            logger.error("买入数量异常: buy_shares=%d, max_shares=%d, available=%.2f, 跳过 %s",
+                        buy_shares, max_shares, balance.available, stock_name)
+            skipped.append((stock_name, ts_code, f"计算买入数量异常({buy_shares}股)"))
+            continue
+
+        # 实盘模式：写入信号 → iQuant 内部策略执行
+        # 模拟模式：直接 executor 执行
+        is_real_live = trading_config.is_real_trading_enabled
+        if is_real_live:
+            # 更新信号为最新的实时价格和股数，留给 iQuant 桥接策略执行
+            conn3 = pymysql.connect(**DB_CONFIG)
+            cur3 = conn3.cursor()
+            cur3.execute(
+                "UPDATE sim_signals SET price=%s, shares=%s, signal_type='买入', "
+                "reason=%s WHERE id=%s",
+                (current_price, buy_shares,
+                 f"择时通过: 跳空{gap_pct:.1f}% 量比{volume_ratio:.2f} 价{current_price}", sig_id),
+            )
+            conn3.commit()
+            cur3.close()
+            conn3.close()
+
+            executed.append((stock_name, ts_code, current_price, buy_shares))
+            _notify_trade("买入", stock_name, ts_code, current_price, buy_shares,
+                          "实盘-等待iQuant执行")
+            logger.info("买入信号待执行(%s): %s %d股@%.2f (跳空%.1f%% 量比%.2f)",
+                        mode_label, stock_name, buy_shares, current_price, gap_pct, volume_ratio)
+        else:
+            order = executor.buy(
+                ts_code, stock_name, market,
+                current_price, buy_shares,
+                strategy=strategy or "纯ML(V11.1)",
+                ml_prob=ml_prob,
+                enhanced_score=enhanced_score,
+                market_state=market_state or mkt_info["state_name"],
+                reason=f"早盘择时: 跳空{gap_pct:.1f}% 量比{volume_ratio:.2f} ML排序{enhanced_score or 0:.3f}",
+            )
+            if order:
+                executed.append((stock_name, ts_code, current_price, buy_shares))
+                _notify_trade("买入", stock_name, ts_code, current_price, buy_shares, "早盘择时买入")
+                logger.info("买入成交(%s): %s %d股@%.2f (跳空%.1f%% 量比%.2f)",
+                            mode_label, stock_name, buy_shares, current_price, gap_pct, volume_ratio)
+                conn3 = pymysql.connect(**DB_CONFIG)
+                cur3 = conn3.cursor()
+                cur3.execute(
+                    "UPDATE sim_signals SET status='已执行', reason=%s WHERE id=%s",
+                    (f"早盘择时买入: 跳空{gap_pct:.1f}% 量比{volume_ratio:.2f} 价{current_price}", sig_id),
+                )
+                conn3.commit()
+                cur3.close()
+                conn3.close()
+                try:
+                    _sync_position_after_buy(ts_code, stock_name, market, buy_shares, current_price, strategy, ml_prob)
+                except Exception as e:
+                    logger.error("同步买入到 sim_positions 失败: %s", e)
+            else:
+                skipped.append((stock_name, ts_code, "买入执行失败"))
+                logger.warning("买入执行失败 %s(%s)", stock_name, ts_code)
+
+    # 4. 刷新持仓价格
+    if hasattr(executor, "refresh_positions_prices"):
+        executor.refresh_positions_prices()
+
+    # 5. 飞书通知
+    if trading_config.is_real_trading_enabled and (executed or skipped):
+        msg_lines = []
+        if executed:
+            msg_lines.append("早盘买入成交")
+            for name, code, price, qty in executed:
+                msg_lines.append(f"  - {name}({code}) {qty}股@{price:.2f}")
+        if skipped:
+            msg_lines.append("跳过")
+            for name, code, reason in skipped:
+                msg_lines.append(f"  - {name}({code}): {reason}")
+        send_feishu("\n".join(msg_lines))
+
+    logger.info("=== 早盘择时执行完成: %d买入 %d跳过 [%s] ===", len(executed), len(skipped), mode_label)
+
+
+def cmd_status():
+    """查询账户状态"""
+    executor = get_executor()
+    mode_label = "实盘" if trading_config.is_real_trading_enabled else (f"模拟({trading_config.trade_mode})")
+
+    print(f"\n{'='*50}")
+    print(f"  交易模式: {mode_label}")
+    print(f"  ENABLE_REAL_TRADING: {trading_config.enable_real_trading}")
+    print(f"{'='*50}\n")
+
+    # 资金
+    balance = executor.get_balance()
+    if balance:
+        print(f"  💰 总资产: {balance.total_asset:>10.2f}")
+        print(f"  💵 可用资金: {balance.available:>10.2f}")
+        print(f"  📊 持仓市值: {balance.market_value:>10.2f}")
+        print(f"  🔒 冻结资金: {balance.frozen:>10.2f}")
+        if balance.initial_capital > 0:
+            pnl_pct = (balance.total_asset - balance.initial_capital) / balance.initial_capital * 100
+            print(f"  📈 累计盈亏: {balance.total_asset - balance.initial_capital:>+10.2f} ({pnl_pct:+.2f}%)")
+            print(f"  📉 最大回撤: {balance.max_drawdown * 100:.2f}%")
+            print(f"  🎯 交易次数: {balance.trade_count} 胜率: {balance.win_rate * 100:.1f}%")
+    else:
+        print("  ❌ 无法获取账户信息")
+        if trading_config.trade_mode == "sim":
+            print("  提示: 请先运行 python3 scripts/live_trading_scheduler.py init")
+
+    print()
+
+    # 持仓
+    positions = get_holding_positions_from_executor(executor)
+    if positions:
+        print(f"  持仓 ({len(positions)}只):")
+        print(f"  {'名称':<10} {'代码':<12} {'成本':>8} {'现价':>8} {'盈亏%':>8} {'仓位%':>8}")
+        print(f"  {'-'*54}")
+        total_mv = 0
+        for p in positions:
+            pnl_pct = (p["current_price"] - p["cost_price"]) / p["cost_price"] * 100 if p["cost_price"] > 0 else 0
+            pct_str = f"{pnl_pct:+.2f}%"
+            mv = p["current_price"] * p["shares"]
+            total_mv += mv
+            if balance and balance.total_asset > 0:
+                pct_of_total = mv / balance.total_asset * 100
+            else:
+                pct_of_total = 0
+            print(f"  {p['stock_name']:<10} {p['ts_code']:<12} {p['cost_price']:>8.2f} {p['current_price']:>8.2f} {pct_str:>8} {pct_of_total:>7.1f}%")
+        print(f"  {'-'*54}")
+    else:
+        print("  当前无持仓")
+
+    print()
+
+
+def cmd_init():
+    """初始化模拟账户（仅 sim 模式需要）"""
+    if trading_config.trade_mode != "sim":
+        logger.info("实盘模式无需初始化，直接使用QMT账户")
+        return
+
+    from scripts.sim_trading import create_tables
+    create_tables()
+
+    # 创建实盘订单表
+    conn = pymysql.connect(**DB_CONFIG)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS real_orders (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            order_id VARCHAR(50) NOT NULL COMMENT '订单ID',
+            ts_code VARCHAR(20) NOT NULL,
+            stock_name VARCHAR(50),
+            action ENUM("BUY","SELL") NOT NULL,
+            price DECIMAL(8,3) NOT NULL,
+            quantity INT NOT NULL,
+            amount DECIMAL(12,2) NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT "pending",
+            filled_quantity INT DEFAULT 0,
+            filled_amount DECIMAL(12,2) DEFAULT 0,
+            reason VARCHAR(200) DEFAULT NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME DEFAULT NULL,
+            INDEX idx_order_id (order_id),
+            INDEX idx_ts_code (ts_code),
+            INDEX idx_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS trade_risk_checks (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            ts_code VARCHAR(20) NOT NULL,
+            check_name VARCHAR(50) NOT NULL,
+            passed TINYINT NOT NULL DEFAULT 0,
+            detail VARCHAR(500) DEFAULT NULL,
+            check_time DATETIME NOT NULL,
+            INDEX idx_ts_code (ts_code),
+            INDEX idx_check_time (check_time)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info("✅ 模拟账户初始化完成（初始资金 %.0f）", trading_config.initial_capital)
+
+
+def cmd_sync():
+    """同步持仓到 JSON（供 position_monitor 使用）— 仅模拟盘"""
+    if trading_config.trade_mode != "sim":
+        logger.info("实盘模式无需同步 JSON 持仓")
+        return
+    sync_positions_to_json()
+    logger.info("✅ 持仓已同步到 JSON")
+
+
+
+def cmd_ping():
+    """健康检查 — 测试远程 QMT 交易服务连接"""
+    executor = get_executor()
+    if not hasattr(executor, "ping"):
+        logger.info("当前执行器不支持 ping (仅实盘模式可用)")
+        return
+
+    logger.info("=== 连接健康检查 ===")
+    logger.info("  模式: %s", "远程" if executor._is_remote else "本地")
+    logger.info("  服务器: %s:%s" if executor._is_remote else "N/A (本地)",
+                trading_config.remote_trader_host, trading_config.remote_trader_port)
+
+    result = executor.ping()
+    status_emoji = {"ok": "✅", "error": "❌", "dry_run": "🔍"}
+    print(f"\n  {status_emoji.get(result['status'], '❓')} 状态: {result['status']}")
+    print(f"  📝 信息: {result.get('message', 'N/A')}")
+    if result.get("data"):
+        print(f"  📊 数据: {result['data']}")
+    print()
+    logger.info("=== 健康检查完成: %s ===\n", result.get("status", "unknown"))
+
+
+def cmd_keepalive():
+    """保活 — 防止 Windows VM 交易系统锁屏"""
+    executor = get_executor()
+    result = executor.keepalive()
+    if result:
+        logger.info("保活成功")
+    else:
+        logger.warning("保活失败")
+    label = "成功" if result else "失败"
+    icon = "OK" if result else "FAIL"
+    print(f"  保活结果: {label} ({icon})")
+    print()
+
+
+
+
+def _v11_scan_recommend(top_n=3, min_score=0):
+    """V11.2 纯ML推荐（优先 V11.2，不可用时回退 V11.0）"""
+    import pymysql, os
+    conn = pymysql.connect(**DB_CONFIG)
+    cur = conn.cursor()
+    cur.execute("SELECT MAX(trade_date) FROM daily_price")
+    latest = str(cur.fetchone()[0])
+    cur.execute("SELECT MAX(trade_date) FROM daily_price WHERE trade_date < %s", (latest,))
+    prev = str(cur.fetchone()[0])
+    cur.execute("""SELECT ts_code FROM daily_price WHERE trade_date=%s 
+        AND LEFT(ts_code,1) NOT IN ('8','4','9') AND LEFT(ts_code,3) NOT IN ('688')
+        AND close<=200 AND close>=3
+        ORDER BY amount DESC LIMIT 500""", (prev,))
+    codes = [r[0] for r in cur.fetchall()]
+    cur.close(); conn.close()
+    if not codes:
+        return []
+
+    # Try V11.2 model first
+    v11_2_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'ml_stock_model_v11_2.pkl')
+    if os.path.exists(v11_2_path):
+        try:
+            from scripts.predict_v11_2 import predict_v11_2, load_v11_2_model
+            load_v11_2_model()  # cache
+            conn2 = pymysql.connect(**DB_CONFIG)
+            feat, preds = predict_v11_2(conn2, codes, as_of_date=latest)
+            conn2.close()
+            if feat is not None and preds is not None:
+                ca = feat['ts_code'].tolist()
+                ranked = sorted(zip(ca, preds), key=lambda x: -x[1])
+                result = []
+                conn3 = pymysql.connect(**DB_CONFIG)
+                cur3 = conn3.cursor()
+                filtered = [(tc, sc) for tc, sc in ranked if sc >= min_score][:top_n]
+                for tc, sc in filtered:
+                    cur3.execute("SELECT name, industry FROM stock_info WHERE ts_code=%s", (tc,))
+                    r = cur3.fetchone()
+                    name = r[0] if r else tc
+                    market = 'sz' if tc.endswith('.SZ') else 'sh'
+                    cur3.execute("SELECT close, pct_chg FROM daily_price WHERE ts_code=%s AND trade_date=%s", (tc, latest))
+                    dr = cur3.fetchone()
+                    price = float(dr[0]) if dr else 0
+                    pct_chg = float(dr[1] or 0) if dr else 0
+                    result.append({
+                        'ts_code': tc, 'name': name, 'market': market,
+                        'price': price, 'pct_chg': pct_chg,
+                        'ml_score': float(sc), 'ml_prob': float(sc),
+                        'model_ver': 'V11.2',
+                    })
+                cur3.close(); conn3.close()
+                logger.info("V11.2 推荐成功: top5 %s", 
+                           ", ".join([f"{c['name']}({c.get('ml_score',0):.3f})" for c in result[:3]]))
+                return result
+        except Exception as e2:
+            logger.warning("V11.2 推荐失败，回退 V11.0: %s", e2)
+
+    # Fallback: V11.0
+    try:
+        from quant_app.utils.model_loader import get_model_path
+        from scripts.predict_v11 import load_v11_model, build_features_v11_inference
+        from ml_predict import _ensemble_predict
+
+        bundle = load_v11_model(str(get_model_path('v11.0')))
+        conn2 = pymysql.connect(**DB_CONFIG)
+        feat = build_features_v11_inference(conn2, codes, as_of_date=latest)
+        conn2.close()
+        if feat is None or feat.empty:
+            return []
+        for c in bundle['feature_cols']:
+            if c not in feat.columns:
+                feat[c] = bundle.get('global_medians', {}).get(c, 0.0)
+        preds = _ensemble_predict(feat.fillna(0), bundle)
+        ca = feat['ts_code'].tolist()
+        ranked = sorted(zip(ca, preds), key=lambda x: -x[1])
+        
+        result = []
+        conn3 = pymysql.connect(**DB_CONFIG)
+        cur3 = conn3.cursor()
+        for tc, sc in ranked[:top_n]:
+            cur3.execute("SELECT name, industry FROM stock_info WHERE ts_code=%s", (tc,))
+            r = cur3.fetchone()
+            name = r[0] if r else tc
+            market = 'sz' if tc.endswith('.SZ') else 'sh'
+            cur3.execute("SELECT close, pct_chg FROM daily_price WHERE ts_code=%s AND trade_date=%s", (tc, latest))
+            dr = cur3.fetchone()
+            price = float(dr[0]) if dr else 0
+            pct_chg = float(dr[1] or 0) if dr else 0
+            result.append({
+                'ts_code': tc, 'name': name, 'market': market,
+                'price': price, 'pct_chg': pct_chg,
+                'ml_score': float(sc), 'ml_prob': float(sc),
+                'model_ver': 'V11.0',
+            })
+        cur3.close(); conn3.close()
+        return result
+    except Exception as e:
+        logger.warning("V11.0 推荐也失败: %s", e)
+        return []
+
+
+def main():
+    parser = argparse.ArgumentParser(description="交易调度器（模拟/实盘）")
+    parser.add_argument(
+        "action",
+        choices=["scan", "morning", "monitor", "status", "init", "sync", "ping", "keepalive"],
+        help="scan=盘后选股(记录候选), morning=早盘择时买入(9:35), monitor=盘中监控, status=账户状态, init=初始化, sync=同步JSON, ping=远程连接健康检查, keepalive=保活",
+    )
+    args = parser.parse_args()
+
+    # 打印启动信息
+    logger.info("启动交易调度器: action=%s, TRADE_MODE=%s, ENABLE_REAL_TRADING=%s",
+                args.action, trading_config.trade_mode, trading_config.enable_real_trading)
+
+    # 配置校验
+    errors = trading_config.validate()
+    if errors:
+        for err in errors:
+            logger.error("配置错误: %s", err)
+        if trading_config.is_live:
+            logger.error("实盘模式配置校验失败，退出")
+            sys.exit(1)
+
+    action_map = {
+        "scan": cmd_scan,
+        "morning": cmd_morning_execute,
+        "monitor": cmd_monitor,
+        "status": cmd_status,
+        "init": cmd_init,
+        "sync": cmd_sync,
+        "ping": cmd_ping,
+        "keepalive": cmd_keepalive,
+    }
+    action_map[args.action]()
+
+
+if __name__ == "__main__":
+    main()
+

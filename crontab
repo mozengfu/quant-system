@@ -1,0 +1,40 @@
+# 量化系统定时任务
+# 安装：crontab /tmp/quant_crontab
+
+SHELL=/bin/zsh
+PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin
+PYTHON3=/Library/Frameworks/Python.framework/Versions/3.12/bin/python3
+QUANT_DIR=/Users/mozengfu/workspace/quant-system
+
+# ========== 飞书预警 ==========
+0 9 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/feishu_alerts.py morning >> $QUANT_DIR/logs/feishu_alerts.log 2>&1
+5 15 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/feishu_alerts.py daily >> $QUANT_DIR/logs/feishu_alerts.log 2>&1
+
+# ========== 数据刷新 ==========
+0 9 * * 1-5 cd $QUANT_DIR && bash scripts/auto_refresh_data.sh >> $QUANT_DIR/logs/auto_refresh.log 2>&1
+*/30 9-14 * * 1-5 cd $QUANT_DIR && bash scripts/auto_refresh_data.sh >> $QUANT_DIR/logs/auto_refresh.log 2>&1
+
+# ========== 盘后数据导入 ==========
+0 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/update_daily_price_cron.py >> $QUANT_DIR/logs/daily_import.log 2>&1
+
+# ========== 实盘交易调度 ==========
+# 保活（每5分钟）
+*/5 9-14 * * 1-5 cd $QUANT_DIR && $PYTHON3 -c "from quant_app.trading.executor import create_executor; e=create_executor(); e.keepalive()" >> $QUANT_DIR/logs/keepalive.log 2>&1
+# 盘后选股 (17:30) — ML选股，记录候选不入单
+30 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/live_trading_scheduler.py scan >> $QUANT_DIR/logs/live_trading.log 2>&1
+# 早盘择时 (9:35) — 读取候选择时买入
+35 9 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/live_trading_scheduler.py morning >> $QUANT_DIR/logs/live_trading_morning.log 2>&1
+# 9:36 每日开盘健康检查 — 验证 P1 dedup / QMT-sim 对齐 / 资产健康
+36 9 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/daily_health_check.py >> $QUANT_DIR/logs/daily_health.log 2>&1
+# 盘中持仓监控 (每5分钟) — 止盈止损自动执行
+*/5 9-14 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/live_trading_scheduler.py monitor >> $QUANT_DIR/logs/live_trading_monitor.log 2>&1
+
+# ========== 辅助策略（不影响实盘）==========
+45 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 run_three_strategies.py >> $QUANT_DIR/logs/v4_scan.log 2>&1
+55 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/scan_bottom_awakening.py >> $QUANT_DIR/logs/bottom_awakening.log 2>&1
+
+# ========== 周末重训 ==========
+0 3 * * 6 cd $QUANT_DIR && bash scripts/rolling_train.sh >> $QUANT_DIR/logs/rolling_train.log 2>&1
+
+# ========== 股票池生成（每天盘后，数据导入之后）==========
+15 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 -c "from quant_app.services.strategy_service import scan_daily_pool; scan_daily_pool()" >> $QUANT_DIR/logs/stockpool.log 2>&1

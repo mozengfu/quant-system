@@ -4,20 +4,23 @@
 等价于原来不存在的 scripts/daily_ml_predict.py
 """
 
-import os, sys, logging
-from datetime import datetime
+import logging
+import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import numpy as np, pandas as pd, pymysql
+import pandas as pd
+import pymysql
 from dotenv import load_dotenv
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
 
-from quant_app.utils.config import get_db_config
 from ml_predict import predict_batch
+from quant_app.utils.config import get_db_config
 
 DB_CONFIG = get_db_config()
 
@@ -57,18 +60,26 @@ def main():
     ]
     scored.sort(key=lambda x: x[1], reverse=True)
 
-    # 写入 MySQL ml_predictions 表
+    # 写入 MySQL ml_predictions 表（事务保护：删除和插入一起成功或回滚）
     conn = pymysql.connect(**DB_CONFIG)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM ml_predictions WHERE trade_date = %s", (date_str,))
-    for tc, prob, ret, mt in scored:
-        cursor.execute(
-            "INSERT INTO ml_predictions (ts_code, trade_date, _ml_pred, predicted_return, model_type) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            (tc, date_str, prob, ret, mt)
-        )
-    conn.commit()
-    logger.info(f"写入 ml_predictions 表: {len(scored)} 条")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM ml_predictions WHERE trade_date = %s", (date_str,))
+        for tc, prob, ret, mt in scored:
+            cursor.execute(
+                "INSERT INTO ml_predictions (ts_code, trade_date, _ml_pred, predicted_return, model_type) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (tc, date_str, prob, ret, mt)
+            )
+        conn.commit()
+        cursor.close()
+        logger.info(f"写入 ml_predictions 表: {len(scored)} 条")
+    except Exception:
+        conn.rollback()
+        logger.error("写入 ml_predictions 失败，已回滚")
+        raise
+    finally:
+        conn.close()
 
     # 写入 parquet 缓存
     df = pd.DataFrame(scored, columns=['ts_code', '_ml_pred', 'predicted_return', 'model_type'])

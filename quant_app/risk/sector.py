@@ -4,6 +4,7 @@
 
 移植自 scripts/sector_rotation_filter.py。
 """
+
 import logging
 
 import pandas as pd
@@ -45,11 +46,7 @@ def score_sectors(conn: pymysql.Connection, trade_date: str) -> dict[str, float]
             mom_range = ind_mom["mom_10d"].max() - ind_mom["mom_10d"].min()
             for _, row in ind_mom.iterrows():
                 sector = row["board_name"]
-                mom_score = (
-                    (row["mom_10d"] - ind_mom["mom_10d"].min()) / mom_range
-                    if mom_range > 0
-                    else 0.5
-                )
+                mom_score = (row["mom_10d"] - ind_mom["mom_10d"].min()) / mom_range if mom_range > 0 else 0.5
                 scores[sector] = scores.get(sector, 0) + mom_score * SECTOR_MOMENTUM_WEIGHT * 100
     except Exception as e:
         logger.warning("行业动量评分失败: %s", e)
@@ -70,11 +67,7 @@ def score_sectors(conn: pymysql.Connection, trade_date: str) -> dict[str, float]
             flow_range = sec_flow["net_10d"].max() - sec_flow["net_10d"].min()
             for _, row in sec_flow.iterrows():
                 sector = row["sector_name"]
-                flow_score = (
-                    (row["net_10d"] - sec_flow["net_10d"].min()) / flow_range
-                    if flow_range > 0
-                    else 0.5
-                )
+                flow_score = (row["net_10d"] - sec_flow["net_10d"].min()) / flow_range if flow_range > 0 else 0.5
                 scores[sector] = scores.get(sector, 0) + flow_score * SECTOR_FLOW_WEIGHT * 100
     except Exception as e:
         logger.warning("行业资金流评分失败: %s", e)
@@ -115,6 +108,8 @@ def apply_sector_diversification(
 
     logger.info(
         "行业分散: %d → %d 只候选（每行业最多 %d 只）",
-        len(candidates), len(result), max_per_sector,
+        len(candidates),
+        len(result),
+        max_per_sector,
     )
     return result

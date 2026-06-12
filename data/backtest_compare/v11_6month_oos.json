@@ -1,0 +1,34 @@
+{
+  "period": "2025-12-01 ~ 2026-06-09",
+  "n_days": 190,
+  "n_trades": 30,
+  "win_rate_pct": 26.67,
+  "total_return_pct": 0.33,
+  "annual_return_pct": 0.63,
+  "avg_win_pct": 8.81,
+  "avg_loss_pct": -3.71,
+  "pl_ratio": 2.37,
+  "final_equity": 100325.91,
+  "monthly": {
+    "2026-04": {
+      "n": 5,
+      "pnl": -786.7830000000008,
+      "wins": 1
+    },
+    "2026-05": {
+      "n": 17,
+      "pnl": 1489.8103951750034,
+      "wins": 5
+    },
+    "2026-06": {
+      "n": 8,
+      "pnl": -377.1173875000036,
+      "wins": 2
+    }
+  },
+  "exit_reasons": {
+    "time": 15,
+    "stop": 13,
+    "end": 2
+  }
+}

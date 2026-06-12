@@ -3,10 +3,17 @@
 V4+ML 候选池大小对比回测
 测试：V4 初筛不同规模候选池 (30/50/100/200/500) → ML 排序 Top3 的收益差异
 """
-import os, sys, json, logging, warnings
+import json
+import logging
+import os
+import sys
+import warnings
+
 warnings.filterwarnings('ignore')
-import numpy as np, pandas as pd, pymysql
+import numpy as np
+import pymysql
 from dotenv import load_dotenv
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -15,15 +22,25 @@ logger = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 
-from quant_app.utils.model_loader import get_model_path
-from ml_predict import _ensemble_predict
-from quant_app.services.strategy_service import _v4_score_single
-from scripts.predict_v11 import build_features_v11_inference
-from sqlalchemy import create_engine
 import joblib
+from sqlalchemy import create_engine
 
-DB_CONFIG = {'user':'root','password':'root123','host':'127.0.0.1','port':3306,'database':'quant_db','charset':'utf8mb4'}
-ENGINE = create_engine('mysql+pymysql://root:root123@127.0.0.1:3306/quant_db?charset=utf8mb4', pool_pre_ping=True, pool_size=5)
+from ml_predict import _ensemble_predict
+from quant_app.backtest.utils import (
+    backtest_stats,
+    compute_pool_forward_returns,
+    format_backtest_table,
+    get_candidate_pool,
+    get_prev_trade_date,
+    get_trade_dates,
+)
+from quant_app.services.strategy_service import _v4_score_single
+from quant_app.utils.config import config, get_db_config
+from quant_app.utils.model_loader import get_model_path
+from scripts.predict_v11 import build_features_v11_inference
+
+DB_CONFIG = get_db_config()
+ENGINE = create_engine(config.mysql.url, pool_pre_ping=True, pool_size=5)
 
 model_path = get_model_path("v11.0")
 bundle = joblib.load(model_path)
@@ -32,10 +49,7 @@ logger.info(f"V11.0 loaded: {bundle.get('n_models','?')} models, {len(bundle.get
 START_DATE, END_DATE = "2024-11-01", "2026-05-15"
 SAMPLE_INTERVAL, TOP_N, HOLD_DAYS = 5, 3, 5
 
-all_dates = sorted(pd.read_sql(
-    f"SELECT DISTINCT trade_date FROM daily_price WHERE trade_date >= '{START_DATE}' AND trade_date <= '{END_DATE}' ORDER BY trade_date",
-    ENGINE
-)['trade_date'].astype(str).tolist())
+all_dates = get_trade_dates(ENGINE, START_DATE, END_DATE)
 sample_dates = [d for d in all_dates[::SAMPLE_INTERVAL] if d > all_dates[5]]
 logger.info(f"Sample dates: {len(sample_dates)}")
 
@@ -50,16 +64,10 @@ for di, buy_date in enumerate(sample_dates):
     if (di + 1) % 10 == 0:
         logger.info(f"Progress: {di+1}/{len(sample_dates)}")
 
-    prev_date = pd.read_sql(
-        f"SELECT MAX(trade_date) FROM daily_price WHERE trade_date < '{buy_date}'", ENGINE
-    ).iloc[0, 0]
-    top_codes = pd.read_sql(f"""
-        SELECT ts_code FROM daily_price
-        WHERE trade_date = '{prev_date}' AND LEFT(ts_code, 1) NOT IN ('8','4','9')
-          AND ts_code NOT LIKE '83%%' AND ts_code NOT LIKE '87%%' AND ts_code NOT LIKE '43%%'
-          AND close <= 200
-        ORDER BY amount DESC LIMIT 500
-    """, ENGINE)['ts_code'].tolist()
+    prev_date = get_prev_trade_date(ENGINE, buy_date)
+    if not prev_date:
+        continue
+    top_codes = get_candidate_pool(ENGINE, prev_date, limit=500)
     if len(top_codes) < 100:
         continue
 
@@ -89,18 +97,7 @@ for di, buy_date in enumerate(sample_dates):
     v4_picks.sort(key=lambda x: -x[1])
 
     # Forward returns
-    codes_str = ','.join(f"'{c}'" for c in codes)
-    fwd = pd.read_sql(f"""
-        SELECT ts_code, pct_chg FROM daily_price
-        WHERE ts_code IN ({codes_str}) AND trade_date > '{buy_date}'
-        ORDER BY ts_code, trade_date
-    """, ENGINE)
-    fwd_rets = {}
-    for tc in codes:
-        ts_fwd = fwd[fwd['ts_code'] == tc]['pct_chg'].values[:HOLD_DAYS] / 100.0
-        ts_fwd = ts_fwd[~np.isnan(ts_fwd)]
-        if len(ts_fwd) >= 2:
-            fwd_rets[tc] = float((1 + ts_fwd).prod() - 1) * 100
+    fwd_rets = compute_pool_forward_returns(ENGINE, codes, buy_date, HOLD_DAYS)
 
     # Pure ML (from full 500 pool)
     valid_all = [c for c in codes if c in fwd_rets and c in ml_map]
@@ -121,41 +118,26 @@ conn.close()
 
 # ===== Results =====
 print(f"\n{'='*70}")
-print(f"V4 候选池大小对 V4+ML 收益的影响")
+print("V4 候选池大小对 V4+ML 收益的影响")
 print(f"{'='*70}")
 print(f"区间: {START_DATE} ~ {END_DATE} | 持仓: {HOLD_DAYS}天 | Top{TOP_N}")
 print()
 
-header = f"{'策略':<25} {'累积收益':>10} {'胜率':>8} {'夏普':>8} {'最大回撤':>8} {'均值':>7} {'样本':>6}"
-print(header)
-print(f"{'-'*72}")
-
-# Pure ML
-pr = np.array([r['avg_ret'] for r in pure_ml_results])
-pc = float((1 + pr / 100).prod() - 1) * 100
-pw = int((pr > 0).sum())
-ps = float(pr.mean() / pr.std() * np.sqrt(252/HOLD_DAYS)) if pr.std() > 0 else 0
-pd_ = float(min(0, (pr / 100).min()))
-print(f"{'Pure ML (无V4)':<25} {pc:>+10.2f}% {pw/len(pr)*100:>7.1f}% {ps:>8.2f} {pd_*100:>8.2f}% {pr.mean():>+6.2f}% {len(pr):>6d}")
-
+pure_stats = backtest_stats(pure_ml_results)
+all_stats = [("Pure ML (无V4)", pure_stats)]
 for size in pool_sizes:
-    store = results[size]
-    if not store:
-        continue
-    rets = np.array([r['avg_ret'] for r in store])
-    cum = float((1 + rets / 100).prod() - 1) * 100
-    wins = int((rets > 0).sum())
-    total = len(rets)
-    avg = float(rets.mean())
-    std = float(rets.std())
-    sharpe = float(avg / std * np.sqrt(252/HOLD_DAYS)) if std > 0 else 0
-    dd = float(min(0, (rets / 100).min()))
-    print(f"{'V4 Pool='+str(size)+' + ML Top3':<25} {cum:>+10.2f}% {wins/total*100:>7.1f}% {sharpe:>8.2f} {dd*100:>8.2f}% {avg:>+6.2f}% {total:>6d}")
+    s = backtest_stats(results[size])
+    all_stats.append((f"V4 Pool={size} + ML Top3", s))
+
+print(format_backtest_table(all_stats))
 
 # Save
-output = {'params': {'interval': SAMPLE_INTERVAL, 'top_n': TOP_N, 'hold_days': HOLD_DAYS},
-          'pure_ml': pure_ml_results,
-          'v4_ml': {str(s): results[s] for s in pool_sizes}}
+output = {
+    'params': {'interval': SAMPLE_INTERVAL, 'top_n': TOP_N, 'hold_days': HOLD_DAYS},
+    'pure_ml': pure_ml_results,
+    'v4_ml': {str(s): results[s] for s in pool_sizes},
+    'stats': {name: s for name, s in all_stats},
+}
 out_path = os.path.join(BASE_DIR, 'data', 'backtest_v4_pool.json')
 with open(out_path, 'w') as f:
     json.dump(output, f, indent=2, default=str)

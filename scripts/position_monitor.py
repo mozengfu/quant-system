@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """持仓风控监控 - 每个交易日 9:50/14:50 运行"""
-import sys
 import json
-import urllib.request
 import ssl
+import sys
+import urllib.request
 from datetime import datetime
 
 # Add project root to path
 sys.path.insert(0, '.')
 
-from quant_app.utils.config import get_db_config, FEISHU_WEBHOOK
+from quant_app.utils.config import FEISHU_WEBHOOK, get_db_config
+
 
 def get_positions():
     """从MySQL获取持仓列表"""
@@ -81,7 +82,7 @@ def get_quotes(positions):
         low = float(parts[34]) if parts[34] else 0  # 最低
         volume = float(parts[36]) if parts[36] else 0  # 成交量(手)
         turnover = float(parts[37]) if parts[37] else 0  # 成交额(万)
-        
+
         quotes[code] = {
             "price": price,
             "prev_close": prev_close,

@@ -8,7 +8,13 @@ from .sector_moneyflow import SectorMoneyflow
 from .stock_info import StockInfo
 
 __all__ = [
-    "StockInfo", "DailyPrice", "MarketIndexDaily", "FinaIndicator",
-    "MoneyflowDaily", "MarginDaily", "SectorMoneyflow",
-    "BoardConcept", "BoardIndustry",
+    "StockInfo",
+    "DailyPrice",
+    "MarketIndexDaily",
+    "FinaIndicator",
+    "MoneyflowDaily",
+    "MarginDaily",
+    "SectorMoneyflow",
+    "BoardConcept",
+    "BoardIndustry",
 ]

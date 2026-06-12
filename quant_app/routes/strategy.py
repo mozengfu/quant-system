@@ -1,19 +1,24 @@
 """
 策略选股相关 API 路由 — 分析 / 情绪 / 板块
 """
+
 import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Cookie, HTTPException
 from fastapi import Request as FastAPIRequest
 
-from app_core import (
-    ALL_BLOCKS,
-    analyze_stock,
-    get_client_ip,
-    get_current_user,
+from quant_app.routes.auth import get_current_user
+from quant_app.services.market_service import (
     get_recent_trade_dates,
     get_tushare_pro,
+)
+from quant_app.services.strategy_service import (
+    ALL_BLOCKS,
+    analyze_stock,
+)
+from quant_app.utils.persistence import (
+    get_client_ip,
     save_access_log,
 )
 
@@ -26,6 +31,7 @@ router = APIRouter(tags=["strategy"])
 
 
 # ========== 个股分析 ==========
+
 
 @router.get("/api/analysis/{market}/{code}")
 def analyze(market: str, code: str, request: FastAPIRequest, token: str = Cookie(None)):
@@ -65,7 +71,7 @@ def get_sentiment(token: str = Cookie(None)):
         fall_count = int((df.apply(lambda r: r["pct_chg"] <= -_get_limit_pct(r["ts_code"]), axis=1)).sum())
         up_count = int((df["pct_chg"] > 0).sum())
         down_count = int((df["pct_chg"] < 0).sum())
-        total = len(df)
+        len(df)
         rise_ratio = up_count / max(down_count, 1)
         if rise_ratio >= 2:
             sentiment = "极度乐观"

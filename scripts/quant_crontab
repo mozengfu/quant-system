@@ -14,7 +14,7 @@ QUANT_DIR=/Users/mozengfu/workspace/quant-system
 
 # 止盈止损检查：工作日 9:30-14:55 每 5 分钟（含自动执行）
 # 注意：飞书预警仅通知，不执行交易；盘中自动执行在 position_monitor 中
-*/5 9-14 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/feishu_alerts.py alert >> $QUANT_DIR/logs/feishu_alerts.log 2>&1
+*/5 9-15 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/feishu_alerts.py alert >> $QUANT_DIR/logs/feishu_alerts.log 2>&1
 
 # 收盘推送：工作日 15:05
 5 15 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/feishu_alerts.py daily >> $QUANT_DIR/logs/feishu_alerts.log 2>&1
@@ -22,7 +22,7 @@ QUANT_DIR=/Users/mozengfu/workspace/quant-system
 # ========== 盘中监控（含自动止盈止损执行）==========
 # 持仓扫描：工作日 9:30-15:00 每 5 分钟
 # 触发止损(-3%)/止盈(+6%/+10%/+18%)时自动执行卖出，不依赖日志告警
-*/5 9-14 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/position_monitor.py >> $QUANT_DIR/logs/position_monitor.log 2>&1
+*/5 9-15 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/position_monitor.py >> $QUANT_DIR/logs/position_monitor.log 2>&1
 
 # ========== 数据自动刷新 ==========
 # stock_pool/recommend/premarket 每30分钟刷新一次
@@ -39,6 +39,9 @@ QUANT_DIR=/Users/mozengfu/workspace/quant-system
 # ========== 每日数据导入（Tushare → MySQL） ==========
 0 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/update_daily_price_cron.py >> $QUANT_DIR/logs/daily_import.log 2>&1
 
+# ========== 每日PE/PB/市值同步（5分钟后，等daily_price完成） ==========
+5 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/sync_daily_basic.py >> $QUANT_DIR/logs/sync_daily_basic.log 2>&1
+
 # ========== 模拟交易 ==========
 30 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/sim_trading.py scan >> $QUANT_DIR/logs/sim_trading.log 2>&1
 
@@ -51,3 +54,7 @@ QUANT_DIR=/Users/mozengfu/workspace/quant-system
 # ========== V11.0 滚动训练（每周末） ==========
 # 每周六凌晨3点重训模型，用最新数据。训练约40分钟，完成后自动部署
 0 3 * * 6 cd $QUANT_DIR && bash scripts/rolling_train.sh
+
+# ========== 盘中持仓监控 (V2.0 — 替代旧 position_monitor，含自动止盈止损) ==========
+# 实盘调度器：每 10 分钟扫描持仓，触发 ATR 动态止损 / 硬性兜底 -5% / 移动止盈 / V11 盘中择时
+*/10 9-15 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/live_trading_scheduler.py monitor >> $QUANT_DIR/logs/live_trading_monitor.log 2>&1

@@ -2,9 +2,11 @@
 """
 实时行情 API 封装模块 — 三级备选：阿里云 → 东方财富 → 腾讯
 """
-import os, json, logging
-from urllib.request import urlopen, Request as UrlRequest
-from urllib.error import URLError
+import json
+import logging
+import os
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 
 logger = logging.getLogger(__name__)
 

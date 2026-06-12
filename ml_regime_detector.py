@@ -14,12 +14,17 @@
   6. 涨跌停比例（涨停/跌停比，A股特有信号）
 """
 
-import os, sys, json, logging
-from datetime import datetime
+import logging
+import sys
+
 from dotenv import load_dotenv
+
 load_dotenv()
 
-import numpy as np, pandas as pd, pymysql
+import numpy as np
+import pandas as pd
+import pymysql
+
 from quant_app.utils.config import get_db_config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -357,7 +362,7 @@ def backfill_regime_data(n_days=600):
         # 打印统计
         hist = detector.get_regime_history(conn, n_days=n_days)
         if not hist.empty:
-            print(f"\n状态分布:")
+            print("\n状态分布:")
             for r in REGIMES:
                 cnt = len(hist[hist['regime'] == r])
                 pct = cnt / len(hist) * 100

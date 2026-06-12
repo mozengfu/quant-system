@@ -4,8 +4,14 @@
 验证：在逆市中，模型能否选出涨的股票？
 """
 
-import os, pymysql, pandas as pd, numpy as np, joblib, warnings
+import warnings
+
+import joblib
+import numpy as np
+import pandas as pd
+import pymysql
 from sklearn.metrics import roc_auc_score
+
 warnings.filterwarnings('ignore')
 
 pwd = ''
@@ -117,7 +123,7 @@ if not bear_high_prob.empty:
     win_rate_bear_high = (bear_high_prob['label'].sum() / len(bear_high_prob)) * 100
     print(f"大盘下跌且模型概率 > 55% 的样本: {len(bear_high_prob):,} 个")
     print(f"  实际胜率 (5天后涨>3%): {win_rate_bear_high:.1f}% (基线: {bear['label'].mean()*100:.1f}%)")
-    
+
     # 对比：大盘下跌且模型概率 < 0.45
     bear_low_prob = bear[bear['prob'] < 0.45]
     if not bear_low_prob.empty:

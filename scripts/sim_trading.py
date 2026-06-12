@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-模拟交易系统 V5 - ML模型驱动
+模拟交易系统 V6 - V11.0 纯ML模型驱动
 - 独立模拟账户，初始资金 10 万元
-- 使用ML模型（V3/逆市）三策略选股，与推荐系统一致
+- 使用V11.0 纯ML选股管线（成交额Top300 → ML排序 → TopN）
 - 根据大盘状态决定是否建仓
 - 自动记录信号到MySQL
 - 实时计算收益率、胜率、最大回撤
@@ -13,10 +13,14 @@ MySQL 表结构：
   quant_db.sim_positions - 模拟持仓
   quant_db.sim_signals - 信号记录
 """
-import os, sys, json, logging, pymysql, urllib.request
+import json
+import logging
+import os
+import sys
+import urllib.request
 from datetime import datetime, timedelta
-from pathlib import Path
-from decimal import Decimal
+
+import pymysql
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -28,10 +32,11 @@ logger = logging.getLogger(__name__)
 
 # ========== 配置 ==========
 from quant_app.utils.config import get_db_config
+
 DB_CONFIG = get_db_config()
 
 INITIAL_CAPITAL = 100000  # 初始资金 10 万
-MAX_POSITIONS = 3          # 最大持仓数（V4.1→V6.5级联策略最优）
+MAX_POSITIONS = 3          # 最大持仓数（纯ML策略）
 STOP_LOSS_PCT = -0.03   # 固定止损 -3%（兜底值，动态值由 get_market_params 提供）
 TAKE_PROFIT_PCT = 0.06  # 固定止盈 +6%（兜底值，动态值由 get_market_params 提供）
 
@@ -120,6 +125,9 @@ def get_stock_realtime(code: str, market: str = "sz"):
             "代码": parts[2],
             "现价": float(parts[3]),
             "昨收": float(parts[4]),
+            "今开": float(parts[5]) if len(parts) > 5 and parts[5] else 0,
+            "最高": float(parts[33]) if len(parts) > 33 and parts[33] else 0,
+            "最低": float(parts[34]) if len(parts) > 34 and parts[34] else 0,
             "涨跌幅": float(parts[32]),
             "成交量": float(parts[6]),
             "成交额": float(parts[37]),
@@ -131,30 +139,91 @@ def get_stock_realtime(code: str, market: str = "sz"):
 
 
 # ========== 大盘状态 ==========
-def get_market_state_for_sim():
-    """获取大盘状态，决定是否可以建仓"""
+_mkt_cache = {"index": None, "breadth": None, "ts": 0}
+
+def _get_market_data():
+    """缓存10分钟：上证历史(Tushare) + 涨跌比(MySQL)"""
+    import time as _t
+    now = _t.time()
+    if _mkt_cache["ts"] and now - _mkt_cache["ts"] < 600:
+        return _mkt_cache["index"], _mkt_cache["breadth"], _mkt_cache.get("north_flow")
     try:
-        # 先尝试用腾讯财经获取上证指数
-        url = "http://qt.gtimg.cn/q=sh000001"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        resp = urllib.request.urlopen(req, timeout=10)
-        data = resp.read().decode("gbk")
-        if "~" in data:
-            parts = data.strip().rstrip(";").split("~")
-            sh_pct = float(parts[32])  # 涨跌幅
+        import tushare as ts
+        pro = ts.pro_api()
+        idx_df = pro.index_daily(ts_code='000001.SH', limit=5)
+        _mkt_cache["index"] = idx_df
+        # 北向资金
+        try:
+            nf = pro.moneyflow_hsgt(start_date='', end_date='', limit=2)
+            if len(nf) > 0:
+                latest = nf.iloc[0]
+                _mkt_cache["north_flow"] = {
+                    "north_net": float(latest.get("north_money", 0)),
+                    "date": str(latest.get("trade_date", "")),
+                }
+        except Exception:
+            _mkt_cache["north_flow"] = None
+        # 涨跌比从MySQL daily_price读
+        try:
+            import pymysql
+            conn = pymysql.connect(**DB_CONFIG)
+            cur = conn.cursor()
+            cur.execute("""SELECT COUNT(CASE WHEN pct_chg>0 THEN 1 END),
+                                  COUNT(CASE WHEN pct_chg<0 THEN 1 END)
+                           FROM daily_price WHERE trade_date=%s""",
+                       (str(idx_df.iloc[0]["trade_date"]),))
+            up, down = cur.fetchone()
+            cur.close(); conn.close()
+            up, down = int(up or 0), int(down or 0)
+            _mkt_cache["breadth"] = {"up": up, "down": down, "ratio": round(up/max(down,1), 2)}
+        except Exception:
+            _mkt_cache["breadth"] = None
+        _mkt_cache["ts"] = now
+        return _mkt_cache["index"], _mkt_cache["breadth"], _mkt_cache.get("north_flow")
+    except Exception:
+        return _mkt_cache["index"], _mkt_cache["breadth"], _mkt_cache.get("north_flow")
 
-            is_bear = sh_pct < -0.5
+def get_market_state_for_sim():
+    """获取大盘状态 — 统一从 market_monitor 的 market_state.json 读取
+    market_monitor 已改为 QMT 主数据源 + 腾讯降级，是唯一权威判断。
+    """
+    import json
+    import os
+    try:
+        state_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                  'data', 'market_state.json')
+        if os.path.exists(state_file):
+            with open(state_file) as f:
+                st = json.load(f)
+            is_bear = st.get("is_bear", False)
+            sh_pct = st.get("sh_pct", 0)
+            state_name = st.get("state_name", "常态")
+
+            # 涨跌比仍从MySQL读取（用于threshold调整）
+            _, breadth, _ = _get_market_data()
+
+            # threshold: 基于涨跌比微调，逆市时提高门槛
+            effective_threshold = 1.5
             if is_bear:
-                return {"is_bear": True, "state_name": "逆市", "mkt_chg": sh_pct, "threshold": 0.40}
-            else:
-                return {"is_bear": False, "state_name": "常态", "mkt_chg": sh_pct, "threshold": 0.55}
+                effective_threshold = 2.5
+            elif breadth and breadth.get("ratio", 1.0) < 0.8:
+                effective_threshold = 2.0
+
+            return {
+                "is_bear": is_bear,
+                "state_name": state_name,
+                "mkt_chg": sh_pct,
+                "threshold": effective_threshold,
+                "breadth": breadth,
+                "threshold_raw": effective_threshold,
+            }
     except Exception as e:
-        logger.warning("获取大盘状态失败: %s", e)
+        logger.warning("读取market_state.json失败: %s", e)
     # 默认常态
-    return {"is_bear": False, "state_name": "常态", "mkt_chg": 0, "threshold": 0.55}
+    return {"is_bear": False, "state_name": "常态", "mkt_chg": 0, "threshold": 1.5}
 
 
-# ========== 三策略选股（ML模型驱动）==========
+# ========== 旧策略选股（保留作CLI参考）==========
 def ml_select_from_strategy(strategy_name, latest_date):
     """
     从指定策略选出一只最佳股票（与推荐系统一致）
@@ -172,7 +241,7 @@ def ml_select_from_strategy(strategy_name, latest_date):
         if not os.path.exists(pool_file):
             cursor.close()
             return None
-        with open(pool_file, 'r') as f:
+        with open(pool_file) as f:
             data = json.load(f)
         stocks = data.get("stocks", [])
         if not stocks:
@@ -531,6 +600,118 @@ def get_holding_positions():
     return positions
 
 
+# ========== 纯ML选股（生产主模式）==========
+def pure_ml_scan(top_n=3):
+    """
+    纯ML选股管线 — 与生产管线一致（PURE_ML=1）
+    成交额Top300(前日) → V11.0预测 → ML百分位过滤 → TopN
+    """
+    conn = get_db_conn()
+    cur = conn.cursor()
+
+    # 最新交易日
+    cur.execute("SELECT MAX(trade_date) FROM daily_price")
+    latest_date = cur.fetchone()[0]
+    if not latest_date:
+        cur.close(); conn.close()
+        return []
+    today_str = str(latest_date)
+
+    # 前一日成交额Top300
+    cur.execute("SELECT MAX(trade_date) FROM daily_price WHERE trade_date < %s", (today_str,))
+    prev_date = cur.fetchone()[0]
+    if not prev_date:
+        cur.close(); conn.close()
+        return []
+    prev_str = str(prev_date)
+
+    cur.execute("""
+        SELECT d.ts_code, s.name, s.industry, d.close, d.pct_chg
+        FROM daily_price d
+        JOIN stock_info s ON d.ts_code = s.ts_code COLLATE utf8mb4_unicode_ci
+        WHERE d.trade_date = %s
+          AND d.ts_code NOT LIKE '688%%' AND d.ts_code NOT LIKE '8%%'
+          AND d.ts_code NOT LIKE '4%%' AND d.ts_code NOT LIKE '9%%'
+          AND s.name NOT LIKE '%%ST%%' AND s.name NOT LIKE '%%退%%'
+          AND d.close <= 200 AND d.close >= 3
+        ORDER BY d.amount DESC
+        LIMIT 300
+    """, (prev_str,))
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+
+    if not rows:
+        logger.info("纯ML选股: 无候选")
+        return []
+
+    ts_codes = [r[0] for r in rows]
+    name_map = {r[0]: r[1] or "" for r in rows}
+    price_map = {r[0]: float(r[3]) if r[3] else 0 for r in rows}
+    pct_map = {r[0]: float(r[4]) if r[4] else 0 for r in rows}
+
+    # V11.0 批量预测
+    try:
+        from ml_predict import predict_batch
+        preds = predict_batch(ts_codes)
+    except Exception as e:
+        logger.warning("ML预测失败: %s", e)
+        return []
+
+    if not preds:
+        return []
+
+    # 百分位过滤（保留ML排名前50%）+ 按z_score排序
+    qualified = []
+    for tc in ts_codes:
+        ml = preds.get(tc, {})
+        rank_pct = ml.get('rank_pct', 0.5)
+        z_score = ml.get('predicted_return', 0)
+        if rank_pct > 0.50:  # 只保留横截面前50%
+            continue
+
+        # 5日累计涨幅超30%过滤（避免追高短期暴涨股）
+        try:
+            conn5 = get_db_conn()
+            cur5 = conn5.cursor()
+            # 查询5个交易日前的收盘价
+            cur5.execute(
+                "SELECT close FROM daily_price WHERE ts_code=%s AND trade_date < %s ORDER BY trade_date DESC LIMIT 5",
+                (tc, today_str),
+            )
+            rows5 = cur5.fetchall()
+            cur5.close()
+            conn5.close()
+            if len(rows5) >= 5:
+                price_5d_ago = float(rows5[-1][0]) if rows5[-1] and rows5[-1][0] else 0
+                cur_price = price_map.get(tc, 0)
+                if price_5d_ago > 0 and cur_price > 0:
+                    gain_5d = (cur_price - price_5d_ago) / price_5d_ago * 100
+                    if gain_5d > 30:
+                        logger.debug("跳过 %s: 5日涨幅%.1f%% > 30%%", tc, gain_5d)
+                        continue
+        except Exception:
+            pass
+
+        market = "sz" if tc.endswith(".SZ") else "sh"
+        qualified.append({
+            "ts_code": tc,
+            "name": name_map.get(tc, ""),
+            "market": market,
+            "price": price_map.get(tc, 0),
+            "pct_chg": pct_map.get(tc, 0),
+            "ml_prob": ml.get('probability', 0.5),
+            "ml_score": z_score,
+            "rank_pct": rank_pct,
+        })
+
+    qualified.sort(key=lambda x: x["ml_score"], reverse=True)
+
+    if qualified:
+        logger.info("纯ML选股: %d只通过百分位过滤 → 取Top%d", len(qualified), top_n)
+
+    return qualified[:top_n]
+
+
 # ========== V4 策略选股 ==========
 def v4_scan(top_n=3):
     """
@@ -685,63 +866,15 @@ def v4_scan(top_n=3):
 
     return result[:top_n]
 
-# === 旧版 v4_scan（2026-05-06 替换为级联策略，保留一个月后清理）===
-# 旧版逻辑：predict_batch + ML概率>=0.5硬过滤 + 按主力评分排序
-# 如需恢复，删掉上面的新 v4_scan 并取消下方注释即可
-# def v4_scan_old(top_n=5):
-#     conn = get_db_conn()
-#     cursor = conn.cursor()
-#     cursor.execute("SELECT MAX(trade_date) FROM quant_db.daily_price")
-#     latest_date = cursor.fetchone()[0]
-#     if not latest_date:
-#         cursor.close(); conn.close()
-#         return []
-#     today_str = str(latest_date)
-#     sql = \"\"\"...（同技术筛选SQL）...\"\"\"
-#     cursor.execute(sql, (today_str,))
-#     candidates = cursor.fetchall()
-#     cursor.close()
-#     if not candidates:
-#         conn.close()
-#         return []
-#     from mainforce_scoring import calculate_mainforce_score
-#     scored = []
-#     for r in candidates:
-#         ts_code, name = r[0], r[1] or ""
-#         price, pct_chg, vol_ratio = float(r[3]) if r[3] else 0, float(r[4]) if r[4] else 0, float(r[6]) if r[6] else 0
-#         try:
-#             mf = calculate_mainforce_score(ts_code, latest_date, conn=conn)
-#         except Exception:
-#             mf = {'score': 0, 'level': '未知'}
-#         if mf.get('score', 0) < 60:
-#             continue
-#         market = "sz" if ts_code.endswith(".SZ") else "sh"
-#         scored.append({"ts_code": ts_code, "name": name, "market": market,
-#                        "price": price, "pct_chg": pct_chg, "vol_ratio": vol_ratio,
-#                        "mainforce_score": mf.get('score', 0)})
-#     if scored:
-#         try:
-#             from ml_predict import predict_batch
-#             ml_results = predict_batch([s["ts_code"] for s in scored], db_conn=conn, as_of_date=today_str)
-#             filtered = []
-#             for s in scored:
-#                 ml = ml_results.get(s["ts_code"], {})
-#                 if ml.get('probability', 0.5) < 0.5:
-#                     continue
-#                 s["ml_prob"] = ml['probability']
-#                 s["ml_zscore"] = ml.get('predicted_return', 0)
-#                 filtered.append(s)
-#             scored = filtered
-#         except Exception:
-#             pass
-#     scored.sort(key=lambda x: x["mainforce_score"], reverse=True)
-#     conn.close()
-#     return scored[:top_n]
-
 
 # ========== 信号记录 ==========
 def record_signal(signal_type, ts_code, stock_name, price, shares, strategy, ml_prob, enhanced_score, market_state, reason, status="已执行"):
-    """记录信号到MySQL sim_signals表"""
+    """记录信号到MySQL sim_signals表
+
+    重新抛 IntegrityError(1062) 给调用方,让 scanner / morning_execute 能识别
+    uk_sim_signals_executed 触发的同 ts_code+date 重复。其他异常仍吞掉避免影响主流程。
+    """
+    import pymysql
     try:
         conn = get_db_conn()
         cursor = conn.cursor()
@@ -756,6 +889,9 @@ def record_signal(signal_type, ts_code, stock_name, price, shares, strategy, ml_
         conn.commit()
         cursor.close()
         conn.close()
+    except pymysql.err.IntegrityError:
+        # uk_sim_signals_executed 触发:让调用方决定怎么处理
+        raise
     except Exception as e:
         logger.warning("记录信号失败: %s", e)
 
@@ -1013,7 +1149,7 @@ def update_account_value():
         code = pos["ts_code"].split(".")[0]
         market = pos["market"]
         quote = get_stock_realtime(code, market)
-        
+
         if quote:
             current_price = quote["现价"]
             market_value = round(current_price * int(pos["shares"]), 2)
@@ -1046,7 +1182,7 @@ def update_account_value():
     conn.commit()
     cursor.close()
     conn.close()
-    
+
     logger.info("📊 账户净值: %.2f 盈亏: %.2f (%.2f%%) 最大回撤: %.2f%%",
                 total_value, profit_loss, profit_pct * 100, drawdown * 100)
 
@@ -1067,7 +1203,7 @@ def refresh_positions_prices():
         conn.close()
         return
     cols = [d[0] for d in cursor.description]
-    
+
     for row in rows:
         pos = dict(zip(cols, row))
         code = pos["ts_code"].split(".")[0]
@@ -1075,19 +1211,19 @@ def refresh_positions_prices():
         quote = get_stock_realtime(code, market)
         if not quote:
             continue
-            
+
         price = quote["现价"]
         market_value = round(price * int(pos["shares"]), 2)
         pnl = round(market_value - float(pos["total_cost"]), 2)
         pnl_pct = pnl / float(pos["total_cost"])
-        
+
         cursor.execute("""
             UPDATE sim_positions
             SET current_price = %s, market_value = %s, 
                 profit_loss = %s, profit_pct = %s, updated_at = %s
             WHERE id = %s
         """, (price, market_value, pnl, pnl_pct, datetime.now(), pos["id"]))
-        
+
     conn.commit()
     cursor.close()
     conn.close()
@@ -1099,12 +1235,12 @@ def daily_scan():
     每日盘后执行：
     1. 检查大盘状态（熊市不建仓）
     2. 检查已有模拟持仓的止盈止损
-    3. 用ML三策略选股买入
+    3. 用纯ML管线选股买入
     4. 刷新持仓现价（确保数据库数据是最新的）
     5. 更新模拟账户状态
     """
-    logger.info("=== 模拟交易每日扫描开始（ML驱动）===")
-    logger.info("V4.1→V6.5级联策略 | 分级止盈+6%/+10%/+18% | 持有≤5天")
+    logger.info("=== 模拟交易每日扫描开始（V11.0纯ML）===")
+    logger.info("Top300→V11.0预测→ML百分位过滤 | 分级止盈+6%/+10%/+18% | 持有≤5天")
 
     # 1. 获取大盘状态 + 市场参数
     market_params = get_market_params()
@@ -1226,18 +1362,18 @@ def daily_scan():
         conn.close()
 
         if latest_date:
-            # V4 组合策略选股（ML增强），取最多 available_slots 只
-            candidates = v4_scan(top_n=3)
+            # 纯ML管线选股，取最多 available_slots 只
+            candidates = pure_ml_scan(top_n=3)
 
             # 按可用仓位截断
             if len(candidates) > available_slots:
                 candidates = candidates[:available_slots]
 
             if not candidates:
-                logger.info("V4 扫描无符合条件的股票")
+                logger.info("纯ML扫描无符合条件的股票")
             else:
-                logger.info("V4 选出 %d 只候选: %s",
-                            len(candidates), ", ".join([f"{c['name']}(主力{c['mainforce_score']},ML{c.get('ml_prob',0):.2f})" for c in candidates]))
+                logger.info("纯ML选出 %d 只候选: %s",
+                            len(candidates), ", ".join([f"{c['name']}(ML={c.get('ml_score',0):.3f},pct={c.get('rank_pct',0):.2f})" for c in candidates]))
                 to_buy = candidates
 
                 if POSITION_SIZING_MODE == 'equal':
@@ -1274,7 +1410,7 @@ def daily_scan():
                         conn_buy = get_db_conn()
                         cur_buy = conn_buy.cursor()
                         cur_buy.execute("""
-                            SELECT pct_chg FROM daily_price 
+                            SELECT pct_chg FROM daily_price
                             WHERE ts_code = %s AND trade_date = (
                                 SELECT MAX(trade_date) FROM daily_price
                             )
@@ -1283,7 +1419,7 @@ def daily_scan():
                         cur_buy.close()
                         conn_buy.close()
                         if row_zt and float(row_zt[0] or 0) >= 9.5:
-                            logger.info("%s(%s) 今日涨幅%.1f%%已近涨停，买不进，跳过", 
+                            logger.info("%s(%s) 今日涨幅%.1f%%已近涨停，买不进，跳过",
                                         name, ts_code, float(row_zt[0]))
                             continue
                     except Exception as e:
@@ -1292,10 +1428,10 @@ def daily_scan():
                     success = execute_buy(
                         ts_code, name, market_full,
                         price, shares,
-                        reason="V4组合策略: 主力评分%.0f" % pick["mainforce_score"],
-                        strategy="组合策略(V4)",
+                        reason="纯ML: V11.0排序(%.3f)" % pick.get("ml_score", 0),
+                        strategy="纯ML(V11.0)",
                         ml_prob=pick.get("ml_prob", 0),
-                        enhanced_score=pick.get("mainforce_score", 0),
+                        enhanced_score=pick.get("ml_score", 0),
                         market_state=_mp_buy.get('state_name', '常态')
                     )
                     if not success:
@@ -1381,7 +1517,7 @@ def _record_nav_snapshot():
     history = []
     if os.path.exists(nav_path):
         try:
-            with open(nav_path, 'r') as f:
+            with open(nav_path) as f:
                 history = json.load(f)
         except Exception:
             history = []
@@ -1393,7 +1529,7 @@ def _record_nav_snapshot():
 
     positions = get_holding_positions()
     holdings_value = sum(
-        float(p.get("current_price", 0)) * int(p.get("shares", 0))
+        (float(p.get("current_price") or 0)) * int(p.get("shares") or 0)
         for p in positions
     ) if positions else 0
 
@@ -1418,10 +1554,10 @@ def get_sim_account_info():
     """获取模拟账户完整信息（供 API 调用）"""
     account = get_account()
     positions = get_holding_positions()
-    
+
     if not account:
         return {"error": "无账户数据"}
-    
+
     # 获取最近 10 笔交易
     conn = get_db_conn()
     cursor = conn.cursor()

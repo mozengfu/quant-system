@@ -6,17 +6,23 @@
 用法: python3 scripts/backfill_margin.py
 """
 
-import os, sys, time, logging
+import logging
+import os
+import sys
+import time
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from datetime import datetime, timedelta
+from datetime import timedelta
+
 from dotenv import load_dotenv
+
 load_dotenv()
 
 import pandas as pd
 import pymysql
 
-from quant_app.utils.config import get_db_config
 from quant_app.services.market_service import get_tushare_pro
+from quant_app.utils.config import get_db_config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)

@@ -5,6 +5,7 @@
 
 移植自 quant_app/services/strategy_service.py (lines ~2430-2478)。
 """
+
 import logging
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,10 @@ def apply_risk_filters(
             c["risk_reason"] = "; ".join(risks)
             logger.info(
                 "风控过滤[%s]: %s(%s) %s",
-                risk_state, c["name"], c["ts_code"], "; ".join(risks),
+                risk_state,
+                c["name"],
+                c["ts_code"],
+                "; ".join(risks),
             )
         else:
             passed.append(c)

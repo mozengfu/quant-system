@@ -2,6 +2,7 @@
 通用技术指标计算模块 — 全序列版本（返回 list）
 所有指标统一入口，确保各模块计算结果一致。
 """
+
 import logging
 
 logger = logging.getLogger(__name__)
@@ -53,8 +54,8 @@ def calculate_kdj(highs, lows, closes, n=9, m1=3, m2=3):
         if i < n - 1:
             rsv_list.append(None)
             continue
-        low_n = min(lows[i - n + 1:i + 1])
-        high_n = max(highs[i - n + 1:i + 1])
+        low_n = min(lows[i - n + 1 : i + 1])
+        high_n = max(highs[i - n + 1 : i + 1])
         close_curr = closes[i]
         if high_n == low_n:
             rsv = 50
@@ -92,10 +93,10 @@ def calculate_bollinger_bands(closes, period=20, std_dev=2):
             middle.append(None)
             lower.append(None)
         else:
-            window = closes[i - period + 1:i + 1]
+            window = closes[i - period + 1 : i + 1]
             ma = sum(window) / period
             variance = sum((x - ma) ** 2 for x in window) / period
-            std = variance ** 0.5
+            std = variance**0.5
             middle.append(ma)
             upper.append(ma + std_dev * std)
             lower.append(ma - std_dev * std)

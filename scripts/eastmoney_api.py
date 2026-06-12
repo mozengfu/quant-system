@@ -2,12 +2,10 @@
 """
 东方财富实时行情API - 兼容aicloud_api接口格式
 """
-import urllib.request
-import urllib.error
-import ssl
 import json
-import os
-from typing import Optional, Dict
+import ssl
+import urllib.error
+import urllib.request
 
 HOST = "https://push2.eastmoney.com"
 
@@ -28,7 +26,7 @@ def _code_to_secid(symbol: str) -> str:
         secid 字符串，格式为 '1.600519' 或 '0.000001'
     """
     symbol = symbol.strip().upper()
-    
+
     if '.' in symbol:
         parts = symbol.split('.')
         code = parts[1]
@@ -43,7 +41,7 @@ def _code_to_secid(symbol: str) -> str:
             market = 'SH'
         else:
             market = 'SZ'
-    
+
     # 转换为 secid 格式
     if market == 'SH':
         return f'1.{code}'
@@ -51,7 +49,7 @@ def _code_to_secid(symbol: str) -> str:
         return f'0.{code}'
 
 
-def get_stock_quote(symbol: str) -> Optional[Dict]:
+def get_stock_quote(symbol: str) -> dict | None:
     """
     获取股票实时行情
     
@@ -75,7 +73,7 @@ def get_stock_quote(symbol: str) -> Optional[Dict]:
             return None
 
         d = data['data']
-        
+
         def safe_float(val, default=0.0):
             if val is None or val == '-':
                 return default
@@ -83,17 +81,17 @@ def get_stock_quote(symbol: str) -> Optional[Dict]:
                 return float(val)
             except (ValueError, TypeError):
                 return default
-        
+
         # f57=代码, f58=名称, f60=昨收(分), f43=最新价(分)
         # f116=总市值, f117=流通市值
         price = safe_float(d.get('f43'), 0) / 100.0 if safe_float(d.get('f43'), 0) > 0 else 0
         prev_close = safe_float(d.get('f60'), 0) / 100.0 if safe_float(d.get('f60'), 0) > 0 else 0
-        
+
         # 涨跌幅自己算
         change_pct = 0
         if prev_close > 0 and price > 0:
             change_pct = round((price - prev_close) / prev_close * 100, 2)
-        
+
         result = {
             'N': d.get('f58', ''),      # 名称
             'C': d.get('f57', ''),      # 代码
@@ -111,13 +109,13 @@ def get_stock_quote(symbol: str) -> Optional[Dict]:
             'ZS': safe_float(d.get('f116'), 0),         # 总市值
             'LS': safe_float(d.get('f117'), 0),         # 流通市值
         }
-        
+
         return result
-    except Exception as e:
+    except Exception:
         return None
 
 
-def get_stock_realtime(code: str, market: str = "sz") -> Optional[Dict]:
+def get_stock_realtime(code: str, market: str = "sz") -> dict | None:
     """
     兼容 alicloud_api 的接口格式
     
@@ -132,7 +130,7 @@ def get_stock_realtime(code: str, market: str = "sz") -> Optional[Dict]:
     raw = get_stock_quote(symbol)
     if raw is None:
         return None
-    
+
     return {
         "名称": raw.get("N", ""),
         "代码": raw.get("C", ""),

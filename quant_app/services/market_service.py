@@ -2,11 +2,12 @@
 """
 行情数据服务 - 实时行情、历史数据、RPS计算、持仓同步、技术面买卖信号
 """
+
 import json
 import logging
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from quant_app.services.realtime_service import (
     get_stock_quote as get_stock_realtime,
@@ -31,61 +32,55 @@ EASTMONEY_HOST = "http://push2.eastmoney.com"
 _quote_cache = {}
 _QUOTE_CACHE_TTL = 30
 
+
 def _get_cached(key):
     if key in _quote_cache:
         t = _quote_cache[key]
-        if time.time() - t['ts'] < _QUOTE_CACHE_TTL:
-            return t['data']
+        if time.time() - t["ts"] < _QUOTE_CACHE_TTL:
+            return t["data"]
     return None
 
+
 def _set_cache(key, data):
-    _quote_cache[key] = {'data': data, 'ts': time.time()}
+    _quote_cache[key] = {"data": data, "ts": time.time()}
     # 控制缓存大小
     if len(_quote_cache) > 500:
         now = time.time()
         for k in list(_quote_cache.keys()):
-            if now - _quote_cache[k]['ts'] > _QUOTE_CACHE_TTL * 2:
+            if now - _quote_cache[k]["ts"] > _QUOTE_CACHE_TTL * 2:
                 del _quote_cache[k]
+
 
 # ========== Tushare 配置 ==========
 TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 
 
 def get_tushare_pro():
+    """已迁移到QMT数据源，Tushare仅作备份。正常流程不调用此函数。"""
+    logger.warning("Tushare API 已被 QMT 替代，此调用应被移除")
     import tushare as ts
     ts.set_token(TUSHARE_TOKEN)
     return ts.pro_api()
 
 
 def get_recent_trade_dates(n=5):
-    """获取最近n个交易日（优化版，使用trade_cal API）"""
-    try:
-        pro = get_tushare_pro()
-        today_str = datetime.now().strftime("%Y%m%d")
-        # 使用trade_cal API一次性获取多个交易日
-        cal_df = pro.trade_cal(exchange='SSE', start_date=(datetime.now() - timedelta(days=60)).strftime('%Y%m%d'),
-                                end_date=today_str, is_open='1')
-        if cal_df is None or len(cal_df) == 0:
-            # Fallback: 使用旧的笨方法但减少API调用
-            return get_recent_trade_dates_fallback(n)
-        dates = cal_df['cal_date'].tolist()[:n]
-        return list(reversed(dates))  # 转换为升序（早到晚）
-    except Exception as e:
-        logger.warning(f"获取交易日历失败: {e}")
-        return get_recent_trade_dates_fallback(n)
+    """获取最近n个交易日（从MySQL daily_price表，替代Tushare trade_cal）"""
+    return get_recent_trade_dates_fallback(n)
 
 
 def get_recent_trade_dates_fallback(n=5):
     """Fallback: 从MySQL获取最近n个交易日，避免循环API调用"""
     try:
         import pymysql
+
         db_config = get_db_config(connect_timeout=3)
         conn = pymysql.connect(**db_config)
         cursor = conn.cursor()
         cursor.execute(
             "SELECT DISTINCT trade_date FROM daily_price "
             "WHERE trade_date IS NOT NULL "
-            "ORDER BY trade_date DESC LIMIT %s", (n,)
+            "ORDER BY trade_date DESC LIMIT %s",
+            (n,),
         )
         rows = cursor.fetchall()
         cursor.close()
@@ -108,12 +103,13 @@ def get_latest_rps_from_db(ts_code):
     """
     try:
         import pymysql
+
         db_config = get_db_config(connect_timeout=3)
         conn = pymysql.connect(**db_config)
         cursor = conn.cursor()
         cursor.execute(
             "SELECT rps_20 FROM quant_db.daily_price WHERE ts_code=%s AND rps_20 IS NOT NULL AND rps_20 > 0 ORDER BY trade_date DESC LIMIT 1",
-            [ts_code]
+            [ts_code],
         )
         row = cursor.fetchone()
         cursor.close()
@@ -135,36 +131,31 @@ def calculate_rps(code, market="sz", n=20):
         # 优先从MySQL读（已预计算好，毫秒级）
         ts_code = f"{code}.{'SZ' if market == 'sz' else 'SH'}"
         rps = get_latest_rps_from_db(ts_code)
-        if rps is not None and rps > 0:  # valid data (including 50.0 = market-neutral); None = no data, fall back to Tushare
+        if (
+            rps is not None and rps > 0
+        ):  # valid data (including 50.0 = market-neutral); None = no data, fall back to Tushare
             return rps
-        # MySQL无数据或为默认值50，回退到Tushare API（原有逻辑）
-        pro = get_tushare_pro()
-        dates = get_recent_trade_dates(n + 2)
-        if len(dates) < n + 1:
-            return 50
-        start_date = dates[0]
-        end_date = dates[-1]
-        df = pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
-        if df is None or len(df) < 2:
-            return 50
-        df = df.sort_values("trade_date")
-        closes = df["close"].tolist()
-        if len(closes) < 2 or closes[0] == 0:
-            return 50
-        stock_chg = (closes[-1] / closes[0] - 1) * 100
+        # MySQL无预计算数据，用MySQL daily_price实时计算
         try:
-            hs300 = pro.index_daily(ts_code="000300.SH", start_date=start_date, end_date=end_date)
-            if hs300 is not None and len(hs300) >= 2:
-                hs300 = hs300.sort_values("trade_date")
-                hc = hs300["close"].tolist()
-                hs300_chg = (hc[-1] / hc[0] - 1) * 100
+            from quant_app.services.qmt_adapter import get_daily_data, get_index_daily
+            data = get_daily_data(ts_code, limit=n + 5)
+            if len(data) < 2:
+                return 50
+            closes = [d["close"] for d in data]
+            if closes[0] == 0:
+                return 50
+            stock_chg = (closes[-1] / closes[0] - 1) * 100
+            idx_data = get_index_daily("000300.SH", limit=n + 5)
+            if len(idx_data) >= 2:
+                ic = [d["close"] for d in idx_data]
+                idx_chg = (ic[-1] / ic[0] - 1) * 100
             else:
-                hs300_chg = 0
+                idx_chg = 0
+            relative_chg = stock_chg - idx_chg
+            rps = 50 + relative_chg * 5
+            return max(0, min(100, rps))
         except Exception:
-            hs300_chg = 0
-        relative_chg = stock_chg - hs300_chg
-        rps = 50 + relative_chg * 5
-        return max(0, min(100, rps))
+            return 50
     except Exception as e:
         logger.warning(f"RPS 计算失败 {code}: {e}")
         return 50
@@ -172,35 +163,53 @@ def calculate_rps(code, market="sz", n=20):
 
 # ========== 持仓自动同步 ==========
 
+
 def sync_positions():
     """
-    从 stocks.json 同步持仓到 positions.json（直接复制中文字段）
+    从 MySQL positions 表同步持仓到 positions.json（MySQL 为唯一真实来源）
     """
     try:
-        from quant_app.utils.config import DATA_DIR
-        stocks_path = DATA_DIR / "stocks.json"
+        from quant_app.utils.config import DATA_DIR, get_db_config
+
         positions_path = DATA_DIR / "positions.json"
-        if stocks_path.exists():
-            with open(stocks_path, encoding="utf-8") as f:
-                stocks_data = json.load(f)
-            cn_positions = stocks_data.get("持仓", None)
-            if cn_positions and len(cn_positions) > 0:
-                positions_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(positions_path, "w", encoding="utf-8") as f:
-                    json.dump(cn_positions, f, ensure_ascii=False, indent=2)
-                logger.info("持仓同步完成: %d 只", len(cn_positions))
-            else:
-                logger.info("stocks.json 无持仓数据，跳过同步，保留现有 positions.json")
+        import pymysql
+        conn = pymysql.connect(**get_db_config())
+        cur = conn.cursor()
+        cur.execute("SELECT ts_code, name, quantity, cost, stop_loss, take_profit FROM positions")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        if rows:
+            cn_positions = []
+            for r in rows:
+                ts_code = r[0]
+                cn_positions.append({
+                    "代码": ts_code,
+                    "名称": r[1],
+                    "市场": "sz" if ts_code.startswith("0") or ts_code.startswith("3") else "sh",
+                    "数量": int(r[2]),
+                    "成本": float(r[3]),
+                    "止损": float(r[4]) if r[4] else 0,
+                    "止盈": float(r[5]) if r[5] else 0,
+                })
+            positions_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(positions_path, "w", encoding="utf-8") as f:
+                json.dump(cn_positions, f, ensure_ascii=False, indent=2)
+            logger.info("持仓同步完成: %d 只（MySQL → JSON）", len(cn_positions))
+        else:
+            logger.info("MySQL positions 表为空，跳过同步")
     except Exception as e:
         logger.warning("持仓同步失败: %s", e)
 
 
 def add_to_positions(signal):
     """
-    将买入信号添加到 stocks.json 持仓列表
+    将买入信号添加到 stocks.json 持仓列表，同时写入 MySQL positions 表（唯一真实来源）
     """
     try:
-        from quant_app.utils.config import DATA_DIR
+        from quant_app.utils.config import DATA_DIR, get_db_config
+
         stocks_path = DATA_DIR / "stocks.json"
         if stocks_path.exists():
             with open(stocks_path, encoding="utf-8") as f:
@@ -218,14 +227,15 @@ def add_to_positions(signal):
                 # 计算动态止损止盈（基于均线支撑/压力）
                 price = float(signal["price"])
                 # 止损止盈优先使用市场状态参数
-                sl_pct = -5
+                sl_pct = -7
                 tp_pct = 8
                 try:
-                    from market_state import get_market_state
+                    from quant_app.services.market_state import get_market_state
+
                     ms = get_market_state() or {}
-                    p = ms.get('params', {})
-                    sl_pct = p.get('stop_loss_pct', -5)
-                    tp_pct = p.get('take_profit_pct', 8)
+                    p = ms.get("params", {})
+                    sl_pct = p.get("stop_loss_pct", -7)
+                    tp_pct = p.get("take_profit_pct", 8)
                 except Exception:
                     pass
                 stop_loss = round(price * (1 + sl_pct / 100), 2)
@@ -250,6 +260,26 @@ def add_to_positions(signal):
                     json.dump(stocks_data, f, ensure_ascii=False, indent=2)
 
                 logger.info(f"已添加持仓: {signal['name']} ({signal['code']}) {signal['qty']}股 @ {signal['price']}元")
+
+                # === 同步写入 MySQL positions 表（唯一真实来源）===
+                try:
+                    import pymysql
+                    conn = pymysql.connect(**get_db_config())
+                    cur = conn.cursor()
+                    cur.execute(
+                        "INSERT INTO positions (ts_code, name, quantity, cost, stop_loss, take_profit, buy_date) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, CURDATE()) "
+                        "ON DUPLICATE KEY UPDATE quantity=VALUES(quantity), cost=VALUES(cost), "
+                        "stop_loss=VALUES(stop_loss), take_profit=VALUES(take_profit)",
+                        (signal["code"], signal["name"], signal["qty"], signal["price"],
+                         stop_loss, take_profit)
+                    )
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                    logger.info("MySQL positions 同步完成: %s", signal["code"])
+                except Exception as db_e:
+                    logger.warning("MySQL positions 写入失败（JSON已保存）: %s", db_e)
     except Exception as e:
         logger.warning(f"添加持仓失败: {e}")
 
@@ -261,7 +291,6 @@ def get_stock_history_from_db(ts_code, days=60):
     失败时返回空字典（会回退到Tushare API）。
     """
     try:
-
         import pymysql
 
         db_config = get_db_config()
@@ -278,7 +307,9 @@ def get_stock_history_from_db(ts_code, days=60):
             return {}
 
         from datetime import datetime, timedelta
-        end_date = row['trade_date']
+
+        end_date = row["trade_date"]
+
         # MySQL DATE format conversion
         def to_mysql_date(d):
             if hasattr(d, "strftime"):
@@ -287,13 +318,14 @@ def get_stock_history_from_db(ts_code, days=60):
             if len(s) == 8:
                 return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
             return s
+
         mysql_end = to_mysql_date(end_date)
-        start_date = (datetime.strptime(mysql_end, '%Y-%m-%d') - timedelta(days=days+30)).strftime('%Y-%m-%d')
+        start_date = (datetime.strptime(mysql_end, "%Y-%m-%d") - timedelta(days=days + 30)).strftime("%Y-%m-%d")
         mysql_start = to_mysql_date(start_date)
 
         cursor.execute(
             "SELECT *, DATE_FORMAT(trade_date, '%%Y%%m%%d') as td_str FROM quant_db.daily_price WHERE ts_code=%s AND trade_date>=%s AND trade_date<=%s ORDER BY trade_date ASC",
-            [ts_code, mysql_start, mysql_end]
+            [ts_code, mysql_start, mysql_end],
         )
         rows = cursor.fetchall()
         cursor.close()
@@ -304,20 +336,20 @@ def get_stock_history_from_db(ts_code, days=60):
 
         result = {}
         for r in rows:
-            d = str(r['td_str'])
+            d = str(r["td_str"])
             result[d] = {
-                'open': float(r['open']) if r['open'] else 0.0,
-                'high': float(r['high']) if r['high'] else 0.0,
-                'low': float(r['low']) if r['low'] else 0.0,
-                'close': float(r['close']) if r['close'] else 0.0,
-                'vol': float(r['vol']) if r['vol'] else 0.0,
-                'turnover': float(r['turnover_rate']) if r.get('turnover_rate') is not None else 0.0,
-                'ma5': float(r['ma5']) if r['ma5'] else 0.0,
-                'ma10': float(r['ma10']) if r['ma10'] else 0.0,
-                'ma20': float(r['ma20']) if r['ma20'] else 0.0,
-                'rps': float(r['rps_20']) if r['rps_20'] else 0.0,
-                'high52w': float(r['high_52w']) if r['high_52w'] else 0.0,
-                'low52w': float(r['low_52w']) if r['low_52w'] else 0.0,
+                "open": float(r["open"]) if r["open"] else 0.0,
+                "high": float(r["high"]) if r["high"] else 0.0,
+                "low": float(r["low"]) if r["low"] else 0.0,
+                "close": float(r["close"]) if r["close"] else 0.0,
+                "vol": float(r["vol"]) if r["vol"] else 0.0,
+                "turnover": float(r["turnover_rate"]) if r.get("turnover_rate") is not None else 0.0,
+                "ma5": float(r["ma5"]) if r["ma5"] else 0.0,
+                "ma10": float(r["ma10"]) if r["ma10"] else 0.0,
+                "ma20": float(r["ma20"]) if r["ma20"] else 0.0,
+                "rps": float(r["rps_20"]) if r["rps_20"] else 0.0,
+                "high52w": float(r["high_52w"]) if r["high_52w"] else 0.0,
+                "low52w": float(r["low_52w"]) if r["low_52w"] else 0.0,
             }
         return result
     except Exception:
@@ -366,8 +398,7 @@ def get_technical_buy_sell_signals(code, market="sz"):
     流程: 定趋势 → 判时机 → 管风险
     """
     try:
-        pro = get_tushare_pro()
-        ts_code = f"{code}.{'SZ' if market=='sz' else 'SH'}"
+        ts_code = f"{code}.{'SZ' if market == 'sz' else 'SH'}"
 
         # 优先从MySQL读取预计算数据（快速）
         hist_data = get_stock_history_from_db(ts_code, days=60)
@@ -380,22 +411,25 @@ def get_technical_buy_sell_signals(code, market="sz"):
             data_rows = []
             for d in dates_key:
                 r = hist_data[d]
-                data_rows.append({
-                    'trade_date': d,
-                    'open': r['open'],
-                    'high': r['high'],
-                    'low': r['low'],
-                    'close': r['close'],
-                    'vol': r['vol'],
-                    'turnover': r['turnover'],
-                    'ma5': r['ma5'],
-                    'ma10': r['ma10'],
-                    'ma20': r['ma20'],
-                    'rps': r['rps'],
-                    'high52w': r['high52w'],
-                    'low52w': r['low52w'],
-                })
+                data_rows.append(
+                    {
+                        "trade_date": d,
+                        "open": r["open"],
+                        "high": r["high"],
+                        "low": r["low"],
+                        "close": r["close"],
+                        "vol": r["vol"],
+                        "turnover": r["turnover"],
+                        "ma5": r["ma5"],
+                        "ma10": r["ma10"],
+                        "ma20": r["ma20"],
+                        "rps": r["rps"],
+                        "high52w": r["high52w"],
+                        "low52w": r["low52w"],
+                    }
+                )
             import pandas as pd
+
             df = pd.DataFrame(data_rows)
             logger.info(f"{code} 从MySQL读取 {len(df)} 条数据")
         else:
@@ -403,23 +437,18 @@ def get_technical_buy_sell_signals(code, market="sz"):
             df = None
             dates = None
 
-            for days in data_days_options:
-                dates = get_recent_trade_dates(days)
-                if len(dates) < 3:
-                    continue
-                start_date = dates[0]
-                end_date = dates[-1]
+            # MySQL无数据，尝试从daily_price获取
+            try:
+                import pandas as pd
 
-                import time
-                start_time = time.time()
-                df = pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
-
-                if time.time() - start_time > 8:
-                    logger.warning(f"数据获取超时 {code}: {time.time() - start_time:.1f}s")
-
-                if df is not None and len(df) >= 3:
-                    logger.info(f"{code} 获取到 {len(df)} 条数据")
-                    break
+                from quant_app.services.qmt_adapter import get_daily_data
+                raw = get_daily_data(ts_code, limit=60)
+                if raw:
+                    df = pd.DataFrame(raw)
+                    logger.info(f"{code} 从daily_price获取 {len(df)} 条数据")
+                else:
+                    df = None
+            except Exception:
                 df = None
 
             if df is None or len(df) < 3:
@@ -494,7 +523,8 @@ def get_technical_buy_sell_signals(code, market="sz"):
         # 大盘状态
         market_state_ctx = {}
         try:
-            from market_state import get_market_state
+            from quant_app.services.market_state import get_market_state
+
             ms = get_market_state() or {}
             market_state_ctx = {
                 "状态": ms.get("state_name", "未知"),
@@ -692,10 +722,10 @@ def get_technical_buy_sell_signals(code, market="sz"):
 
         # 波动率
         if len(closes) >= 20:
-            returns = [(closes[i] - closes[i-1]) / closes[i-1] * 100 for i in range(1, len(closes))]
+            returns = [(closes[i] - closes[i - 1]) / closes[i - 1] * 100 for i in range(1, len(closes))]
             avg_r = sum(returns) / len(returns)
             variance = sum((r - avg_r) ** 2 for r in returns) / len(returns)
-            volatility = variance ** 0.5
+            volatility = variance**0.5
             vol_level = "高" if volatility > 3 else ("中" if volatility > 1.5 else "低")
         else:
             volatility = 0
@@ -763,7 +793,11 @@ def get_technical_buy_sell_signals(code, market="sz"):
                     "K": round(k, 1) if k else 50,
                     "D": round(d, 1) if d else 50,
                     "J": round(j, 1) if j else 50,
-                    "状态": "超卖" if k and k < 30 else ("超买" if k and k > 80 else ("偏弱" if k and k < 50 else ("偏强" if k and k > 70 else "中性"))),
+                    "状态": "超卖"
+                    if k and k < 30
+                    else (
+                        "超买" if k and k > 80 else ("偏弱" if k and k < 50 else ("偏强" if k and k > 70 else "中性"))
+                    ),
                 },
                 "RSI": {
                     "RSI": round(rsi, 1) if rsi else 50,
@@ -773,7 +807,9 @@ def get_technical_buy_sell_signals(code, market="sz"):
                     "上轨": round(bb_upper, 2),
                     "中轨": round(bb_middle, 2),
                     "下轨": round(bb_lower, 2),
-                    "当前价位置": "上轨附近" if rt_price >= bb_upper * 0.98 else ("下轨附近" if rt_price <= bb_lower * 1.02 else "中轨附近"),
+                    "当前价位置": "上轨附近"
+                    if rt_price >= bb_upper * 0.98
+                    else ("下轨附近" if rt_price <= bb_lower * 1.02 else "中轨附近"),
                 },
             },
         }

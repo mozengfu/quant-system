@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """ML 实际收益深度分析"""
 import sys
+
 sys.path.insert(0, "/Users/mozengfu/workspace/quant-system")
+import numpy as np
+import pandas as pd
+import pymysql
+
 from quant_app.utils.config import get_db_config
-import pymysql, pandas as pd, numpy as np
 
 conn = pymysql.connect(**get_db_config())
 c = conn.cursor()
@@ -50,7 +54,7 @@ for date, grp in ml_period.groupby("trade_date"):
     day_amt = amt_df[amt_df["trade_date"] == pd.Timestamp(date)]
     if day_amt.empty: continue
     median_amt = day_amt["amount"].median()
-    
+
     for _, row in top.iterrows():
         r = fwd.get((row["ts_code"], ds))
         if r is not None:

@@ -1,0 +1,256 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; background: #f0f2f5; color: #1a2332; min-height: 100vh; }
+.header { background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%); padding: 16px 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; position: relative; }
+.header h1 { font-size: 22px; color: #ffffff; font-weight: 600; text-align: center; margin: 0; }
+.header .time { color: rgba(255,255,255,0.9); font-size: 14px; }
+.header .ip { color: #ffffff; font-size: 13px; background: rgba(255,255,255,0.2); padding: 4px 12px; border-radius: 4px; }
+
+.container { display: flex; gap: 24px; padding: 24px 0; min-height: calc(100vh - 120px); max-width: 1400px; margin: 0 auto; }
+.sidebar { width: 240px; flex-shrink: 0; margin-left: 30px; }
+.nav { background: #ffffff; box-shadow: 0 2px 4px rgba(0,0,0,0.05); display: flex; flex-direction: column; gap: 4px; padding: 16px; border-radius: 10px; overflow-x: visible; }
+.nav button { background: transparent; border: 1px solid #e0e0e0; color: #666666; padding: 12px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.2s; white-space: nowrap; text-align: left; }
+.nav button:hover { background: #f0f0f0; color: #333333; }
+.nav button.active { background: var(--primary); color: #ffffff; border-color: var(--primary); font-weight: 500; }
+.main { flex: 1; min-width: 0; padding-right: 30px; }
+.panel { display: none; }
+.panel.active { display: block; }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.card { background: #ffffff; border: 1px solid #e0e0e0; border-radius: 10px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+.card .label { color: #888888; font-size: 13px; margin-bottom: 8px; }
+.card .value { font-size: 24px; font-weight: 600; }
+.card .value.profit { color: #ef5350; }
+.card .value.loss { color: #66bb6a; }
+.card .value.neutral { color: #333333; }
+td.profit { color: #ef5350; }
+td.loss { color: #66bb6a; }
+.table-wrap { background: #ffffff; border: 1px solid #e0e0e0; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+table { width: 100%; border-collapse: collapse; }
+th { background: #f5f7fa; padding: 14px 16px; text-align: left; font-size: 13px; color: #666666; font-weight: 600; border-bottom: 2px solid #e0e0e0; }
+td { padding: 14px 16px; font-size: 14px; border-bottom: 1px solid #f0f0f0; color: #333333; }
+tr:hover { background: #f8f9fa; }
+tr:last-child td { border-bottom: none; }
+.tag { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 12px; font-weight: 500; }
+.tag-red { background: rgba(239, 83, 80, 0.15); color: #ef5350; }
+.tag-green { background: rgba(102, 187, 106, 0.15); color: #66bb6a; }
+.tag-blue { background: rgba(79, 195, 247, 0.15); color: var(--primary); }
+.tag-yellow { background: rgba(255, 202, 40, 0.15); color: #ffca28; }
+.refresh-btn { background: var(--primary); color: #ffffff; border: none; padding: 8px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; box-shadow: 0 2px 4px rgba(79,195,247,0.3); }
+/* 响应式设计 - 移动端适配 */
+@media screen and (max-width: 768px) {
+    .container {
+        flex-direction: column;
+        padding: 16px 0;
+        gap: 16px;
+    }
+    .sidebar {
+        width: 100%;
+        flex-shrink: none;
+        margin-left: 0;
+    }
+    .nav {
+        flex-direction: row;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        padding: 12px;
+        gap: 8px;
+    }
+    .nav button {
+        padding: 10px 16px;
+        font-size: 13px;
+        white-space: nowrap;
+    }
+    .header {
+        flex-direction: column;
+        gap: 8px;
+        padding: 12px 16px;
+    }
+    .header h1 {
+        font-size: 16px;
+        text-align: center;
+        width: 100%;
+    }
+    #headerUserInfo {
+        position: static;
+        transform: none;
+        gap: 6px;
+        justify-content: center;
+        width: 100%;
+    }
+    #userDisplay, #logoutBtn, .header .time {
+        font-size: 11px;
+        padding: 2px 6px !important;
+    }
+    #logoutBtn {
+        padding: 4px 8px !important;
+    }
+    .main {
+        padding: 0;
+    }
+    .panel {
+        padding: 16px;
+    }
+    .summary {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+    }
+    .card {
+        padding: 16px;
+    }
+    .card .value {
+        font-size: 20px;
+    }
+    table {
+        font-size: 13px;
+    }
+    th, td {
+        padding: 10px 8px;
+    }
+    /* 移动端隐藏次要列 */
+    .table-wrap th:nth-child(4),
+    .table-wrap td:nth-child(4),
+    .table-wrap th:nth-child(5),
+    .table-wrap td:nth-child(5) {
+        display: none;
+    }
+    /* 移动端资金/AI/基本面三栏变一栏 */
+    .info-grid-3 { grid-template-columns: 1fr !important; }
+}
+
+/* 平板适配 */
+@media screen and (min-width: 769px) and (max-width: 1024px) {
+    .sidebar {
+        width: 220px;
+        margin-left: 20px;
+    }
+    .nav button {
+        padding: 10px 16px;
+        font-size: 13px;
+    }
+    .info-grid-3 { grid-template-columns: repeat(2,1fr) !important; }
+}
+
+/* 桌面端优化 */
+@media screen and (min-width: 1025px) {
+    .container {
+        max-width: 1400px;
+        margin: 0 auto;
+    }
+    .header {
+        justify-content: center;
+    }
+    #headerUserInfo {
+        position: absolute;
+        right: 30px;
+        top: 50%;
+        transform: translateY(-50%);
+    }
+    .header h1 {
+        text-align: center;
+    }
+}
+
+/* 日期选择器样式修复 */
+input[type="date"] {
+    color: #333333 !important;
+    background: #ffffff !important;
+    border: 1px solid #d0d0d0 !important;
+    padding: 8px 12px !important;
+    border-radius: 6px !important;
+    font-size: 14px !important;
+    width: 150px !important;
+}
+input[type="date"]::-webkit-calendar-picker-indicator {
+    filter: none;
+    cursor: pointer;
+    width: 20px;
+    height: 20px;
+}
+.refresh-btn:hover { background: #29b6f6; box-shadow: 0 2px 8px rgba(79,195,247,0.4); }
+.section-title { color: var(--primary-dark); font-size: 16px; margin: 24px 0 16px; padding-left: 12px; border-left: 3px solid var(--primary); }
+/* 策略选股 Tab 按钮 */
+.scan-tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.scan-tab { background: #e0e0e0; color: #666; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.2s; }
+.scan-tab.active { background: var(--primary); color: #fff; }
+/* 信号输入 - 响应式 */
+.signal-input-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.signal-input-row input, .signal-input-row select { padding: 6px 10px; border-radius: 6px; border: 1px solid #d0d0d0; background: #fff; color: #333; flex: 1; min-width: 80px; }
+.signal-input-row input[type="date"] { flex: 0 0 140px; color: #333 !important; background: #fff !important; }
+@media (max-width: 768px) {
+    .scan-tabs { gap: 4px; }
+    .scan-tab { padding: 8px 12px; font-size: 13px; }
+}
+.analysis-card { background: #ffffff; border: 1px solid #e0e0e0; border-radius: 10px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+.analysis-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid #e0e0e0; }
+.analysis-header h3 { color: var(--primary-dark); font-size: 18px; }
+.analysis-header .code { color: #888888; font-size: 14px; }
+.score-circle { width: 80px; height: 80px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 28px; font-weight: 700; border: 3px solid; }
+.score-high { border-color: #ef5350; color: #ef5350; }
+.score-mid { border-color: #ffca28; color: #ffca28; }
+.score-low { border-color: #66bb6a; color: #66bb6a; }
+.score-label { font-size: 11px; font-weight: 400; margin-top: 2px; }
+.analysis-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.analysis-section h4 { color: var(--primary); font-size: 14px; margin-bottom: 12px; }
+.analysis-section ul { list-style: none; }
+.analysis-section li { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f0f0f0; font-size: 14px; }
+.analysis-section li:last-child { border-bottom: none; }
+.analysis-section .li-label { color: #888888; white-space: nowrap; }
+.analysis-section .li-value { color: #333333; font-weight: 500; text-align: right; }
+.suggestion { margin-top: 16px; padding: 16px; border-radius: 8px; font-size: 15px; font-weight: 500; text-align: center; }
+.suggestion.buy { background: rgba(239, 83, 80, 0.1); color: #ef5350; border: 1px solid rgba(239, 83, 80, 0.3); }
+.suggestion.hold { background: rgba(255, 202, 40, 0.1); color: #ffca28; border: 1px solid rgba(255, 202, 40, 0.3); }
+.suggestion.watch { background: rgba(102, 187, 106, 0.1); color: #66bb6a; border: 1px solid rgba(102, 187, 106, 0.3); }
+	        .analysis-summary { margin-top: 20px; padding: 16px 20px; border-radius: 8px; background: #f8f9fa; border: 1px solid #e8e8e8; font-size: 14px; line-height: 1.7; color: #555; }
+	        .analysis-summary strong { color: #333; }
+	        .targets-row { display: flex; gap: 24px; flex-wrap: wrap; margin-top: 12px; }
+	        .targets-row .target-group { flex: 1; min-width: 130px; }
+	        .targets-row .target-group h5 { color: #8892b0; font-size: 12px; margin-bottom: 2px; font-weight: 400; }
+	        .targets-row .target-group .target-val { font-size: 15px; font-weight: 600; color: #66bb6a; }
+	        .targets-row .target-group .target-ref { font-size: 12px; color: #aaa; }
+.input-row { display: flex; gap: 12px; margin-bottom: 20px; }
+.input-row input { flex: 1; background: #ffffff; border: 1px solid #d0d0d0; color: #333333; padding: 10px 16px; border-radius: 6px; font-size: 14px; outline: none; }
+.input-row input:focus { border-color: var(--primary); }
+.input-row select { background: #ffffff; border: 1px solid #d0d0d0; color: #333333; padding: 10px 16px; border-radius: 6px; font-size: 14px; outline: none; cursor: pointer; }
+.input-row button { background: var(--primary); color: #ffffff; border: none; padding: 10px 24px; border-radius: 6px; font-size: 14px; cursor: pointer; font-weight: 500; box-shadow: 0 2px 4px rgba(79,195,247,0.3); }
+.input-row button:hover { background: #29b6f6; box-shadow: 0 2px 8px rgba(79,195,247,0.4); }
+.loading { text-align: center; padding: 40px; color: var(--text-muted); }
+.loading .spinner { margin-bottom: 12px; display: block; margin-left: auto; margin-right: auto; }
+.empty { text-align: center; padding: 40px; color: var(--text-muted); }
+.empty .empty-icon { font-size: 40px; margin-bottom: 12px; opacity: 0.5; }
+.empty .empty-text { font-size: 15px; margin-bottom: 16px; }
+.empty button { background: var(--primary); color: #fff; border: none; padding: 8px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+.error { background: rgba(239, 83, 80, 0.1); border: 1px solid rgba(239, 83, 80, 0.3); color: #ef5350; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
+@media (max-width: 768px) {
+    .header { flex-direction: column; gap: 8px; text-align: center; }
+    .summary { grid-template-columns: 1fr 1fr; }
+    .table-wrap { overflow-x: auto; }
+    table { min-width: 600px; }
+    /* 建仓建议双栏→单栏 */
+    #panel-recommend > div:nth-child(3) {
+        grid-template-columns: 1fr !important;
+        gap: 12px !important;
+    }
+    /* 信号记录输入框分行 */
+    #panel-signals .input-row {
+        flex-direction: column;
+    }
+    #panel-signals .input-row > * {
+        width: 100% !important;
+        min-width: 0 !important;
+    }
+}
+/* 修改密码弹窗 */
+.modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
+.modal-overlay.active { display: flex; }
+.modal { background: #ffffff; border: 1px solid #e0e0e0; border-radius: 12px; padding: 30px; width: 90%; max-width: 400px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
+.modal h3 { color: var(--primary-dark); margin-bottom: 20px; text-align: center; }
+.modal .form-group { margin-bottom: 16px; }
+.modal label { display: block; color: #666666; font-size: 13px; margin-bottom: 6px; }
+.modal input { width: 100%; background: #ffffff; border: 1px solid #d0d0d0; color: #333333; padding: 10px 14px; border-radius: 6px; font-size: 14px; }
+.modal input:focus { outline: none; border-color: var(--primary); }
+.modal .btn-group { display: flex; gap: 10px; margin-top: 20px; }
+.modal button { flex: 1; padding: 12px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; }
+.modal .btn-primary { background: var(--primary); color: var(--text-primary); font-weight: 500; }
+.modal .btn-secondary { background: transparent; border: 1px solid #2a3158; color: #8892b0; }
+.modal .message { margin-top: 12px; padding: 10px; border-radius: 6px; font-size: 13px; display: none; }
+.modal .message.success { background: rgba(76, 187, 106, 0.15); color: #66bb6a; display: block; }
+.modal .message.error { background: rgba(239, 83, 80, 0.15); color: #ef5350; display: block; }

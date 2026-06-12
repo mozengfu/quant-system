@@ -1,6 +1,7 @@
 """
 页面路由模块 - 所有 HTML 页面路由
 """
+
 import html
 import os
 import time
@@ -17,6 +18,7 @@ BASE_DIR = Path(__file__).parent.parent.parent
 @router.get("/logout")
 def logout(token: str = Cookie(None)):
     from quant_app.routes.auth import SESSIONS, sessions_lock
+
     with sessions_lock:
         if token and token in SESSIONS:
             del SESSIONS[token]
@@ -58,6 +60,7 @@ def ml_top15_page():
 @router.get("/strategy_v41", response_class=HTMLResponse)
 def strategy_v41_page():
     from fastapi.responses import HTMLResponse as HR
+
     with open(os.path.join(BASE_DIR, "templates", "strategy_v41.html"), encoding="utf-8") as f:
         content = f.read()
     return HR(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
@@ -73,6 +76,7 @@ def log_analytics_page():
 def landing():
     """公开落地页 - 系统介绍与模块入口"""
     from fastapi.responses import HTMLResponse as HR
+
     with open(os.path.join(BASE_DIR, "templates", "landing.html"), encoding="utf-8") as f:
         content = f.read()
     return HR(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
@@ -85,17 +89,21 @@ def dashboard(token: str = Cookie(None)):
     from starlette.responses import RedirectResponse
 
     from quant_app.routes.auth import SESSIONS
+
     if not token or token not in SESSIONS:
         return RedirectResponse(url="/login")
     with open(os.path.join(BASE_DIR, "templates", "index.html"), encoding="utf-8") as f:
         html_content = f.read()
-    return Response(content=html_content, media_type="text/html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return Response(
+        content=html_content, media_type="text/html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+    )
 
 
 @router.get("/reset-password", response_class=HTMLResponse)
 def reset_password_page(token: str = ""):
     """密码重置页面"""
     from quant_app.routes.auth import RESET_TOKENS
+
     if not token or token not in RESET_TOKENS:
         return """<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>链接失效</title>
@@ -236,7 +244,7 @@ def reset_password_page(token: str = ""):
     <div class="container">
         <h1>🔐 重置密码</h1>
         <div class="user-info">
-            用户名：<strong>{html.escape(token_data['username'])}</strong>
+            用户名：<strong>{html.escape(token_data["username"])}</strong>
         </div>
         <form id="resetForm">
             <input type="hidden" id="token" value="{html.escape(token)}">

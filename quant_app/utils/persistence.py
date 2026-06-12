@@ -2,32 +2,15 @@
 JSON 文件持久化模块 - 统一管理所有 JSON 数据文件的读写操作
 提供线程安全锁防止并发写入损坏
 """
+
 import json
 import logging
 import os
 import tempfile
 import threading
 import time
+import uuid
 from datetime import datetime
-
-logger = logging.getLogger(__name__)
-
-
-def _atomic_json_dump(data, filepath, **kwargs):
-    """原子写入 JSON 文件：先写临时文件再 rename，防止写入中断导致文件损坏"""
-    dirpath = filepath.parent
-    dirpath.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(suffix='.json', dir=str(dirpath))
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, **kwargs)
-        os.replace(tmp_path, str(filepath))
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
 
 from quant_app.utils.config import (
     ACCESS_LOG_FILE,
@@ -39,11 +22,32 @@ from quant_app.utils.config import (
     USERS_FILE,
 )
 
+logger = logging.getLogger(__name__)
+
+
+def _atomic_json_dump(data, filepath, **kwargs):
+    """原子写入 JSON 文件：先写临时文件再 rename，防止写入中断导致文件损坏"""
+    dirpath = filepath.parent
+    dirpath.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(suffix=".json", dir=str(dirpath))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, **kwargs)
+        os.replace(tmp_path, str(filepath))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 # 线程安全锁，防止多请求并发写入 JSON 文件导致数据损坏
 _write_lock = threading.RLock()
 
 
 # ========== 用户管理 ==========
+
 
 def load_users():
     with _write_lock:
@@ -60,6 +64,7 @@ def save_users(users):
 
 # ========== 会话管理 ==========
 
+
 def _load_sessions():
     """加载 sessions.json，过期自动清理"""
     with _write_lock:
@@ -68,8 +73,7 @@ def _load_sessions():
                 with open(SESSIONS_FILE, encoding="utf-8") as f:
                     data = json.load(f)
                 now = time.time()
-                valid = {k: v for k, v in data.get("tokens", {}).items()
-                         if v.get("expires", 0) > now}
+                valid = {k: v for k, v in data.get("tokens", {}).items() if v.get("expires", 0) > now}
                 return valid
         except Exception as e:
             logger.warning("Sessions 加载失败: %s", e)
@@ -87,6 +91,7 @@ def _save_sessions(tokens):
 
 # ========== 访问日志 ==========
 
+
 def get_client_ip(request):
     """获取客户端 IP"""
     forwarded = request.headers.get("X-Forwarded-For")
@@ -98,15 +103,25 @@ def get_client_ip(request):
 def _classify_module(action):
     """根据操作动作分类模块（合并版本）"""
     checks = [
-        ("登录", "登录"), ("login", "登录"), ("logout", "登录"),
-        ("分析个股", "个股分析"), ("个股", "个股分析"),
-        ("策略选股", "策略选股"), ("扫描", "策略选股"), ("scan", "策略选股"), ("选股", "策略选股"),
+        ("登录", "登录"),
+        ("login", "登录"),
+        ("logout", "登录"),
+        ("分析个股", "个股分析"),
+        ("个股", "个股分析"),
+        ("策略选股", "策略选股"),
+        ("扫描", "策略选股"),
+        ("scan", "策略选股"),
+        ("选股", "策略选股"),
         ("股票池扫描", "股票池"),
         ("强势活跃", "强势活跃"),
         ("底部起步", "底部起步"),
-        ("持仓", "持仓管理"), ("position", "持仓管理"), ("止损", "持仓管理"),
-        ("回测", "历史回测"), ("backtest", "历史回测"),
-        ("信号", "信号记录"), ("signal", "信号记录"),
+        ("持仓", "持仓管理"),
+        ("position", "持仓管理"),
+        ("止损", "持仓管理"),
+        ("回测", "历史回测"),
+        ("backtest", "历史回测"),
+        ("信号", "信号记录"),
+        ("signal", "信号记录"),
         ("技术面", "技术面"),
     ]
     for keyword, module in checks:
@@ -118,14 +133,16 @@ def _classify_module(action):
 def _write_log_mysql(username, ip, action, module, timestamp_str):
     """写入 MySQL 日志"""
     import pymysql
+
     conn = None
     try:
         from quant_app.utils.config import get_db_config
+
         conn = pymysql.connect(**get_db_config())
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO system_logs (username, ip, action, module, timestamp) VALUES (%s, %s, %s, %s, %s)",
-            (username, ip, action, module, timestamp_str)
+            (username, ip, action, module, timestamp_str),
         )
         conn.commit()
         return True
@@ -147,10 +164,7 @@ def save_access_log(username, ip="unknown", action="login"):
         _write_log_mysql(username, ip, action, module, timestamp_str)
 
         # 始终保留 JSON 降级
-        log_entry = {
-            "username": username, "ip": ip, "action": action,
-            "module": module, "timestamp": timestamp_str
-        }
+        log_entry = {"username": username, "ip": ip, "action": action, "module": module, "timestamp": timestamp_str}
         with _write_lock:
             if ACCESS_LOG_FILE.exists():
                 with open(ACCESS_LOG_FILE, encoding="utf-8") as f:
@@ -166,6 +180,7 @@ def save_access_log(username, ip="unknown", action="login"):
 
 
 # ========== 追踪/推荐 ==========
+
 
 def load_track_data():
     """加载追踪数据"""
@@ -199,25 +214,21 @@ def record_recommendation(stocks, strategy="C3.0 V3"):
             if rec["date"] == today and rec["strategy"] == strategy:
                 return  # 今天这个板块已记录
 
-        rec = {
-            "date": today,
-            "strategy": strategy,
-            "stocks": [],
-            "tracked": False,
-            "result": None
-        }
+        rec = {"date": today, "strategy": strategy, "stocks": [], "tracked": False, "result": None}
 
         for stock in stocks:
-            rec["stocks"].append({
-                "code": stock.get("代码", stock.get("code", "")),
-                "name": stock.get("名称", stock.get("name", "")),
-                "price": stock.get("现价", stock.get("price", 0)),
-                "score": stock.get("综合评分", 0),
-                "recommendation_time": datetime.now().strftime("%H:%M"),
-                "1day_result": None,
-                "1week_result": None,
-                "1month_result": None
-            })
+            rec["stocks"].append(
+                {
+                    "code": stock.get("代码", stock.get("code", "")),
+                    "name": stock.get("名称", stock.get("name", "")),
+                    "price": stock.get("现价", stock.get("price", 0)),
+                    "score": stock.get("综合评分", 0),
+                    "recommendation_time": datetime.now().strftime("%H:%M"),
+                    "1day_result": None,
+                    "1week_result": None,
+                    "1month_result": None,
+                }
+            )
 
         data["recommendations"].append(rec)
         data.setdefault("stats", {})
@@ -254,45 +265,52 @@ def _recalc_track_stats(data):
 
     total = win_count + loss_count
     if total > 0:
-        data.setdefault("stats", {}).update({
-            "win_count": win_count,
-            "loss_count": loss_count,
-            "win_rate": round((win_count / total) * 100, 2),
-            "avg_profit": round(total_profit / total, 2),
-            "total_pnl": round(total_profit, 2),
-        })
+        data.setdefault("stats", {}).update(
+            {
+                "win_count": win_count,
+                "loss_count": loss_count,
+                "win_rate": round((win_count / total) * 100, 2),
+                "avg_profit": round(total_profit / total, 2),
+                "total_pnl": round(total_profit, 2),
+            }
+        )
     return data
 
 
 def update_stock_results():
     """更新股票后续表现（使用 MySQL daily_price 表计算真实交易日后收益）"""
     import pymysql
+
     data = load_track_data()
 
     # 先算一遍已有数据的统计（不依赖冷却，每次进来都算）
     data = _recalc_track_stats(data)
 
-    data["stats"]["total_recommendations"] = data["stats"].get("total_recommendations", sum(len(r.get("stocks", [])) for r in data.get("recommendations", [])))
+    data["stats"]["total_recommendations"] = data["stats"].get(
+        "total_recommendations", sum(len(r.get("stocks", [])) for r in data.get("recommendations", []))
+    )
     save_track_data(data)
 
     now = time.time()
     if now - TRACK_UPDATE_CACHE["last_update"] < TRACK_UPDATE_CACHE["cooldown"]:
         return
     try:
-        now_dt = datetime.now()
+        datetime.now()
 
         conn = pymysql.connect(
-            host=os.environ.get('MYSQL_HOST', 'localhost'),
-            port=int(os.environ.get('MYSQL_PORT', 3306)),
-            user=os.environ.get('MYSQL_USER', 'root'),
-            password=os.environ.get('MYSQL_PASSWORD', ''),
-            database=os.environ.get('MYSQL_DATABASE', 'quant_db'),
-            charset='utf8mb4'
+            host=os.environ.get("MYSQL_HOST", "localhost"),
+            port=int(os.environ.get("MYSQL_PORT", 3306)),
+            user=os.environ.get("MYSQL_USER", "root"),
+            password=os.environ.get("MYSQL_PASSWORD", ""),
+            database=os.environ.get("MYSQL_DATABASE", "quant_db"),
+            charset="utf8mb4",
         )
         cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT trade_date FROM daily_price WHERE trade_date >= DATE_SUB(CURDATE(), INTERVAL 2 YEAR) ORDER BY trade_date")
+        cursor.execute(
+            "SELECT DISTINCT trade_date FROM daily_price WHERE trade_date >= DATE_SUB(CURDATE(), INTERVAL 2 YEAR) ORDER BY trade_date"
+        )
         trading_dates = [r[0] for r in cursor.fetchall()]
-        trading_dates_str = sorted([d.strftime('%Y%m%d') for d in trading_dates])
+        trading_dates_str = sorted([d.strftime("%Y%m%d") for d in trading_dates])
 
         for rec in data["recommendations"]:
             if rec.get("tracked"):
@@ -331,8 +349,7 @@ def update_stock_results():
                     if target_idx < len(trading_dates_str):
                         target_date = trading_dates_str[target_idx]
                         cursor.execute(
-                            "SELECT close FROM daily_price WHERE ts_code=%s AND trade_date=%s",
-                            (ts_code, target_date)
+                            "SELECT close FROM daily_price WHERE ts_code=%s AND trade_date=%s", (ts_code, target_date)
                         )
                         row = cursor.fetchone()
                         if row and row[0] and row[0] > 0:
@@ -343,8 +360,7 @@ def update_stock_results():
                     if target_idx < len(trading_dates_str):
                         target_date = trading_dates_str[target_idx]
                         cursor.execute(
-                            "SELECT close FROM daily_price WHERE ts_code=%s AND trade_date=%s",
-                            (ts_code, target_date)
+                            "SELECT close FROM daily_price WHERE ts_code=%s AND trade_date=%s", (ts_code, target_date)
                         )
                         row = cursor.fetchone()
                         if row and row[0] and row[0] > 0:
@@ -355,17 +371,18 @@ def update_stock_results():
                     if target_idx < len(trading_dates_str):
                         target_date = trading_dates_str[target_idx]
                         cursor.execute(
-                            "SELECT close FROM daily_price WHERE ts_code=%s AND trade_date=%s",
-                            (ts_code, target_date)
+                            "SELECT close FROM daily_price WHERE ts_code=%s AND trade_date=%s", (ts_code, target_date)
                         )
                         row = cursor.fetchone()
                         if row and row[0] and row[0] > 0:
                             stock["1month_result"] = round(((float(row[0]) - rec_price) / rec_price) * 100, 2)
 
                 # 有任意周期结果即标记为已追踪
-                has_any = (stock.get("1day_result") is not None or
-                           stock.get("1week_result") is not None or
-                           stock.get("1month_result") is not None)
+                has_any = (
+                    stock.get("1day_result") is not None
+                    or stock.get("1week_result") is not None
+                    or stock.get("1month_result") is not None
+                )
                 if has_any:
                     rec["tracked"] = True
                     rec["result"] = "completed" if stock.get("1month_result") is not None else "partial"
@@ -374,7 +391,9 @@ def update_stock_results():
 
         # 新数据更新后再算一次统计
         data = _recalc_track_stats(data)
-        data["stats"]["total_recommendations"] = data["stats"].get("total_recommendations", sum(len(r.get("stocks", [])) for r in data.get("recommendations", [])))
+        data["stats"]["total_recommendations"] = data["stats"].get(
+            "total_recommendations", sum(len(r.get("stocks", [])) for r in data.get("recommendations", []))
+        )
 
         save_track_data(data)
         TRACK_UPDATE_CACHE["last_update"] = time.time()
@@ -383,6 +402,7 @@ def update_stock_results():
 
 
 # ========== 待审批用户 ==========
+
 
 def load_pending_users():
     try:
@@ -403,6 +423,7 @@ def save_pending_users(data):
 
 
 # ========== 密码重置令牌 ==========
+
 
 def load_reset_tokens():
     try:
@@ -430,6 +451,7 @@ def save_reset_tokens(tokens=None):
 
 # ========== 信号记录 ==========
 
+
 def get_signals_path():
     return SIGNALS_FILE
 
@@ -449,44 +471,86 @@ def write_signals(sigs):
 
 # ========== 持仓数据 ==========
 
+
 def get_positions_data():
-    """从MySQL数据库读取持仓数据"""
+    """从MySQL数据库读取持仓数据，返回API期望的中文字段格式
+    如果MySQL无数据或失败，则从positions.json读取作为fallback"""
     try:
         import pymysql
-        db_config = {
-            'host': os.environ.get('MYSQL_HOST', 'localhost'),
-            'unix_socket': os.environ.get('MYSQL_SOCKET', '/tmp/mysql.sock'),
-            'user': os.environ.get('MYSQL_USER', 'root'),
-            'password': os.environ.get('MYSQL_PASSWORD', ''),
-            'database': os.environ.get('MYSQL_DATABASE', 'quant_db'),
-            'connect_timeout': 3,
-        }
-        # 如果 socket 文件不存在，回退到 TCP 连接
-        if not os.path.exists(db_config.get('unix_socket', '/tmp/mysql.sock')):
-            db_config.pop('unix_socket')
-            db_config['host'] = os.environ.get('MYSQL_HOST', '127.0.0.1')
-            db_config['port'] = int(os.environ.get('MYSQL_PORT', 3306))
 
+        from quant_app.utils.config import get_db_config
+
+        db_config = get_db_config(connect_timeout=3)
         conn = pymysql.connect(**db_config)
         cursor = conn.cursor()
-        cursor.execute('''
+        cursor.execute("""
             SELECT ts_code, code, name, market, quantity, cost,
                    stop_loss, take_profit, buy_date
             FROM positions
             ORDER BY buy_date DESC
-        ''')
+        """)
         positions = cursor.fetchall()
         conn.close()
-        mapped = []
-        for p in positions:
-            mapped.append({
-                "ts_code": p[0], "code": p[1], "name": p[2],
-                "market": p[3], "quantity": float(p[4]), "cost": float(p[5]),
-                "stop_loss": float(p[6]) if p[6] else 0,
-                "take_profit": float(p[7]) if p[7] else 0,
-                "buy_date": str(p[8]) if p[8] else "",
-            })
-        return mapped
+
+        if positions:
+            mapped = []
+            for pos in positions:
+                ts_code, code, name, market, quantity, cost, stop_loss, take_profit, buy_date = pos
+                mapped.append(
+                    {
+                        "代码": code,
+                        "市场": market,
+                        "ts_code": ts_code,
+                        "名称": name,
+                        "成本": float(cost),
+                        "数量": int(quantity),
+                        "止盈": float(take_profit),
+                        "止损": float(stop_loss),
+                        "买日": str(buy_date),
+                    }
+                )
+            return mapped
     except Exception as e:
         logger.warning("MySQL持仓读取失败: %s", e)
-        return []
+
+    # Fallback: 从positions.json读取
+    try:
+        from quant_app.utils.config import DATA_DIR
+
+        positions_file = DATA_DIR / "positions.json"
+        if positions_file.exists():
+            with open(positions_file, encoding="utf-8") as f:
+                data = json.load(f)
+            positions_list = data.get("positions", [])
+            mapped = []
+            for pos in positions_list:
+                code = pos.get("code", "")
+                market = pos.get("market", "sz")
+                mapped.append(
+                    {
+                        "代码": code,
+                        "市场": market,
+                        "ts_code": f"{code}.{'SZ' if market == 'sz' else 'SH'}",
+                        "名称": pos.get("name", ""),
+                        "成本": float(pos.get("cost", 0)),
+                        "数量": int(pos.get("shares", 0)),
+                        "止盈": float(pos.get("take_profit", 0)),
+                        "止损": float(pos.get("stop_loss", 0)),
+                        "买日": pos.get("buy_date", ""),
+                    }
+                )
+            if mapped:
+                logger.info("从positions.json读取到%d条持仓", len(mapped))
+                return mapped
+    except Exception as e:
+        logger.warning("JSON持仓fallback读取失败: %s", e)
+
+    return []
+
+
+# ========== 工具函数 ==========
+
+
+def generate_order_id():
+    """生成唯一订单ID"""
+    return datetime.now().strftime("%Y%m%d%H%M%S") + str(uuid.uuid4())[:4]

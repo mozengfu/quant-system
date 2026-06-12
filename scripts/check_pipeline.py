@@ -5,7 +5,9 @@
 
 用法: python3 scripts/check_pipeline.py
 """
-import os, sys, json
+import json
+import os
+import sys
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -13,8 +15,9 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
-from quant_app.utils.config import get_db_config
 import pymysql
+
+from quant_app.utils.config import get_db_config
 
 
 def get_db_conn():
@@ -56,7 +59,7 @@ def check_positions_json():
     path = os.path.join(BASE_DIR, "data", "positions.json")
     if not os.path.exists(path):
         return False, 0
-    with open(path, 'r') as f:
+    with open(path) as f:
         data = json.load(f)
     return True, len(data.get("positions", []))
 

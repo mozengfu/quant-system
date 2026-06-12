@@ -34,13 +34,29 @@ from quant_app.utils.config import (
 
 __all__ = [
     # config
-    'BASE_DIR', 'DATA_DIR', 'ALIYUN_HOST', 'ALIYUN_CODE', 'FEISHU_WEBHOOK',
-    'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS',
-    'ALIYUN_SMS_ACCESS_KEY', 'ALIYUN_SMS_ACCESS_SECRET',
-    'TUSHARE_TOKEN', 'MYSQL_HOST', 'MYSQL_PORT', 'MYSQL_USER', 'MYSQL_PASSWORD',
-    'MYSQL_DATABASE',
+    "BASE_DIR",
+    "DATA_DIR",
+    "ALIYUN_HOST",
+    "ALIYUN_CODE",
+    "FEISHU_WEBHOOK",
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_USER",
+    "SMTP_PASS",
+    "ALIYUN_SMS_ACCESS_KEY",
+    "ALIYUN_SMS_ACCESS_SECRET",
+    "TUSHARE_TOKEN",
+    "MYSQL_HOST",
+    "MYSQL_PORT",
+    "MYSQL_USER",
+    "MYSQL_PASSWORD",
+    "MYSQL_DATABASE",
     # auth
-    'hash_pw', 'verify_pw', 'make_token',
+    "hash_pw",
+    "verify_pw",
+    "make_token",
     # services
-    'send_sms', 'send_email', 'send_feishu',
+    "send_sms",
+    "send_email",
+    "send_feishu",
 ]

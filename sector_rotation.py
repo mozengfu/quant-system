@@ -3,15 +3,14 @@
 方向三：板块轮动 + 资金持续性 — 识别主力持续流入的热点板块，在热点板块内选股
 """
 
-import os
 import logging
-from datetime import datetime
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
-import pymysql
 import numpy as np
+import pymysql
 
 logger = logging.getLogger(__name__)
 
@@ -207,10 +206,10 @@ def get_fund_flow_continuity(ts_code, lookback=5, db_conn=None):
     if db_conn is None:
         db_conn = pymysql.connect(**DB_CONFIG)
         should_close = True
-    
+
     try:
         cur = db_conn.cursor()
-        
+
         cur.execute("""
             SELECT net_mf_amount, main_net, buy_lg_amount + buy_elg_amount as big_buy,
                    sell_lg_amount + sell_elg_amount as big_sell,
@@ -220,7 +219,7 @@ def get_fund_flow_continuity(ts_code, lookback=5, db_conn=None):
             ORDER BY trade_date DESC
             LIMIT %s
         """, (ts_code, lookback + 2))
-        
+
         rows = cur.fetchall()
         if not rows:
             return {
@@ -230,10 +229,10 @@ def get_fund_flow_continuity(ts_code, lookback=5, db_conn=None):
                 'trend': 'unknown',
                 'score': 0,
             }
-        
+
         nets = [float(r[0]) if r[0] else 0 for r in rows[:lookback]]
         total_net = sum(nets)
-        
+
         # 连续流入天数
         continuous = 0
         for val in nets:
@@ -241,7 +240,7 @@ def get_fund_flow_continuity(ts_code, lookback=5, db_conn=None):
                 continuous += 1
             else:
                 break
-        
+
         # 主力占比
         total_amounts = []
         for r in rows[:lookback]:
@@ -251,9 +250,9 @@ def get_fund_flow_continuity(ts_code, lookback=5, db_conn=None):
             total = big_buy + big_sell + small_total
             if total > 0:
                 total_amounts.append((big_buy - big_sell) / total * 100)
-        
+
         avg_mainforce_pct = np.mean(total_amounts) if total_amounts else 0
-        
+
         # 趋势
         if len(nets) >= 4:
             recent = np.mean(nets[:2])
@@ -266,7 +265,7 @@ def get_fund_flow_continuity(ts_code, lookback=5, db_conn=None):
                 trend = 'steady'
         else:
             trend = 'steady'
-        
+
         # 评分
         score = 0
         if continuous >= 3:
@@ -275,21 +274,21 @@ def get_fund_flow_continuity(ts_code, lookback=5, db_conn=None):
             score += 3
         elif continuous >= 1:
             score += 1
-        
+
         if total_net > 5000:  # 5000万以上
             score += 5
         elif total_net > 1000:
             score += 3
         elif total_net > 0:
             score += 1
-        
+
         if trend == 'accelerating':
             score += 5
         elif trend == 'steady' and continuous >= 2:
             score += 2
-        
+
         score = min(15, score)
-        
+
         return {
             'continuous_inflow': continuous,
             'total_net_5d': round(total_net, 1),
@@ -297,7 +296,7 @@ def get_fund_flow_continuity(ts_code, lookback=5, db_conn=None):
             'trend': trend,
             'score': score,
         }
-    
+
     except Exception as e:
         logger.error(f"资金持续性分析失败 {ts_code}: {e}")
         return {
@@ -380,7 +379,7 @@ def batch_enhanced_scores(stock_base_scores, db_conn=None):
 
 if __name__ == '__main__':
     conn = pymysql.connect(**DB_CONFIG)
-    
+
     print("=== 热点板块 Top 5 ===")
     sectors = get_hot_sectors(top_n=5, db_conn=conn)
     for s in sectors:
@@ -390,7 +389,7 @@ if __name__ == '__main__':
               f"累计净流={s['total_net']:.0f}万 "
               f"涨幅{s['avg_pct']:.2f}% "
               f"{trend_icon}")
-    
+
     print("\n=== 测试个股评分 ===")
     test_codes = ['000001.SZ', '600000.SH', '300750.SZ']
     for code in test_codes:
@@ -402,5 +401,5 @@ if __name__ == '__main__':
               f"(连续{flow['continuous_inflow']}天, "
               f"5日净流{flow['total_net_5d']:.0f}万, "
               f"趋势{flow['trend']})")
-    
+
     conn.close()

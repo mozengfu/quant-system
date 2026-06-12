@@ -1,0 +1,25 @@
+{
+  "start": "2026-05-06",
+  "end": "2026-06-09",
+  "v11": {
+    "signals": 0,
+    "days": 0
+  },
+  "topdown": {
+    "signals": 50,
+    "days": 15,
+    "n_days": 25,
+    "n_trades": 33,
+    "total_return_pct": -19.63,
+    "annual_return_pct": -88.95,
+    "annual_vol_pct": 28.46,
+    "sharpe": -7.88,
+    "max_drawdown_pct": -21.0,
+    "calmar": -4.23,
+    "win_rate_pct": 36.36,
+    "avg_win_pct": 6.09,
+    "avg_loss_pct": -17.71,
+    "pl_ratio": 0.34,
+    "total_pnl": -195666.92
+  }
+}

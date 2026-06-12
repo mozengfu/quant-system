@@ -6,8 +6,7 @@
     <title>登录 - 智能量化选股系统</title>
     <link rel="icon" href="/static/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/static/icon-192.png">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+    <style>* { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: url('/static/login-bg.jpg') no-repeat center center fixed;
@@ -224,7 +223,7 @@
     <div class="chart-line-bg" id="chartLineBg"></div>
     <div class="container">
         <a href="/" style="display:block; text-align:left; color:#888; text-decoration:none; font-size:13px; margin-bottom:16px;">← 返回首页</a>
-        <h1>🔐 用户登录</h1>
+        <h1>用户登录</h1>
         
         <div id="message" class="message"></div>
         
@@ -253,7 +252,7 @@
                            autocomplete="new-password"
                            readonly
                            onfocus="this.removeAttribute('readonly')">
-                    <button type="button" class="toggle-password" onclick="togglePassword()" title="显示/隐藏密码">👁</button>
+                    <button type="button" class="toggle-password" onclick="togglePassword()" title="显示/隐藏密码"></button>
                 </div>
             </div>
             
@@ -283,8 +282,7 @@
         </div>
     </div>
     
-    <script>
-        async function doLogin(event) {
+    <script>async function doLogin(event) {
             event.preventDefault();
             const username = document.getElementById('username').value.trim();
             const password = document.getElementById('password').value;
@@ -300,7 +298,7 @@
                 if (data.error) {
                     showMessage(data.error, 'error');
                 } else {
-                    showMessage('✅ 登录成功！正在跳转...', 'success');
+                    showMessage(' 登录成功！正在跳转...', 'success');
                     setTimeout(() => {
                         var target = data.redirect || '/';
                         var hash = sessionStorage.getItem('landing_hash');
@@ -329,7 +327,7 @@
                 if (data.error) {
                     showMessage(data.error, 'error');
                 } else {
-                    showMessage('✅ 重置邮件已发送，请检查邮箱', 'success');
+                    showMessage(' 重置邮件已发送，请检查邮箱', 'success');
                     setTimeout(() => {
                         showLogin();
                     }, 2000);
@@ -368,8 +366,7 @@
         }
     </script>
     <!-- 浮动股票代码动画 -->
-    <script>
-        (function(){
+    <script>(function(){
             const stocks = [
                 {code:'600519', name:'贵州茅台', up:true},
                 {code:'000858', name:'五粮液', up:true},

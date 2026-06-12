@@ -1,14 +1,13 @@
 """
 管理后台路由模块 - 日志、用户审核管理
 """
+
 import json
 import logging
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from fastapi import APIRouter, Cookie
 
-from app_core import _classify_module
 from quant_app.routes.auth import (
     _approve_user_in_db,
     _load_pending_users,
@@ -19,7 +18,7 @@ from quant_app.routes.auth import (
 from quant_app.services.notification_service import send_email, send_feishu
 from quant_app.utils.authz import is_admin, require_admin
 from quant_app.utils.config import get_db_config
-from quant_app.utils.persistence import ACCESS_LOG_FILE
+from quant_app.utils.persistence import ACCESS_LOG_FILE, _classify_module
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +44,7 @@ def get_log_stats(days: int = 7, username: str = "", module: str = "", action: s
     require_admin(user)
     try:
         import pymysql
+
         conn = pymysql.connect(**get_db_config())
         cursor = conn.cursor(pymysql.cursors.DictCursor)
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -129,10 +129,20 @@ def get_log_stats(days: int = 7, username: str = "", module: str = "", action: s
             "user_options": user_options,
             "action_options": action_options,
         }
-    except Exception as e:
-        return {"error": str(e), "daily_counts": [], "top_users": [], "action_counts": [],
-                "module_counts": [], "recent_logs": [], "total": 0,
-                "today_count": 0, "yesterday_count": 0, "unique_users": 0}
+    except Exception:
+        logger.exception("获取日志统计失败")
+        return {
+            "error": "内部错误",
+            "daily_counts": [],
+            "top_users": [],
+            "action_counts": [],
+            "module_counts": [],
+            "recent_logs": [],
+            "total": 0,
+            "today_count": 0,
+            "yesterday_count": 0,
+            "unique_users": 0,
+        }
 
 
 @router.post("/log_import")
@@ -148,6 +158,7 @@ def import_logs_from_json(token: str = Cookie(None)):
             return {"status": "empty", "imported": 0}
 
         import pymysql
+
         conn = pymysql.connect(**get_db_config())
         cursor = conn.cursor()
         imported = 0
@@ -156,9 +167,13 @@ def import_logs_from_json(token: str = Cookie(None)):
                 module = _classify_module(log.get("action", ""))
                 cursor.execute(
                     "INSERT INTO system_logs (username, ip, action, module, timestamp) VALUES (%s, %s, %s, %s, %s)",
-                    (log.get("username", "unknown"), log.get("ip", "unknown"),
-                     log.get("action", "unknown"), module,
-                     log.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))),
+                    (
+                        log.get("username", "unknown"),
+                        log.get("ip", "unknown"),
+                        log.get("action", "unknown"),
+                        module,
+                        log.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                    ),
                 )
                 imported += 1
             except Exception as _e:
@@ -220,8 +235,9 @@ def approve_user(data: dict, token: str = Cookie(None)):
     _approve_user_in_db(username, expire_date)
 
     try:
-        approve_msg = "✅ 用户审核通过\n\n用户名：%s\n邮箱：%s\n\n该用户现在可以登录系统了" % (
-            username, user_info.get("email", "未知"))
+        approve_msg = "✅ 用户审核通过\n\n用户名：{}\n邮箱：{}\n\n该用户现在可以登录系统了".format(
+            username, user_info.get("email", "未知")
+        )
         send_feishu(approve_msg)
     except Exception as e:
         logger.warning("发送审核通过通知失败: %s", e)
@@ -230,12 +246,12 @@ def approve_user(data: dict, token: str = Cookie(None)):
     if user_email:
         try:
             email_subject = "【智能量化系统】您的账户已审核通过"
-            email_content = "尊敬的用户 %s，您好！\n\n恭喜您！您的账户已通过审核，现在可以登录智能量化系统了。\n\n登录地址：https://lh.mozengfu.com.cn\n用户名：%s\n\n如有任何问题，请联系管理员：259563977@qq.com\n\n祝您投资顺利！\n智能量化系统\n" % (username, username)
+            email_content = f"尊敬的用户 {username}，您好！\n\n恭喜您！您的账户已通过审核，现在可以登录智能量化系统了。\n\n登录地址：https://lh.mozengfu.com.cn\n用户名：{username}\n\n如有任何问题，请联系管理员：259563977@qq.com\n\n祝您投资顺利！\n智能量化系统\n"
             send_email(user_email, email_subject, email_content)
         except Exception as e:
             logger.warning("发送用户邮件通知失败: %s", e)
 
-    return {"message": "用户 %s 审核通过" % username}
+    return {"message": f"用户 {username} 审核通过"}
 
 
 @router.post("/reject")
@@ -246,4 +262,4 @@ def reject_user(data: dict, token: str = Cookie(None)):
 
     username = data.get("username", "").strip()
     _reject_user_in_db(username)
-    return {"message": "用户 %s 已拒绝" % username}
+    return {"message": f"用户 {username} 已拒绝"}

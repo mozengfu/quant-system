@@ -34,6 +34,9 @@ scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no \
   -r /Users/mozengfu/workspace/quant-system/templates/. \
   root@8.148.158.153:/opt/quant-system/templates/ 2>> $LOG
 
+# 上传 frontend/dist
+scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no   -r /Users/mozengfu/workspace/quant-system/frontend/dist/.   root@8.148.158.153:/opt/quant-system/frontend/dist/ 2>> $LOG
+
 # 上传 static
 scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no \
   -r /Users/mozengfu/workspace/quant-system/static/. \

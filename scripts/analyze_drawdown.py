@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """分析 V4.1→V6.5 级联策略回撤分布"""
-import os, sys, json
+import json
+import os
+import sys
 from datetime import datetime
+
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from quant_app.utils.config import get_db_config
-import pymysql
 import pandas as pd
+import pymysql
+
+from quant_app.utils.config import get_db_config
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
 START_DATE, END_DATE = "2025-10-01", "2026-04-30"
@@ -108,7 +112,8 @@ for date in trade_dates:
 
 # 加载 ML 模型
 print("加载 V6.5 模型...")
-from ml_predict import _load_best_model, _build_features_for_stocks_v6_3, _ensemble_predict
+from ml_predict import _build_features_for_stocks_v6_3, _ensemble_predict, _load_best_model
+
 bundle, version = _load_best_model()
 
 conn = pymysql.connect(**get_db_config())
@@ -122,7 +127,7 @@ for di, date in enumerate(trade_dates):
             preds = _ensemble_predict(feat_df, bundle)
             for i, (_, row) in enumerate(feat_df.iterrows()):
                 ml_cache[(row['ts_code'], date)] = float(preds[i])
-    except Exception as e:
+    except Exception:
         pass
     for tc in cands:
         if (tc, date) not in ml_cache:
@@ -253,6 +258,7 @@ current_dd_start = None
 current_peak = equity_vals[0]
 current_peak_date = dates[0]
 in_drawdown = False
+dd_start_idx = 0  # 记录当前回撤起始索引，初始化避免首次使用未赋值
 
 daily_dd = []  # (date, equity, dd_pct)
 
@@ -267,7 +273,7 @@ for j, (val, dt) in enumerate(zip(equity_vals, dates)):
             duration = (datetime.strptime(trough_date, '%Y-%m-%d') - datetime.strptime(current_peak_date, '%Y-%m-%d')).days
             drawdown_periods.append((current_peak_date, trough_date, round(current_peak, 2), round(trough_val, 2), round(dd_pct, 2), duration))
             in_drawdown = False
-        
+
         current_peak = val
         current_peak_date = dt
         dd_pct = 0
@@ -277,7 +283,7 @@ for j, (val, dt) in enumerate(zip(equity_vals, dates)):
             in_drawdown = True
             dd_start_idx = j
             current_dd_start = dt
-    
+
     daily_dd.append((dt, round(val, 2), round(dd_pct, 2)))
 
 # 最后一个回撤期
@@ -291,11 +297,11 @@ if in_drawdown:
 
 # ========== 输出分析 ==========
 print(f"\n{'='*65}")
-print(f"  V4.1→V6.5 级联策略 — 回撤分布分析")
+print("  V4.1→V6.5 级联策略 — 回撤分布分析")
 print(f"{'='*65}")
 
 # 1. 回撤区间分布
-print(f"\n【1. 回撤区间分布】")
+print("\n【1. 回撤区间分布】")
 dd_vals = [d[2] for d in daily_dd if d[2] > 0]
 if dd_vals:
     buckets = [(0, 3), (3, 5), (5, 10), (10, 15), (15, 20), (20, 25), (25, 100)]
@@ -314,7 +320,7 @@ if dd_vals:
     print(f"  {'中位数回撤':<14} {np.median(dd_vals):>6.2f}%")
 
 # 2. 回撤期详情（按严重程度排序）
-print(f"\n【2. 回撤期详情（按最大回撤排序）】")
+print("\n【2. 回撤期详情（按最大回撤排序）】")
 drawdown_periods.sort(key=lambda x: x[4], reverse=True)
 top_n = min(10, len(drawdown_periods))
 print(f"  {'#':<4} {'峰值日期':<12} {'谷值日期':<12} {'峰值':>12} {'谷值':>12} {'回撤%':>8} {'持续天数':>8}")
@@ -324,7 +330,7 @@ for idx, (pk_d, tr_d, pk_v, tr_v, dd_p, dur) in enumerate(drawdown_periods[:top_
     print(f"  {idx:<4} {pk_d:<12} {tr_d:<12} {pk_v:>12,.0f} {tr_v:>12,.0f} {dd_p:>7.1f}% {dur:>8}天{marker}")
 
 # 3. 回撤恢复分析
-print(f"\n【3. 回撤恢复分析】")
+print("\n【3. 回撤恢复分析】")
 recovery_times = []
 for pk_d, tr_d, pk_v, tr_v, dd_p, dur in drawdown_periods:
     # 找谷值之后恢复到峰值的日期
@@ -343,35 +349,35 @@ for pk_d, tr_d, pk_v, tr_v, dd_p, dur in drawdown_periods:
 if recovery_times:
     recovered_list = [(dd, days) for dd, days in recovery_times if days is not None]
     unrecovered = [(dd, days) for dd, days in recovery_times if days is None]
-    
+
     if recovered_list:
         dd_bins = recovered_list
         print(f"  {'回撤幅度':>10} {'恢复天数':>10}")
         print(f"  {'-'*25}")
         for dd_p, days in sorted(recovered_list, key=lambda x: x[0], reverse=True)[:10]:
             print(f"  {dd_p:>9.1f}% {days:>10}天")
-    
+
     if unrecovered:
         print(f"\n  未恢复的回撤: {len(unrecovered)} 个")
         for dd_p, _ in sorted(unrecovered, key=lambda x: x[0], reverse=True):
             print(f"    - 回撤 {dd_p:.1f}% 至期末未恢复")
 
 # 4. 回撤与持仓关系
-print(f"\n【4. 最大回撤期持仓分析】")
+print("\n【4. 最大回撤期持仓分析】")
 max_dd_idx = daily_dd.index(max(daily_dd, key=lambda x: x[2]))
 max_dd_date = daily_dd[max_dd_idx][0]
 max_dd_val = daily_dd[max_dd_idx][2]
 max_dd_equity = daily_dd[max_dd_idx][1]
 
 # 找最大回撤期附近的数据
-nearby = [(d, eq, dd, n_positions) for (d, eq, dd), n_positions in 
-          zip(daily_dd, [e['n_positions'] for e in equity_curve]) 
+nearby = [(d, eq, dd, n_positions) for (d, eq, dd), n_positions in
+          zip(daily_dd, [e['n_positions'] for e in equity_curve])
           if dd > 10]  # 回撤>10%的日子
 if nearby:
     print(f"  回撤>10%的天数: {len(nearby)} 天")
     avg_pos = np.mean([n for _, _, _, n in nearby])
     print(f"  这些天平均持仓数: {avg_pos:.1f}")
-    
+
     # 最大回撤前5天的交易情况
     start_idx = max(0, max_dd_idx - 5)
     print(f"\n  最大回撤前后交易情况（{daily_dd[start_idx][0]} ~ {daily_dd[min(max_dd_idx+5, len(daily_dd)-1)][0]}）:")
@@ -382,7 +388,7 @@ if nearby:
         print(f"    {d}: 净值 {eq:,.0f}, 回撤 {dd:.1f}%, 持仓 {n_pos}{marker}")
 
 # 5. 月度回撤统计
-print(f"\n【5. 月度回撤统计】")
+print("\n【5. 月度回撤统计】")
 monthly = {}
 for d, eq, dd in daily_dd:
     month = d[:7]

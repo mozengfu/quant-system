@@ -1,4 +1,5 @@
 """stock_info 表 ORM 模型。"""
+
 from sqlalchemy import SmallInteger, String
 from sqlalchemy.orm import Mapped, mapped_column
 

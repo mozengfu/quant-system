@@ -1,0 +1,19 @@
+{
+  "period": "2025-12-01 ~ 2026-06-09",
+  "n_days": 190,
+  "n_trades": 33,
+  "n_buy": 33,
+  "total_pnl": -7432.26,
+  "total_return_pct": -7.43,
+  "annual_return_pct": -13.79,
+  "win_rate_pct": 18.18,
+  "avg_win_pct": 3.93,
+  "avg_loss_pct": -2.97,
+  "pl_ratio": 1.32,
+  "final_equity": 92567.74,
+  "exit_reasons": {
+    "stop_loss": 24,
+    "time_stop": 7,
+    "end_of_period": 2
+  }
+}

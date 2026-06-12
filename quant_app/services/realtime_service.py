@@ -4,6 +4,7 @@
 
 调用链: 内存缓存 → 腾讯(主) → 东财 → 阿里云(兜底)
 """
+
 import json
 import logging
 import os
@@ -20,18 +21,20 @@ _pkg_dir = os.path.join(os.path.dirname(__file__), "..", "..")
 if _pkg_dir not in sys.path:
     sys.path.insert(0, os.path.abspath(_pkg_dir))
 
-from quant_app.utils.config import ALIYUN_CODE, ALIYUN_HOST, get_db_config
+from quant_app.utils.config import ALIYUN_CODE, ALIYUN_HOST, get_db_config  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 # ========== 常量 ==========
 EASTMONEY_HOST = "http://push2.eastmoney.com"
-_QUOTE_CACHE_TTL = 30   # 个股行情缓存 30s
+_QUOTE_CACHE_TTL = 30  # 个股行情缓存 30s
 _BREADTH_CACHE_TTL = 60  # 涨跌家数缓存 60s
+
 
 def _retry_urlopen(req, max_retries=3, timeout=3):
     """带重试的 urlopen（指数退避）"""
     import time
+
     for attempt in range(max_retries):
         try:
             return urlopen(req, timeout=timeout)
@@ -54,49 +57,53 @@ def _get_limit_pct(ts_code, stock_name=""):
         return 0.30  # 北交所
     return 0.10  # 主板
 
+
 # ========== 统一内存缓存 ==========
 _cache = {}
 _cache_lock = threading.Lock()
 
+
 def _get_cache(key, ttl):
     with _cache_lock:
         v = _cache.get(key)
-        if v and time.time() - v['ts'] < ttl:
-            return v['data']
+        if v and time.time() - v["ts"] < ttl:
+            return v["data"]
         return None
+
 
 def _set_cache(key, data):
     with _cache_lock:
-        _cache[key] = {'data': data, 'ts': time.time()}
+        _cache[key] = {"data": data, "ts": time.time()}
         if len(_cache) > 500:
             now = time.time()
             for k in list(_cache.keys()):
-                if now - _cache[k]['ts'] > 120:
+                if now - _cache[k]["ts"] > 120:
                     del _cache[k]
 
 
 # ========== 内部辅助：代码转换 ==========
 
+
 def _code_to_secid(code, market="sz"):
     """代码转东方财富secid格式"""
     code = code.upper().strip()
-    if code.startswith('SH'):
-        return f'1.{code[2:]}'
-    elif code.startswith('SZ'):
-        return f'0.{code[2:]}'
-    elif code.startswith('6'):
-        return f'1.{code}'
+    if code.startswith("SH"):
+        return f"1.{code[2:]}"
+    elif code.startswith("SZ"):
+        return f"0.{code[2:]}"
+    elif code.startswith("6"):
+        return f"1.{code}"
     else:
-        return f'0.{code}'
+        return f"0.{code}"
 
 
 # ========== 个股行情源（统一17字段格式）==========
 
+
 def _try_tencent(code, market):
     """腾讯财经实时行情"""
     try:
-        req = UrlRequest(f"http://qt.gtimg.cn/q={market.lower()}{code}",
-                         headers={"User-Agent": "Mozilla/5.0"})
+        req = UrlRequest(f"http://qt.gtimg.cn/q={market.lower()}{code}", headers={"User-Agent": "Mozilla/5.0"})
         with _retry_urlopen(req) as resp:
             data = resp.read().decode("gbk")
         if "~" not in data:
@@ -108,8 +115,12 @@ def _try_tencent(code, market):
         prev_close = float(parts[4])
         limit_pct = _get_limit_pct(code, parts[1])
         return {
-            "名称": parts[1], "现价": price, "昨收": prev_close,
-            "今开": float(parts[5]), "最高": float(parts[33]), "最低": float(parts[34]),
+            "名称": parts[1],
+            "现价": price,
+            "昨收": prev_close,
+            "今开": float(parts[5]),
+            "最高": float(parts[33]),
+            "最低": float(parts[34]),
             "成交量": int(float(parts[6])),
             "成交额": float(parts[37]) * 10000 if len(parts) > 37 else 0,
             "换手率": float(parts[38]) if len(parts) > 38 else 0,
@@ -131,7 +142,7 @@ def _try_eastmoney(code, market):
     """东方财富实时行情"""
     try:
         secid = _code_to_secid(code, market)
-        fields = 'f43,f44,f45,f46,f47,f48,f50,f51,f52,f57,f58,f60,f116,f167,f168,f170,f184'
+        fields = "f43,f44,f45,f46,f47,f48,f50,f51,f52,f57,f58,f60,f116,f167,f168,f170,f184"
         req = UrlRequest(f"{EASTMONEY_HOST}/api/qt/stock/get?secid={secid}&fields={fields}")
         req.add_header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         with _retry_urlopen(req) as resp:
@@ -139,20 +150,31 @@ def _try_eastmoney(code, market):
         d = raw.get("data", {})
         if not d or not d.get("f58"):
             return None
-        def _p(x): return round((x or 0) / 100, 2) if x else 0
+
+        def _p(x):
+            return round((x or 0) / 100, 2) if x else 0
+
         price = _p(d.get("f43"))
         prev_close = _p(d.get("f60"))
         pct = round((price - prev_close) / prev_close * 100, 2) if prev_close > 0 else 0
         return {
-            "名称": d.get("f58", ""), "现价": price, "昨收": prev_close,
-            "今开": _p(d.get("f46")), "最高": _p(d.get("f44")), "最低": _p(d.get("f45")),
-            "成交量": int(d.get("f47", 0) or 0), "成交额": float(d.get("f48", 0) or 0),
-            "换手率": float(d.get("f184", 0) or 0), "量比": float(d.get("f50", 0) or 0),
-            "涨停价": _p(d.get("f51")), "跌停价": _p(d.get("f52")),
+            "名称": d.get("f58", ""),
+            "现价": price,
+            "昨收": prev_close,
+            "今开": _p(d.get("f46")),
+            "最高": _p(d.get("f44")),
+            "最低": _p(d.get("f45")),
+            "成交量": int(d.get("f47", 0) or 0),
+            "成交额": float(d.get("f48", 0) or 0),
+            "换手率": float(d.get("f184", 0) or 0),
+            "量比": float(d.get("f50", 0) or 0),
+            "涨停价": _p(d.get("f51")),
+            "跌停价": _p(d.get("f52")),
             "52周高": float(d.get("f167", 0) or 0) / 100,
             "52周低": float(d.get("f168", 0) or 0) / 100,
             "市值": float(d.get("f116", 0) or 0),
-            "涨跌幅": pct, "涨跌额": round(price - prev_close, 2),
+            "涨跌幅": pct,
+            "涨跌额": round(price - prev_close, 2),
         }
     except Exception as e:
         logger.warning(f"东财行情失败 {market}{code}: {e}")
@@ -164,21 +186,30 @@ def _try_aliyun(code, market):
     if not ALIYUN_CODE:
         return None
     try:
-        req = UrlRequest(f"{ALIYUN_HOST}/query/com?symbol={market.upper()}{code}",
-                         headers={"Authorization": f"APPCODE {ALIYUN_CODE}"})
+        req = UrlRequest(
+            f"{ALIYUN_HOST}/query/com?symbol={market.upper()}{code}",
+            headers={"Authorization": f"APPCODE {ALIYUN_CODE}"},
+        )
         with _retry_urlopen(req) as resp:
             raw = json.loads(resp.read().decode())
         if raw.get("Code") != 0:
             return None
         d = raw["Obj"]
         return {
-            "名称": d.get("N", ""), "现价": float(d.get("P", 0) or 0),
-            "昨收": float(d.get("YC", 0) or 0), "今开": float(d.get("O", 0) or 0),
-            "最高": float(d.get("H", 0) or 0), "最低": float(d.get("L", 0) or 0),
-            "成交量": int(float(d.get("V", 0) or 0)), "成交额": float(d.get("NV", 0) or 0),
-            "换手率": float(d.get("HS", 0) or 0), "量比": float(d.get("VR", 0) or 0),
-            "涨停价": float(d.get("ZT", 0) or 0), "跌停价": float(d.get("DT", 0) or 0),
-            "涨跌幅": float(d.get("ZF", 0) or 0), "涨跌额": float(d.get("ZD", 0) or 0),
+            "名称": d.get("N", ""),
+            "现价": float(d.get("P", 0) or 0),
+            "昨收": float(d.get("YC", 0) or 0),
+            "今开": float(d.get("O", 0) or 0),
+            "最高": float(d.get("H", 0) or 0),
+            "最低": float(d.get("L", 0) or 0),
+            "成交量": int(float(d.get("V", 0) or 0)),
+            "成交额": float(d.get("NV", 0) or 0),
+            "换手率": float(d.get("HS", 0) or 0),
+            "量比": float(d.get("VR", 0) or 0),
+            "涨停价": float(d.get("ZT", 0) or 0),
+            "跌停价": float(d.get("DT", 0) or 0),
+            "涨跌幅": float(d.get("ZF", 0) or 0),
+            "涨跌额": float(d.get("ZD", 0) or 0),
         }
     except Exception as e:
         logger.warning(f"阿里云行情失败 {market}{code}: {e}")
@@ -187,11 +218,11 @@ def _try_aliyun(code, market):
 
 # ========== 指数行情源（统一格式）==========
 
+
 def _try_tencent_index(symbol):
     """腾讯指数行情"""
     try:
-        req = UrlRequest(f"http://qt.gtimg.cn/q={symbol}",
-                         headers={"User-Agent": "Mozilla/5.0"})
+        req = UrlRequest(f"http://qt.gtimg.cn/q={symbol}", headers={"User-Agent": "Mozilla/5.0"})
         with _retry_urlopen(req) as resp:
             raw = resp.read().decode("gbk")
         if "~" not in raw:
@@ -201,8 +232,12 @@ def _try_tencent_index(symbol):
             return None
         price = float(p[3])
         prev_close = float(p[4])
-        return {"最新价": round(price, 2), "涨跌幅": float(p[32]),
-                "涨跌额": round(price - prev_close, 2), "昨日收盘": round(prev_close, 2)}
+        return {
+            "最新价": round(price, 2),
+            "涨跌幅": float(p[32]),
+            "涨跌额": round(price - prev_close, 2),
+            "昨日收盘": round(prev_close, 2),
+        }
     except Exception as e:
         logger.warning(f"腾讯指数行情失败: {e}")
         return None
@@ -221,9 +256,13 @@ def _try_eastmoney_index(secid, fields):
         price = (d.get("f43") or 0) / 100
         prev_close = (d.get("f60") or 0) / 100
         pct = round((price - prev_close) / prev_close * 100, 2) if prev_close > 0 else 0
-        return {"最新价": round(price, 2), "涨跌幅": round(pct, 2),
-                "涨跌额": round(price - prev_close, 2), "成交量": d.get("f47", 0),
-                "昨日收盘": round(prev_close, 2)}
+        return {
+            "最新价": round(price, 2),
+            "涨跌幅": round(pct, 2),
+            "涨跌额": round(price - prev_close, 2),
+            "成交量": d.get("f47", 0),
+            "昨日收盘": round(prev_close, 2),
+        }
     except Exception as e:
         logger.warning(f"东财指数行情失败: {e}")
         return None
@@ -234,8 +273,7 @@ def _try_aliyun_index(acode):
     if not ALIYUN_CODE:
         return None
     try:
-        req = UrlRequest(f"{ALIYUN_HOST}/query/com?symbol={acode}",
-                         headers={"Authorization": f"APPCODE {ALIYUN_CODE}"})
+        req = UrlRequest(f"{ALIYUN_HOST}/query/com?symbol={acode}", headers={"Authorization": f"APPCODE {ALIYUN_CODE}"})
         with _retry_urlopen(req) as resp:
             d = json.loads(resp.read().decode())
         if d.get("Code") != 0:
@@ -243,8 +281,12 @@ def _try_aliyun_index(acode):
         o = d["Obj"]
         price = float(o.get("P", 0) or 0)
         prev_close = float(o.get("YC", 0) or 0)
-        return {"最新价": round(price, 2), "涨跌幅": float(o.get("ZF", 0) or 0),
-                "涨跌额": float(o.get("ZD", 0) or 0), "昨日收盘": round(prev_close, 2)}
+        return {
+            "最新价": round(price, 2),
+            "涨跌幅": float(o.get("ZF", 0) or 0),
+            "涨跌额": float(o.get("ZD", 0) or 0),
+            "昨日收盘": round(prev_close, 2),
+        }
     except Exception as e:
         logger.warning(f"阿里云指数行情失败: {e}")
         return None
@@ -252,39 +294,43 @@ def _try_aliyun_index(acode):
 
 # ========== 涨跌家数 ==========
 
+
 def _fetch_market_breadth_from_sina():
     """从新浪获取市场涨跌家数"""
     total_up = 0
     total_down = 0
     total_cnt = 0
     try:
-        for node in ['sh_a', 'sz_a']:
+        for node in ["sh_a", "sz_a"]:
             for page in range(1, 9):  # 8页×80=640只/市场，足够代表样本
-                url = (f'http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/'
-                       f'Market_Center.getHQNodeData?page={page}&num=80&sort=symbol&asc=0&node={node}&_s_r_a=auto')
-                req = UrlRequest(url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'http://finance.sina.com.cn'})
+                url = (
+                    f"http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+                    f"Market_Center.getHQNodeData?page={page}&num=80&sort=symbol&asc=0&node={node}&_s_r_a=auto"
+                )
+                req = UrlRequest(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "http://finance.sina.com.cn"})
                 with _retry_urlopen(req) as resp:
-                    data = json.loads(resp.read().decode('gbk', errors='replace'))
+                    data = json.loads(resp.read().decode("gbk", errors="replace"))
                 if not data:
                     break
                 for stock in data:
-                    chg = float(stock.get('changepercent', 0))
+                    chg = float(stock.get("changepercent", 0))
                     total_cnt += 1
                     if chg > 0:
                         total_up += 1
                     elif chg < 0:
                         total_down += 1
         ratio = round((total_up / total_cnt * 100), 1) if total_cnt > 0 else 50.0
-        return {"up_cnt": total_up, "down_cnt": total_down,
-                "total_cnt": total_cnt, "breadth_ratio": ratio}
+        return {"up_cnt": total_up, "down_cnt": total_down, "total_cnt": total_cnt, "breadth_ratio": ratio}
     except Exception as e:
         logger.warning(f"新浪涨跌家数获取失败: {e}")
         return {"up_cnt": 0, "down_cnt": 0, "total_cnt": 0, "breadth_ratio": 50.0}
 
 
 def _is_trading_time():
-    """判断当前是否为交易相关时间 (周一至周五 8:30-16:00)"""
-    now = datetime.now()
+    """判断当前是否为交易相关时间 (周一至周五 8:30-16:00) 北京时区"""
+    from datetime import timedelta, timezone
+    cst = timezone(timedelta(hours=8))
+    now = datetime.now(cst)
     if now.weekday() >= 5:
         return False
     t = now.hour * 60 + now.minute
@@ -294,10 +340,9 @@ def _is_trading_time():
 def _fetch_sse_change():
     """快速获取上证指数涨跌幅"""
     try:
-        req = UrlRequest("http://qt.gtimg.cn/q=sh000001",
-                         headers={"User-Agent": "Mozilla/5.0"})
+        req = UrlRequest("http://qt.gtimg.cn/q=sh000001", headers={"User-Agent": "Mozilla/5.0"})
         with _retry_urlopen(req) as resp:
-            data = resp.read().decode("gbk", errors='replace')
+            data = resp.read().decode("gbk", errors="replace")
         m = re.search(r'v_sh000001="(.+?)";', data)
         if m:
             parts = m.group(1).split("~")
@@ -310,6 +355,7 @@ def _fetch_sse_change():
 
 
 # ========== 公开 API ==========
+
 
 def get_stock_quote(code, market="sz"):
     """个股实时行情 — 缓存 → 腾讯 → 东财 → 阿里云
@@ -380,12 +426,18 @@ def get_market_indices():
         status, color, position, signal, score = "大幅上涨", "🟢", 90, "重仓", 85
 
     return {
-        "date": now_str, "time": time_str,
+        "date": now_str,
+        "time": time_str,
         "indices": results,
         "analysis": {
-            "score": score, "status": status, "color": color,
-            "position_ratio": position, "signal": signal,
-            "reasons": [f"{n}{'+' if r.get('涨跌幅',0)>=0 else ''}{r.get('涨跌幅',0):.2f}%" for n, r in results.items()],
+            "score": score,
+            "status": status,
+            "color": color,
+            "position_ratio": position,
+            "signal": signal,
+            "reasons": [
+                f"{n}{'+' if r.get('涨跌幅', 0) >= 0 else ''}{r.get('涨跌幅', 0):.2f}%" for n, r in results.items()
+            ],
         },
     }
 
@@ -416,12 +468,16 @@ def get_market_overview(db_conn=None):
             mkt_chg = _fetch_sse_change()
             logger.info("使用【实时】大盘数据")
             return {
-                "mkt_chg": mkt_chg, "breadth_ratio": breadth["breadth_ratio"],
-                "up_cnt": breadth["up_cnt"], "total_cnt": breadth["total_cnt"],
-                "date": datetime.now().strftime("%Y-%m-%d"), "source": "realtime",
+                "mkt_chg": mkt_chg,
+                "breadth_ratio": breadth["breadth_ratio"],
+                "up_cnt": breadth["up_cnt"],
+                "total_cnt": breadth["total_cnt"],
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "source": "realtime",
             }
     # 回退 MySQL
     import pymysql
+
     should_close = False
     if db_conn is None:
         db_conn = pymysql.connect(**get_db_config())
@@ -432,22 +488,30 @@ def get_market_overview(db_conn=None):
         idx_date = cur.fetchone()[0]
         if not idx_date:
             return {"mkt_chg": 0, "breadth_ratio": 50.0, "up_cnt": 0, "total_cnt": 0, "date": None, "source": "db"}
-        cur.execute("SELECT change_pct FROM market_index_daily WHERE index_code='000001.SH' AND trade_date=%s", (idx_date,))
+        cur.execute(
+            "SELECT change_pct FROM market_index_daily WHERE index_code='000001.SH' AND trade_date=%s", (idx_date,)
+        )
         row = cur.fetchone()
         mkt_chg = float(row[0]) if row else 0.0
         cur.execute("SELECT MAX(trade_date) FROM daily_price")
         bd = cur.fetchone()[0]
-        cur.execute("""SELECT SUM(CASE WHEN pct_chg>0 THEN 1 ELSE 0 END), COUNT(*)
+        cur.execute(
+            """SELECT SUM(CASE WHEN pct_chg>0 THEN 1 ELSE 0 END), COUNT(*)
             FROM daily_price WHERE trade_date=%s AND pct_chg IS NOT NULL
-            AND ts_code NOT LIKE '688.%%' AND ts_code NOT LIKE '8%%' AND ts_code NOT LIKE '4%%' AND ts_code NOT LIKE '9%%'""", (bd,))
+            AND ts_code NOT LIKE '688.%%' AND ts_code NOT LIKE '8%%' AND ts_code NOT LIKE '4%%' AND ts_code NOT LIKE '9%%'""",
+            (bd,),
+        )
         res = cur.fetchone()
         up = int(res[0]) if res and res[0] else 0
         total = int(res[1]) if res and res[1] else 0
         ratio = round((up / total * 100), 1) if total > 0 else 50.0
         logger.info("使用【MySQL】历史大盘数据")
         return {
-            "mkt_chg": mkt_chg, "breadth_ratio": ratio, "up_cnt": up, "total_cnt": total,
-            "date": idx_date.strftime("%Y-%m-%d") if hasattr(idx_date, 'strftime') else str(idx_date),
+            "mkt_chg": mkt_chg,
+            "breadth_ratio": ratio,
+            "up_cnt": up,
+            "total_cnt": total,
+            "date": idx_date.strftime("%Y-%m-%d") if hasattr(idx_date, "strftime") else str(idx_date),
             "source": "db",
         }
     except Exception as e:
@@ -460,6 +524,7 @@ def get_market_overview(db_conn=None):
 
 if __name__ == "__main__":
     import sys
+
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
     logging.basicConfig(level=logging.INFO)
     q = get_stock_quote("000001", "sz")

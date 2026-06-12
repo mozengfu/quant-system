@@ -6,8 +6,7 @@
     <title>注册 - 智能量化选股系统</title>
     <link rel="icon" href="/static/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/static/icon-192.png">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+    <style>* { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: url('/static/login-bg.jpg') no-repeat center center fixed;
@@ -205,7 +204,7 @@
 <body>
     <div class="container">
         <a href="/" style="display:block; text-align:left; color:#888; text-decoration:none; font-size:13px; margin-bottom:16px;">← 返回首页</a>
-        <h1>📝 用户注册</h1>
+        <h1>用户注册</h1>
         
         <div class="step-indicator">
             <div class="step active" id="step1">1. 填写信息</div>
@@ -230,12 +229,10 @@
                         <div style="font-size: 12px; opacity: 0.9;">试用 1 天</div>
                     </label>
                 </div>
-                <div id="planDesc" style="background: #f8f9fa; padding: 12px; border-radius: 6px; font-size: 13px; color: #555;">
-                    📦 包年会员：365 天无限使用所有功能
+                <div id="planDesc" style="background: #f8f9fa; padding: 12px; border-radius: 6px; font-size: 13px; color: #555;">包年会员：365 天无限使用所有功能
                 </div>
                 <div style="margin-top: 12px; padding-top: 12px; border-top: 1px dashed #ddd;">
-                    <div style="font-size: 12px; color: #4caf50; font-weight: 500;">
-                        🎉 新用户首次注册可享¥1 试用
+                    <div style="font-size: 12px; color: #4caf50; font-weight: 500;">新用户首次注册可享¥1 试用
                     </div>
                 </div>
             </div>
@@ -298,7 +295,7 @@
                 </div>
             </form>
             
-            <button onclick="submitRegister()">✅ 我已支付，提交审核</button>
+            <button onclick="submitRegister()">我已支付，提交审核</button>
             <button class="back-btn" onclick="backToStep1()">返回修改</button>
         </div>
         
@@ -307,8 +304,7 @@
         </div>
     </div>
     
-    <script>
-        let orderId = '';
+    <script>let orderId = '';
         let selectedPlan = 'annual';
         let selectedAmount = 99;
         
@@ -317,10 +313,10 @@
             const descEl = document.getElementById('planDesc');
             if (amount === 99) {
                 selectedPlan = 'annual';
-                descEl.innerHTML = '📦 包年会员：365 天无限使用所有功能';
+                descEl.innerHTML = ' 包年会员：365 天无限使用所有功能';
             } else {
                 selectedPlan = 'trial';
-                descEl.innerHTML = '🎁 试用套餐：24 小时体验所有功能（仅限首次注册）';
+                descEl.innerHTML = ' 试用套餐：24 小时体验所有功能（仅限首次注册）';
             }
         }
         
@@ -331,7 +327,7 @@
             const email = document.getElementById('email').value.trim();
             
             // 基础验证
-            if (username.length < 3 || username.length > 20) {
+            if (username.length < 3 || username.length >20) {
                 showMessage('用户名需 3-20 位', 'error');
                 return;
             }
@@ -424,8 +420,8 @@
                 if (data.error) {
                     showMessage(data.error, 'error');
                 } else {
-                    showMessage('✅ 提交成功！请等待管理员审核', 'success');
-                    setTimeout(() => {
+                    showMessage(' 提交成功！请等待管理员审核', 'success');
+                    setTimeout(() =>{
                         window.location.href = '/login';
                     }, 2000);
                 }

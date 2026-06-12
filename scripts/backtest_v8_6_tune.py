@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """V8.6 专属参数扫描 — 25 组 pct/bw 组合"""
-import os, sys, json, subprocess, logging
+import json
+import logging
+import os
+import subprocess
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -48,7 +52,7 @@ if not results:
 results.sort(key=lambda x: x['total_return_pct'], reverse=True)
 
 print(f"\n{'=' * 90}")
-print(f"  V8.6 参数扫描结果 (按收益率降序)")
+print("  V8.6 参数扫描结果 (按收益率降序)")
 print(f"{'=' * 90}")
 h = f"  {'pct_th':>6s} {'bw':>4s} {'收益率':>8s} {'夏普':>6s} {'胜率':>6s} {'交易':>4s} {'盈亏比':>6s} {'回撤':>8s} {'ML通过率':>8s}"
 print(h)
@@ -69,7 +73,7 @@ print(f"\n  ★ V8.6 最优: pct={best['pct_threshold']}, bw={best['blend_weight
 print(f"    收益: {best['total_return_pct']:.2f}%, 夏普: {best['sharpe_ratio']:.2f}, 回撤: {best['max_drawdown_pct']:.2f}%")
 
 # 对比 V8.0 同参数
-print(f"\n  对比 V8.0 (pct=0.10, bw=0.10): 收益 +40.11%, 夏普 1.82, 回撤 22.11%")
+print("\n  对比 V8.0 (pct=0.10, bw=0.10): 收益 +40.11%, 夏普 1.82, 回撤 22.11%")
 diff_ret = best['total_return_pct'] - 40.11
 print(f"  V8.6 最优 vs V8.0 收益差: {diff_ret:+.2f}%")
 

@@ -1,11 +1,13 @@
+import json
 import os
-import pymysql
-import pandas as pd
-import json, time
+import time
 from datetime import datetime
 from pathlib import Path
 
+import pandas as pd
+import pymysql
 from dotenv import load_dotenv
+
 load_dotenv()
 
 DB_CONFIG = {

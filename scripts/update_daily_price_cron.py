@@ -6,14 +6,16 @@
 3. 更新stock_pool_strong.json（强势股池）
 4. 更新positions.json浮盈数据
 """
-import pymysql
-import tushare as ts
-import json, sys, os
+import json
+import os
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from dotenv import load_dotenv
 
 import pandas as pd
+import pymysql
+import tushare as ts
+from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
@@ -49,7 +51,7 @@ def get_latest_trade_date():
     # 只取记录数>=4000的日期，避免用不完整的04-24（盘中只有1000多条）
     cur.execute("""
         SELECT MAX(trade_date) FROM (
-            SELECT trade_date FROM quant_db.daily_price 
+            SELECT trade_date FROM daily_price 
             GROUP BY trade_date HAVING COUNT(*) >= 4000
         ) t
     """)
@@ -94,7 +96,7 @@ def calc_vol_ratio(cur, ts_code, trade_date, today_vol):
     """查MySQL计算量比：今日成交量/前5日均量"""
     try:
         cur.execute("""
-            SELECT vol FROM quant_db.daily_price
+            SELECT vol FROM daily_price
             WHERE ts_code=%s AND trade_date < %s
             ORDER BY trade_date DESC LIMIT 5
         """, (ts_code, trade_date))
@@ -145,7 +147,7 @@ def update_daily_price():
             ts_codes = df_daily['ts_code'].tolist()
             # Step1: 取近5个交易日
             cur.execute("""
-                SELECT DISTINCT trade_date FROM quant_db.daily_price
+                SELECT DISTINCT trade_date FROM daily_price
                 WHERE trade_date < %s
                 ORDER BY trade_date DESC LIMIT 5
             """, (trade_date,))
@@ -155,7 +157,7 @@ def update_daily_price():
                 continue
             # Step2: 查这些日期的历史成交量（按股票+日期降序，每只股票只留最近5条）
             cur.execute(f"""
-                SELECT ts_code, vol FROM quant_db.daily_price
+                SELECT ts_code, vol FROM daily_price
                 WHERE ts_code IN ({','.join(['%s']*len(ts_codes))})
                 AND trade_date IN ({','.join(['%s']*len(recent_dates))})
                 ORDER BY ts_code, trade_date DESC
@@ -269,7 +271,7 @@ def update_ma():
 
     try:
         cur.execute("""
-            UPDATE quant_db.daily_price d
+            UPDATE daily_price d
             JOIN (
                 SELECT ts_code, trade_date,
                        AVG(close) OVER (
@@ -284,7 +286,7 @@ def update_ma():
                            PARTITION BY ts_code ORDER BY trade_date
                            ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
                        ) AS ma20
-                FROM quant_db.daily_price
+                FROM daily_price
                 WHERE trade_date <= %s
             ) calc ON d.ts_code = calc.ts_code AND d.trade_date = calc.trade_date
             SET d.ma5 = calc.ma5, d.ma10 = calc.ma10, d.ma20 = calc.ma20
@@ -308,7 +310,7 @@ def update_stock_pool():
     cur = conn.cursor()
 
     # 删掉旧数据（同一日期）
-    cur.execute("DELETE FROM quant_db.stock_pool_snap WHERE snap_date = %s", [latest])
+    cur.execute("DELETE FROM stock_pool_snap WHERE snap_date = %s", [latest])
     log(f"删除了 {latest} 旧数据")
 
     # 查询强势股
@@ -317,8 +319,8 @@ def update_stock_pool():
                d.turnover_rate, d.volume_ratio,
                d.ma5, d.ma10, d.ma20,
                d.rps_20
-        FROM quant_db.daily_price d
-        JOIN quant_db.stock_info s ON CAST(d.ts_code AS CHAR) = s.ts_code COLLATE utf8mb4_unicode_ci
+        FROM daily_price d
+        JOIN stock_info s ON CAST(d.ts_code AS CHAR) = s.ts_code COLLATE utf8mb4_unicode_ci
         WHERE d.trade_date = %s
           AND d.pct_chg BETWEEN 0.5 AND 9.5
           AND d.volume_ratio BETWEEN 1.5 AND 10
@@ -381,7 +383,7 @@ def update_stock_pool():
             ))
 
         cur.executemany("""
-            INSERT INTO quant_db.stock_pool_snap
+            INSERT INTO stock_pool_snap
             (snap_date, ts_code, name, industry, price, change_pct, turnover_rate, vol_ratio, quick_score, entry_reason, today_rank)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, records)
@@ -412,7 +414,7 @@ def update_positions():
     positions_file = QUANT_ROOT / "data" / "positions.json"
     if not positions_file.exists():
         return
-    with open(positions_file, "r", encoding="utf-8") as f:
+    with open(positions_file, encoding="utf-8") as f:
         data = json.load(f)
     positions = data.get("positions", [])
     if not positions:
@@ -429,7 +431,7 @@ def update_positions():
         market = "sz" if code.startswith(("00", "30")) else "sh"
         ts_code = f"{code}.{'SZ' if market == 'sz' else 'SH'}"
         try:
-            cur.execute("SELECT close FROM quant_db.daily_price WHERE ts_code=%s AND trade_date=%s", [ts_code, latest])
+            cur.execute("SELECT close FROM daily_price WHERE ts_code=%s AND trade_date=%s", [ts_code, latest])
             row = cur.fetchone()
             if row:
                 current_price = float(row[0])
@@ -491,8 +493,8 @@ def update_bottom_pool(latest_date):
                    d.close, d.pct_chg,
                    d.turnover_rate, d.volume_ratio,
                    d.ma5, d.ma10, d.ma20, d.rps_20
-            FROM quant_db.daily_price d
-            JOIN quant_db.stock_info s ON d.ts_code = s.ts_code COLLATE utf8mb4_unicode_ci
+            FROM daily_price d
+            JOIN stock_info s ON d.ts_code = s.ts_code COLLATE utf8mb4_unicode_ci
             WHERE d.trade_date = %s
               AND d.close > 5
               AND d.ts_code NOT LIKE '688%%'
@@ -554,9 +556,9 @@ def sync_fina_indicator_incremental():
         else: latest_period = f"{year}0331"
 
         # 查找缺少财务数据的股票（排除ST/688/北交所）
-        cur.execute(f"""
+        cur.execute("""
             SELECT DISTINCT d.ts_code FROM daily_price d
-            LEFT JOIN fina_indicator f ON CONVERT(d.ts_code USING utf8mb4) = CONVERT(f.ts_code USING utf8mb4) AND f.end_date = %s
+            LEFT JOIN fina_indicator f ON d.ts_code COLLATE utf8mb4_unicode_ci = f.ts_code COLLATE utf8mb4_unicode_ci AND f.end_date = %s
             WHERE d.trade_date = (SELECT MAX(trade_date) FROM daily_price)
               AND f.ts_code IS NULL
               AND d.ts_code NOT LIKE '688%%'
@@ -612,4 +614,4 @@ if __name__ == "__main__":
     except Exception as e:
         log(f"更新失败: {e}")
         import traceback
-        traceback.print_exc()
+        log(traceback.format_exc())

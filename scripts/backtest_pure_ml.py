@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """纯ML回测（含风控过滤+游资排除+业绩过滤）"""
-import os, sys, json, time, warnings
+import json
+import os
+import sys
+import time
+import warnings
+
 warnings.filterwarnings('ignore')
-import numpy as np, pandas as pd, pymysql
+import numpy as np
+import pymysql
 from scipy.stats import ttest_ind
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
+from ml_predict import _build_features_for_stocks_v6_3, _ensemble_predict, _load_best_model
 from quant_app.utils.config import get_db_config
-from ml_predict import _load_best_model, _ensemble_predict, _build_features_for_stocks_v6_3
 
 DB_CONFIG = get_db_config()
 START_DATE, END_DATE = "2025-10-01", "2026-05-15"
@@ -19,7 +25,7 @@ OUT_PATH = os.path.join(BASE_DIR, 'data', 'backtest_v4_pool.json')
 
 def get_trade_dates(conn):
     cur = conn.cursor()
-    cur.execute(f"SELECT DISTINCT trade_date FROM daily_price WHERE trade_date>='{START_DATE}' AND trade_date<='{END_DATE}' ORDER BY trade_date")
+    cur.execute("SELECT DISTINCT trade_date FROM daily_price WHERE trade_date>=%s AND trade_date<=%s ORDER BY trade_date", (START_DATE, END_DATE))
     dates = sorted([r[0] for r in cur.fetchall()])
     cur.close()
     return dates
@@ -28,9 +34,9 @@ def get_trade_dates(conn):
 def get_top_vol_stocks(conn, date_str, n=500):
     cur = conn.cursor()
     try:
-        cur.execute(f"SELECT ts_code FROM daily_price WHERE trade_date='{date_str}' AND LEFT(ts_code,1) NOT IN ('8','4','9') AND ts_code NOT LIKE '83%%' AND ts_code NOT LIKE '43%%' AND close<=200 ORDER BY amount DESC LIMIT {n}")
+        cur.execute("SELECT ts_code FROM daily_price WHERE trade_date=%s AND LEFT(ts_code,1) NOT IN ('8','4','9') AND ts_code NOT LIKE '83%%' AND ts_code NOT LIKE '43%%' AND close<=200 ORDER BY amount DESC LIMIT %s", (date_str, n))
     except:
-        cur.execute(f"SELECT ts_code FROM daily_price WHERE trade_date='{date_str}' AND LEFT(ts_code,1) NOT IN ('8','4','9') AND ts_code NOT LIKE '83%%' AND ts_code NOT LIKE '43%%' AND close<=200 ORDER BY vol*close DESC LIMIT {n}")
+        cur.execute("SELECT ts_code FROM daily_price WHERE trade_date=%s AND LEFT(ts_code,1) NOT IN ('8','4','9') AND ts_code NOT LIKE '83%%' AND ts_code NOT LIKE '43%%' AND close<=200 ORDER BY vol*close DESC LIMIT %s", (date_str, n))
     codes = [r[0] for r in cur.fetchall()]
     cur.close()
     return codes
@@ -59,16 +65,16 @@ def filter_stocks(conn, date_str, candidates, feat_df):
     """
     if not candidates:
         return []
-    
+
     ts_codes = [c['ts_code'] for c in candidates]
     name_map = {c['ts_code']: c['name'] for c in candidates}
-    
+
     # 1. 建一个code→row的映射
     code_to_row = {}
     if feat_df is not None and not feat_df.empty:
         for _, row in feat_df.iterrows():
             code_to_row[row['ts_code']] = row
-    
+
     # 2. 风控过滤
     filtered = []
     for c in candidates:
@@ -86,11 +92,11 @@ def filter_stocks(conn, date_str, candidates, feat_df):
     candidates = filtered
     if not candidates:
         return []
-    
+
     # 3. 游资出货评分
     cur = conn.cursor()
     ph = ','.join(['%s'] * len(ts_codes))
-    
+
     # 连板数据（60天内最高连板）
     cur.execute(f"""
         SELECT ts_code, COALESCE(MAX(last_board), 0) as max_board
@@ -99,7 +105,7 @@ def filter_stocks(conn, date_str, candidates, feat_df):
         GROUP BY ts_code
     """, (*ts_codes, date_str))
     board_map = {r[0]: r[1] or 0 for r in cur.fetchall()}
-    
+
     # 封单萎缩
     cur.execute(f"""
         SELECT ts_code, trade_date, seal_amount
@@ -110,7 +116,7 @@ def filter_stocks(conn, date_str, candidates, feat_df):
     seal_map = {}
     for r in cur.fetchall():
         seal_map.setdefault(r[0], []).append(float(r[2] or 0))
-    
+
     # 涨停+跌停
     cur.execute(f"""
         SELECT ts_code,
@@ -125,7 +131,7 @@ def filter_stocks(conn, date_str, candidates, feat_df):
     ud_map = {}
     for r in cur.fetchall():
         ud_map[r[0]] = {'up': r[1] or 0, 'down': r[2] or 0, 'first_up': str(r[3]) if r[3] else None, 'last_down': str(r[4]) if r[4] else None}
-    
+
     # 5日均换手
     cur.execute(f"""
         SELECT ts_code, AVG(turnover_rate) as avg_tr, MAX(turnover_rate) as max_tr
@@ -134,7 +140,7 @@ def filter_stocks(conn, date_str, candidates, feat_df):
         GROUP BY ts_code
     """, (*ts_codes, date_str, date_str))
     tr_map = {r[0]: {'avg': r[1] or 0, 'max': r[2] or 0} for r in cur.fetchall()}
-    
+
     # 主力资金（10日累计）
     cur.execute(f"""
         SELECT ts_code, COALESCE(SUM(main_net), 0) as total
@@ -143,7 +149,7 @@ def filter_stocks(conn, date_str, candidates, feat_df):
         GROUP BY ts_code
     """, (*ts_codes, date_str))
     main_map = {r[0]: r[1] or 0 for r in cur.fetchall()}
-    
+
     # 评分
     excluded = set()
     for c in candidates:
@@ -153,42 +159,42 @@ def filter_stocks(conn, date_str, candidates, feat_df):
         ud = ud_map.get(tc, {})
         tr = tr_map.get(tc, {})
         mnet = main_map.get(tc, 0)
-        
+
         score = 0
         reasons = []
-        
+
         if board >= 4:
             score += 30; reasons.append(f'高连板{int(board)}')
         elif board == 3:
             score += 15; reasons.append('连板3次')
-        
+
         if len(seals) >= 2 and seals[1] > 0 and seals[0] < seals[1] * 0.5:
             ratio = (1 - seals[0]/seals[1]) * 100
             score += 30; reasons.append(f'封单萎缩{int(ratio)}%')
-        
+
         if ud.get('up', 0) > 0 and ud.get('down', 0) > 0:
             fu = ud.get('first_up')
             ld = ud.get('last_down')
             if fu and ld and fu < ld:
                 score += 20; reasons.append('涨停后跌停')
-        
+
         avg_tr = tr.get('avg', 0)
         max_tr = tr.get('max', 0)
         if avg_tr > 20:
             score += 15; reasons.append(f'高换手{int(avg_tr)}%')
         elif avg_tr > 15 and max_tr > 25:
             score += 10; reasons.append('换手异常')
-        
+
         if mnet < -30000000:
             score += 15; reasons.append('主力流出')
-        
+
         c['hm_score'] = score
         c['hm_reason'] = '; '.join(reasons)
         if score >= 40:
             excluded.add(tc)
-    
+
     candidates = [c for c in candidates if c['ts_code'] not in excluded]
-    
+
     # 4. 业绩暴雷过滤
     if candidates:
         remain_codes = [c['ts_code'] for c in candidates]
@@ -206,7 +212,7 @@ def filter_stocks(conn, date_str, candidates, feat_df):
             profit_map[r[0]] = profit
         bad_codes = {tc for tc, p in profit_map.items() if p < -30}
         candidates = [c for c in candidates if c['ts_code'] not in bad_codes]
-    
+
     cur.close()
     return candidates
 
@@ -218,7 +224,7 @@ def run_pure_ml(conn, date_str, feat_all, bundle):
     ranked = sorted(zip(feat_all['ts_code'].tolist(), ml_all), key=lambda x: -x[1])
     # 取候选（Top10给过滤留空间）
     candidates = [{'ts_code': c[0], 'name': '', 'ml_score': float(c[1])} for c in ranked[:10]]
-    
+
     # 获取名称
     cur = conn.cursor()
     cur.execute(f"SELECT ts_code, name FROM stock_info WHERE ts_code IN ({','.join(['%s']*len(candidates))})", [c['ts_code'] for c in candidates])
@@ -226,12 +232,12 @@ def run_pure_ml(conn, date_str, feat_all, bundle):
     cur.close()
     for c in candidates:
         c['name'] = name_map.get(c['ts_code'], '')
-    
+
     # 过滤
     passed = filter_stocks(conn, date_str, candidates, feat_all)
     if passed:
         top5 = [c['ts_code'] for c in passed[:min(5, len(passed))]]
-    
+
     return top5
 
 
@@ -308,7 +314,7 @@ def main():
     print(f"纯ML回测对比（2025-10-01 ~ 2026-05-15）耗时{elapsed:.0f}s")
     print(f"模型: {version} | Top{TOP_N} | 持有{HOLD_DAYS}天 | 全部过滤后无候选: {skipped_no_candidates}次")
     print(f"{'='*70}")
-    
+
     print_stats("纯ML(无过滤)", pure_ml_raw)
     print_stats("纯ML(含风控+游资+业绩过滤)", pure_ml_filtered)
 

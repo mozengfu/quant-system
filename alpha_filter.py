@@ -1,59 +1,68 @@
 #!/usr/bin/env python3
 """
-A股Alpha内容过滤器 V3 — 模型集成版
-1. 过滤噪音，提取Alpha新闻
-2. 识别新闻涉及的股票
-3. 将非结构化新闻转化为结构化信号存入数据库
+A股Alpha内容过滤器 V4 — 多频道增强版
+1. 从新浪财经多频道获取新闻
+2. 过滤噪音，提取Alpha信号
+3. 识别新闻涉及的股票并写入 alpha_signals 表
 4. 供ML模型读取作为新增特征
 """
 
 import json
-import os
 import re
-import pymysql
 import urllib.request
-import urllib.parse
 from datetime import datetime
 
-# ============ 配置 ============
-ALPHA_THRESHOLD = 60  # 最低Alpha得分
-MAX_ITEMS = 5  # 最多推送条数
+import pymysql
 
 from quant_app.utils.config import get_db_config
 
 DB_CONFIG = get_db_config()
 
-# 信号分类定义
+# ============ 配置 ============
+ALPHA_THRESHOLD = 50   # V3:60 → V4:50，提升召回
+MAX_ITEMS = 10
+
+# 信号分类
 SIGNAL_TYPES = {
-    '业绩': ['业绩预增', '预增', '净利润增长', '营收增长', '业绩预告', '年报', '季报', '营收'],
-    '政策': ['政策', '新规', '指导意见', '规划', '通知', '实施方案', '若干措施'],
-    '业务': ['中标', '签订', '合同', '订单'],
-    '资本': ['重组', '并购', '定增', '减持', '回购'],
-    '产业': ['产能', '投产', '扩产', '生产线', '首次', '量产', '批量供货'],
-    '价格': ['涨价', '提价', '调价'],
-    '技术': ['突破', '获批', '通过', '上市'],
-    '风险': ['风险提示', '退市', '立案调查'],
+    '业绩': ['业绩预增', '预增', '净利润增长', '营收增长', '业绩预告', '年报', '季报', '营收',
+             '净利润', '同比', '环比', '中报', '扭亏', '大幅增长', '大幅上升'],
+    '政策': ['政策', '新规', '指导意见', '规划', '通知', '实施方案', '若干措施', '补贴', '产业规划',
+             '印发', '推动', '鼓励', '支持', '促进'],
+    '业务': ['中标', '签订', '合同', '订单', '签约', '合作', '投产', '扩建', '交付', '供货',
+             '获得订单', '重大合同'],
+    '资本': ['重组', '并购', '定增', '减持', '回购', '增持', '配股', '分红', '送转'],
+    '产业': ['产能', '投产', '扩产', '生产线', '首次', '量产', '批量供货', '扩建', '新产线'],
+    '价格': ['涨价', '提价', '调价', '上调', '降价', '价格上调'],
+    '技术': ['突破', '获批', '通过', '上市', '研发', '专利', '获得批准'],
+    '风险': ['风险提示', '退市', '立案调查', '处罚', '警示', '违规', 'ST', '戴帽'],
 }
 
-# 噪音词库（标题党、情绪化、滞后信息）
+# 噪音词库 — 收紧
 NOISE_PATTERNS = [
-    r'[涨跌停]+！?[！！]+', r'重磅[利好利空]', r'速看|紧急|紧急通知',
-    r'抄底|逃顶|满仓|空仓', r'利好消息|重大利好|重大利空',
-    r'值得关注|重点关注', r'建议关注|建议投资者',
+    r'[涨跌停]+！?[！！]+', r'重磅[利好利空]',
+    r'抄底|逃顶|满仓|空仓', r'值得关注|重点关注',
     r'明日预测|下周走势|后市展望', r'复盘|收评|晚评',
     r'必涨|一定涨停|错过拍大腿',
 ]
 NOISE_KEYWORDS = ['大v说', '股评', '明日', '下周', '抄底', '逃顶']
 
-# 股票名称与代码的正则 (A股)
-STOCK_CODE_PATTERNS = [
-    r'([\d]{6})\.S[Z|H]',  # 300001.SZ 或 600519.SH
-    r'([\d]{6})',          # 纯6位代码 (需验证)
-    r'[（(](\d{6})[）)]',  # （600519）
+# 新浪财经频道ID（覆盖宏观/产经/公司/个股等）
+SINA_CHANNELS = [
+    # lid=频道ID, num=每页条数
+    {'pageid': 153, 'lid': 2516, 'num': 30},   # 新浪财经-重点
+    {'pageid': 153, 'lid': 2509, 'num': 30},   # 新浪财经-宏观
+    {'pageid': 153, 'lid': 2510, 'num': 30},   # 新浪财经-产经
+    {'pageid': 153, 'lid': 2512, 'num': 30},   # 新浪财经-公司
+    {'pageid': 153, 'lid': 2513, 'num': 30},   # 新浪财经-行业
+    {'pageid': 155, 'lid': 2565, 'num': 30},   # 新浪财经-要闻
+    {'pageid': 155, 'lid': 2564, 'num': 30},   # 新浪财经-证券
 ]
 
+# 公司名后缀，用于名称匹配
+COMPANY_SUFFIXES = '股份|科技|集团|公司|银行|电子|药业|证券|医药|通信|软件|能源|材料|工业|实业|控股|发展|建设|装备|航空|航天|电力|地产|传媒|食品|汽车|化工|机械'
+
+
 def init_signals_table(conn):
-    """初始化 Alpha 信号表"""
     cur = conn.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS alpha_signals (
@@ -73,105 +82,100 @@ def init_signals_table(conn):
     conn.commit()
     cur.close()
 
+
 def extract_stock_info(text, conn):
-    """从文本中提取股票名称和代码"""
-    found_stocks = []
+    """V4: 代码匹配 + 名称模糊匹配"""
+    found = []
     cur = conn.cursor()
-    
-    # 1. 提取代码
-    codes = []
-    for pattern in STOCK_CODE_PATTERNS:
-        codes.extend(re.findall(pattern, text))
-    
-    codes = list(set(codes))
-    for code in codes:
-        # 标准化代码
-        if code.startswith('6'): suffix = 'SH'
-        elif code.startswith('3') or code.startswith('0'): suffix = 'SZ'
-        else: continue
-        
+
+    # 1. 提取 A 股代码
+    for m in re.finditer(r'(6\d{5})|(0\d{5})|(3\d{5})', text):
+        code = m.group(0)
+        suffix = 'SH' if code.startswith('6') else 'SZ'
         ts_code = f"{code}.{suffix}"
-        # 查库获取名称
         cur.execute("SELECT name FROM stock_info WHERE ts_code=%s", (ts_code,))
         row = cur.fetchone()
         if row:
-            found_stocks.append({'ts_code': ts_code, 'name': row[0]})
-    
-    # 2. 如果没找到代码，尝试匹配名称 (模糊匹配前4-6个字)
-    if not found_stocks:
-        # 提取所有可能是公司名的实体 (简化版：连续汉字+公司/股份/集团等)
-        companies = re.findall(r'([\u4e00-\u9fa5]{2,6}(股份|科技|集团|公司|银行|电子|药业|证券))', text)
-        if companies:
-            for comp, suffix in companies:
-                full_name = comp + suffix
-                # 尝试在 stock_info 中模糊查询
-                cur.execute("SELECT ts_code, name FROM stock_info WHERE name LIKE %s LIMIT 1", (f"%{comp}%",))
-                row = cur.fetchone()
-                if row:
-                    found_stocks.append({'ts_code': row[0], 'name': row[1]})
-    
+            found.append({'ts_code': ts_code, 'name': row[0]})
+
+    # 2. 名称匹配（无代码时走）
+    if not found:
+        companies = re.findall(
+            rf'([\u4e00-\u9fa5]{{2,6}}({COMPANY_SUFFIXES}))', text
+        )
+        matched = set()
+        for full_name, _ in companies[:10]:
+            prefix = full_name[:4]
+            cur.execute(
+                "SELECT ts_code, name FROM stock_info WHERE name LIKE %s LIMIT 1",
+                (f"%{prefix}%",)
+            )
+            row = cur.fetchone()
+            if row and row[0] not in matched:
+                found.append({'ts_code': row[0], 'name': row[1]})
+                matched.add(row[0])
+
     cur.close()
-    # 去重
-    seen = set()
-    unique = []
-    for s in found_stocks:
-        if s['ts_code'] not in seen:
-            seen.add(s['ts_code'])
-            unique.append(s)
-    return unique
+    return found
+
 
 def classify_signal(text):
-    """判断信号类型和情感倾向 (1.0 利好, -1.0 利空)"""
-    signal_type = "其他"
+    sig_type = "其他"
     sentiment = 0.0
-    
     for stype, keywords in SIGNAL_TYPES.items():
         if any(kw in text for kw in keywords):
-            signal_type = stype
+            sig_type = stype
             break
-            
-    # 情感判定逻辑
-    # 利空关键词
-    negatives = ['减持', '退市', '立案调查', '风险提示', '预降', '亏损', '下滑']
+    negatives = ['减持', '退市', '立案调查', '风险提示', '预降', '亏损', '下滑', '利空']
     if any(kw in text for kw in negatives):
         sentiment = -0.5
-        if '立案调查' in text or '退市' in text: sentiment = -1.0
+        if '立案调查' in text or '退市' in text:
+            sentiment = -1.0
     else:
-        # 默认利好 (除非是中性描述)
-        if signal_type in ['业绩', '业务', '产业', '价格']: sentiment = 1.0
-        elif signal_type == '风险': sentiment = -0.8
-        elif signal_type == '资本':
-            if '减持' in text: sentiment = -0.6
-            elif '回购' in text or '增持' in text: sentiment = 0.8
-            else: sentiment = 0.2
-            
-    return signal_type, sentiment
+        if sig_type in ['业绩', '业务', '产业', '价格']:
+            sentiment = 1.0
+        elif sig_type == '风险':
+            sentiment = -0.8
+        elif sig_type == '资本':
+            if '减持' in text:
+                sentiment = -0.6
+            elif '回购' in text or '增持' in text:
+                sentiment = 0.8
+            else:
+                sentiment = 0.2
+    return sig_type, sentiment
+
 
 def calculate_alpha_score(text):
-    """Alpha得分 (0-100) - 简化版"""
-    # 1. 信号匹配度 (40分)
-    alpha_count = sum(1 for kws in SIGNAL_TYPES.values() for kw in kws if kw in text)
-    s_score = min(alpha_count * 10, 40)
-    
-    # 2. 数据密度 (30分) - 有具体数字 (%, 亿元) 加分
+    """V4 评分（0-100）"""
+    # 信号密度 (40分)
+    kw_count = sum(1 for kw_list in SIGNAL_TYPES.values() for kw in kw_list if kw in text)
+    s_score = min(kw_count * 10, 40)
+
+    # 数据密度 (30分)
     data_count = len(re.findall(r'\d+\.?\d*%?', text)) + len(re.findall(r'亿|万|元', text))
     d_score = min(data_count * 5, 30)
-    
-    # 3. 特异性 (30分) - 出现具体公司名、政策文件名的加分
-    has_company = bool(re.search(r'[\u4e00-\u9fa5]{2,4}(股份|科技|集团)', text))
-    has_policy = bool(re.search(r'指导意见|规划|通知', text))
-    spec_score = 30 if (has_company or has_policy) else 10
-    
-    return s_score + d_score + spec_score
 
-def fetch_news_from_sina():
-    """获取新浪财经新闻"""
-    urls = [
-        'https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2516&k=&num=30&page=1',
-        'https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2509&k=&num=30&page=1',
-    ]
+    # 特异性 (30分)
+    has_company = bool(re.search(rf'[\u4e00-\u9fa5]{{2,6}}({COMPANY_SUFFIXES})', text))
+    has_code = bool(re.search(r'(6|0|3)\d{5}', text))
+    has_policy = bool(re.search(r'指导意见|规划|通知|方案|措施', text))
+    spec_score = 30 if (has_company or has_code or has_policy) else 10
+
+    # 代码加分
+    code_bonus = 5 if has_code else 0
+
+    return min(s_score + d_score + spec_score + code_bonus, 100)
+
+
+def fetch_news():
+    """从新浪财经多频道获取新闻"""
+    seen = set()
     all_news = []
-    for url in urls:
+
+    for ch in SINA_CHANNELS:
+        url = (f'https://feed.mix.sina.com.cn/api/roll/get?'
+               f'pageid={ch["pageid"]}&lid={ch["lid"]}&k=&num={ch["num"]}&page=1')
         try:
             req = urllib.request.Request(url, headers={
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
@@ -180,105 +184,125 @@ def fetch_news_from_sina():
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode('utf-8'))
                 if data.get('result') and data['result'].get('data'):
+                    count = 0
                     for item in data['result']['data']:
-                        all_news.append({
-                            'title': item.get('title', ''),
-                            'content': item.get('summary', '') or item.get('intro', '') or '',
-                            'source': item.get('media_name', '') or item.get('channel_name', ''),
-                            'time': datetime.fromtimestamp(int(item.get('ctime', 0))).strftime('%Y-%m-%d %H:%M') if item.get('ctime') else '',
-                        })
+                        title = item.get('title', '')
+                        key = title[:20]
+                        if key not in seen:
+                            seen.add(key)
+                            all_news.append({
+                                'title': title,
+                                'content': (item.get('summary', '') or
+                                            item.get('intro', '') or
+                                            item.get('text', '') or ''),
+                                'source': item.get('media_name', '') or
+                                          item.get('channel_name', '') or '新浪财经',
+                                'time': datetime.fromtimestamp(
+                                    int(item.get('ctime', 0))
+                                ).strftime('%Y-%m-%d %H:%M') if item.get('ctime') else '',
+                            })
+                            count += 1
+                    print(f"  频道{ch['lid']}: {count} 条")
         except Exception as e:
-            print(f"获取新闻失败: {e}")
-    
-    # 去重
-    seen = set()
-    unique = []
-    for n in all_news:
-        key = n['title'][:20]
-        if key not in seen:
-            seen.add(key)
-            unique.append(n)
-    return unique
+            print(f"  频道{ch['lid']} 获取失败: {e}")
 
-if __name__ == '__main__':
-    print("="*60)
-    print("Alpha过滤器 V3 — 模型集成测试")
-    print("="*60)
-    
-    # 1. 获取新闻
-    print("正在获取新闻...")
-    news = fetch_news_from_sina()
-    if not news:
-        print("未获取到新闻")
-        exit()
-    print(f"获取到 {len(news)} 条原始新闻")
-    
-    # 2. 过滤 + 结构化
-    conn = pymysql.connect(**DB_CONFIG)
-    init_signals_table(conn)
-    
-    today = datetime.now().strftime('%Y-%m-%d')
-    cur = conn.cursor()
-    
-    # 清理今日旧信号 (幂等性)
-    if input("确认写入数据库? (y/N): ").lower() != 'y':
-        print("已取消")
-        exit()
+    print(f"  合计: {len(all_news)} 条（去重后）")
+    return all_news
+
+
+def process_news(news_items, conn, today, cur):
+    """处理新闻并写入数据库"""
     cur.execute("DELETE FROM alpha_signals WHERE signal_date = %s", (today,))
-    
-    valid_signals = []
-    
-    for item in news:
+    valid = []
+
+    for item in news_items:
         title = item.get('title', '')
         content = item.get('content', '')
         full_text = title + ' ' + content
-        
-        # 简单噪音过滤
+
+        # 噪音过滤
         if any(re.search(p, full_text) for p in NOISE_PATTERNS):
             continue
-            
+        if any(kw in full_text for kw in NOISE_KEYWORDS):
+            continue
+
         score = calculate_alpha_score(full_text)
         if score < ALPHA_THRESHOLD:
             continue
-            
-        # 提取股票
-        stocks = extract_stock_info(full_text, conn)
+
         sig_type, sentiment = classify_signal(full_text)
-        
+        stocks = extract_stock_info(full_text, conn)
+
         if stocks:
             for stock in stocks:
-                # 如果该股票今日已有信号，不重复插入
-                cur.execute("SELECT COUNT(*) FROM alpha_signals WHERE ts_code=%s AND signal_date=%s", (stock['ts_code'], today))
+                cur.execute(
+                    "SELECT COUNT(*) FROM alpha_signals WHERE ts_code=%s AND signal_date=%s",
+                    (stock['ts_code'], today)
+                )
                 if cur.fetchone()[0] == 0:
-                    boost = score / 100 * sentiment  # 归一化 boost
+                    boost = round(score / 100 * sentiment, 2)
                     cur.execute("""
-                        INSERT INTO alpha_signals 
+                        INSERT INTO alpha_signals
                         (ts_code, name, signal_date, signal_type, score_boost, source, detail)
                         VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """, (
-                        stock['ts_code'], stock['name'], today, sig_type,
-                        round(boost, 2), item['source'], title
-                    ))
-                    valid_signals.append({
-                        'stock': stock['name'],
-                        'type': sig_type,
-                        'boost': round(boost, 2),
-                        'news': title
-                    })
+                    """, (stock['ts_code'], stock['name'], today, sig_type,
+                          boost, item.get('source', ''), title))
+                    valid.append({'stock': stock['name'], 'type': sig_type,
+                                  'boost': boost, 'news': title})
         else:
-            # 宏观新闻，不关联特定股票，但记录下来
-            if sig_type == '政策' or '宏观' in full_text:
-                valid_signals.append({
-                    'stock': '全市场',
-                    'type': sig_type,
-                    'boost': 0,
-                    'news': title
-                })
-    
+            # 宏观信号记录
+            if sig_type == '政策':
+                valid.append({'stock': '全市场', 'type': sig_type,
+                              'boost': 0, 'news': title})
+
     conn.commit()
+    return valid
+
+
+def main(today=None):
+    if today is None:
+        today = datetime.now().strftime('%Y-%m-%d')
+
+    print("=" * 60)
+    print(f"Alpha过滤器 V4 — 多频道增强版 | {today}")
+    print("=" * 60)
+
+    # 1. 获取新闻
+    print("\n正在获取新闻...")
+    news = fetch_news()
+    if not news:
+        print("未获取到新闻")
+        return
+
+    # 2. 过滤 + 写入
+    conn = pymysql.connect(**DB_CONFIG)
+    init_signals_table(conn)
+    cur = conn.cursor()
+
+    # 统计原始新闻中的潜在信号
+    above_threshold = sum(1 for n in news if calculate_alpha_score(n['title'] + ' ' + n['content']) >= ALPHA_THRESHOLD)
+    print(f"\n原始新闻: {len(news)} 条 (过阈值: {above_threshold} 条)")
+
+    valid_signals = process_news(news, conn, today, cur)
+    cur.close()
     conn.close()
-    
-    print(f"\n处理完成! 提取到 {len(valid_signals)} 条有效Alpha信号")
-    print("-"*60)
-    for s in valid_signals:
-        print(f"【{s['stock']}】{s['type']} | 模型Boost: {s['boost']:+.2f} | {s['news']}")
+
+    # 按Boost排序输出
+    valid_signals.sort(key=lambda s: abs(s['boost']), reverse=True)
+
+    print(f"\n处理完成！提取到 {len(valid_signals)} 条有效Alpha信号")
+    print("-" * 60)
+    if valid_signals:
+        for s in valid_signals[:MAX_ITEMS]:
+            print(f"【{s['stock']}】{s['type']} | Boost: {s['boost']:+.2f} | {s['news']}")
+        if len(valid_signals) > MAX_ITEMS:
+            print(f"  ... 还有 {len(valid_signals) - MAX_ITEMS} 条未展示")
+    else:
+        print("今日无有效信号")
+
+    # 输出统计摘要给cron日志
+    print(f"\n[SUMMARY] alpha_filter_v4: {len(valid_signals)} signals from {len(news)} news")
+
+
+if __name__ == '__main__':
+    main()

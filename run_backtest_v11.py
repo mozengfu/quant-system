@@ -1,10 +1,22 @@
 #!/usr/bin/env python3
-"""V4 + V11.0 回测运行器 - 优化版（使用 SQLAlchemy 减少警告）"""
-import os, sys, json, logging, warnings
+"""V4 + V11.0 回测运行器 - 优化版（使用 SQLAlchemy 减少警告）
+
+注意: 此回测使用单一模型（在全量数据上训练），
+模型中的 global_medians 包含回测期间之后的数据 → 存在数据泄露风险。
+如需无泄漏回测，使用 run_backtest_v11_walkforward.py（Walk-Forward 时序交叉验证）。
+"""
+import json
+import logging
+import os
+import sys
+import warnings
+
 warnings.filterwarnings('ignore')
-from datetime import datetime, timedelta
-import numpy as np, pandas as pd, pymysql
+import numpy as np
+import pandas as pd
+import pymysql
 from dotenv import load_dotenv
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -13,11 +25,12 @@ logger = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 
-from quant_app.utils.model_loader import load_model, get_model_path
-from quant_app.utils.config import get_db_config
+from sqlalchemy import create_engine
+
 from ml_predict import _ensemble_predict
 from quant_app.services.strategy_service import _v4_score_single
-from sqlalchemy import create_engine, text
+from quant_app.utils.config import get_db_config
+from quant_app.utils.model_loader import get_model_path
 
 DB_CONFIG = get_db_config()
 DB_CONFIG.pop('unix_socket', None)
@@ -32,11 +45,13 @@ START_DATE, END_DATE = "2024-11-01", "2026-05-15"
 SAMPLE_INTERVAL = 5
 TOP_N = 3
 HOLD_DAYS = 5
+STOP_LOSS = float(os.environ.get('STOP_LOSS', '-0.07'))  # -7% 止损，0=不止损
 
 # Load V11 model
 model_path = get_model_path("v11.0")
 logger.info(f"Loading V11.0 model from {model_path}")
 import joblib
+
 bundle = joblib.load(model_path)
 logger.info(f"Loaded: {bundle.get('n_models', '?')} models, {len(bundle.get('feature_cols', []))} features")
 
@@ -120,18 +135,29 @@ for di, buy_date in enumerate(sample_dates):
     except Exception as e:
         logger.warning(f"Pure ML failed: {e}")
 
-    # Forward returns
+    # Forward returns (含止损)
     for label, top, store in [('V4+ML', v4ml_top, v4ml_results), ('Pure ML', pure_ml_top, pure_ml_results)]:
         rets = []
         for tc in top:
             ret_df = pd.read_sql(f"""
-                SELECT trade_date, pct_chg FROM daily_price
+                SELECT trade_date, pct_chg, close FROM daily_price
                 WHERE ts_code = '{tc}' AND trade_date > '{buy_date}'
                 ORDER BY trade_date LIMIT {HOLD_DAYS}
             """, ENGINE)
             if len(ret_df) < 2:
                 continue
-            rets_vals = ret_df['pct_chg'].iloc[:HOLD_DAYS].values / 100.0
+            # 止损检查
+            entry_close = float(ret_df['close'].iloc[0])
+            exit_idx = len(ret_df) - 1
+            if STOP_LOSS < 0:
+                for j in range(1, len(ret_df)):
+                    cur_close = float(ret_df['close'].iloc[j])
+                    if cur_close > 0 and entry_close > 0:
+                        cur_ret = (cur_close - entry_close) / entry_close
+                        if cur_ret <= STOP_LOSS:
+                            exit_idx = j
+                            break
+            rets_vals = ret_df['pct_chg'].iloc[:exit_idx + 1].values / 100.0
             rets_vals = rets_vals[~np.isnan(rets_vals)]
             if len(rets_vals) == 0:
                 continue

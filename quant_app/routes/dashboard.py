@@ -1,6 +1,7 @@
 """
 持仓、回测、追踪相关 API 路由
 """
+
 import asyncio
 import json
 import logging
@@ -12,21 +13,26 @@ from pathlib import Path
 from fastapi import APIRouter, Cookie, HTTPException
 from fastapi import Request as FastAPIRequest
 
-from app_core import (
+from quant_app.routes.auth import get_current_user
+from quant_app.services.backtest_service import (
     backtest_stock_enhanced,
     backtest_stock_v4,
-    get_client_ip,
-    get_current_user,
-    get_db_config,
+)
+from quant_app.services.market_service import (
     get_stock_realtime,
     get_technical_buy_sell_signals,
+)
+from quant_app.services.market_state import get_market_state
+from quant_app.services.notification_service import send_feishu
+from quant_app.utils.authz import require_admin
+from quant_app.utils.config import get_db_config
+from quant_app.utils.persistence import (
+    get_client_ip,
+    get_positions_data,
     load_track_data,
     save_access_log,
-    send_feishu,
     update_stock_results,
 )
-from market_state import get_market_state
-from quant_app.utils.authz import require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +42,7 @@ DATA_DIR = BASE_DIR / "data"
 router = APIRouter(tags=["dashboard"])
 
 # ========== 绩效看板 ==========
+
 
 @router.get("/api/sim/nav_history")
 def get_nav_history(request: FastAPIRequest, token: str = Cookie(None)):
@@ -77,11 +84,11 @@ def get_performance_summary(request: FastAPIRequest, token: str = Cookie(None)):
         annual_return = None
 
     values = [h["total_value"] for h in history]
-    daily_returns = [(values[i] - values[i-1]) / values[i-1] for i in range(1, len(values))]
+    daily_returns = [(values[i] - values[i - 1]) / values[i - 1] for i in range(1, len(values))]
     avg_ret = sum(daily_returns) / len(daily_returns) if daily_returns else 0
     var = sum((r - avg_ret) ** 2 for r in daily_returns) / len(daily_returns) if daily_returns else 0
-    std = var ** 0.5
-    sharpe = (avg_ret / std) * (252 ** 0.5) if std > 0 else 0
+    std = var**0.5
+    sharpe = (avg_ret / std) * (252**0.5) if std > 0 else 0
 
     monthly = {}
     for h in history:
@@ -106,7 +113,9 @@ def get_performance_summary(request: FastAPIRequest, token: str = Cookie(None)):
         "nav_values": [round(h["total_value"], 2) for h in history],
     }
 
+
 # ========== 跟单建议 ==========
+
 
 @router.get("/api/sim/today_signals")
 def get_today_signals(token: str = Cookie(None)):
@@ -119,48 +128,54 @@ def get_today_signals(token: str = Cookie(None)):
         import pymysql
 
         from quant_app.utils.config import get_db_config
+
         conn = pymysql.connect(**get_db_config())
         cur = conn.cursor()
 
         # 获取市场状态，拿 max_positions
         try:
             ms = get_market_state(db_conn=conn)
-            params = ms.get('params', {})
-            max_positions = params.get('max_positions', 3)
-            market_state_name = ms.get('state_name', '未知')
+            params = ms.get("params", {})
+            max_positions = params.get("max_positions", 3)
+            market_state_name = ms.get("state_name", "未知")
         except Exception:
             max_positions = 3
-            market_state_name = '未知'
+            market_state_name = "未知"
 
         # 查询当前持仓数
         cur.execute("SELECT COUNT(*) FROM sim_positions WHERE status='HOLD'")
         position_count = cur.fetchone()[0]
 
         # 查询今日模拟交易实际买卖操作
-        cur.execute("""
+        cur.execute(
+            """
             SELECT ts_code, stock_name, action, price, shares,
                    profit_loss, profit_pct, reason, trade_time
             FROM sim_trades
             WHERE trade_date = %s
             ORDER BY trade_time ASC
-        """, (today,))
+        """,
+            (today,),
+        )
         rows = cur.fetchall()
         cur.close()
         conn.close()
 
         actions = []
         for r in rows:
-            actions.append({
-                "ts_code": r[0],
-                "name": r[1],
-                "action": r[2],  # BUY / SELL
-                "price": float(r[3]) if r[3] else 0,
-                "shares": int(r[4]) if r[4] else 0,
-                "profit_loss": float(r[5]) if r[5] else 0,
-                "profit_pct": float(r[6]) if r[6] else 0,
-                "reason": r[7] or "",
-                "trade_time": str(r[8]) if r[8] else "",
-            })
+            actions.append(
+                {
+                    "ts_code": r[0],
+                    "name": r[1],
+                    "action": r[2],  # BUY / SELL
+                    "price": float(r[3]) if r[3] else 0,
+                    "shares": int(r[4]) if r[4] else 0,
+                    "profit_loss": float(r[5]) if r[5] else 0,
+                    "profit_pct": float(r[6]) if r[6] else 0,
+                    "reason": r[7] or "",
+                    "trade_time": str(r[8]) if r[8] else "",
+                }
+            )
         return {
             "actions": actions,
             "date": today,
@@ -172,79 +187,9 @@ def get_today_signals(token: str = Cookie(None)):
         logger.warning(f"获取今日操作失败: {e}")
         return {"actions": [], "date": today, "error": str(e)}
 
+
 POSITION_ALERT_STATE = {}
-POSITION_ALERT_LOCK = __import__('threading').Lock()
-
-
-# ========== 持仓数据（本地辅助函数）==========
-
-def get_positions_data():
-    """从MySQL数据库读取持仓数据，返回API期望的中文字段格式
-    如果MySQL无数据或失败，则从positions.json读取作为fallback"""
-    try:
-        import pymysql
-        db_config = get_db_config(connect_timeout=3)
-        conn = pymysql.connect(**db_config)
-        cursor = conn.cursor()
-
-        cursor.execute('''
-            SELECT ts_code, code, name, market, quantity, cost,
-                   stop_loss, take_profit, buy_date
-            FROM positions
-            ORDER BY buy_date DESC
-        ''')
-        positions = cursor.fetchall()
-        conn.close()
-
-        if positions:
-            mapped = []
-            for pos in positions:
-                ts_code, code, name, market, quantity, cost, stop_loss, take_profit, buy_date = pos
-                mapped.append({
-                    "代码": code,
-                    "市场": market,
-                    "ts_code": ts_code,
-                    "名称": name,
-                    "成本": float(cost),
-                    "数量": int(quantity),
-                    "止盈": float(take_profit),
-                    "止损": float(stop_loss),
-                    "买日": str(buy_date),
-                })
-            return mapped
-
-    except Exception as e:
-        logging.getLogger().warning(f"读取MySQL持仓失败: {e}")
-
-    # Fallback: 从positions.json读取
-    try:
-        positions_file = DATA_DIR / "positions.json"
-        if positions_file.exists():
-            with open(positions_file, encoding='utf-8') as f:
-                data = json.load(f)
-            positions_list = data.get("positions", [])
-            mapped = []
-            for pos in positions_list:
-                code = pos.get("code", "")
-                market = pos.get("market", "sz")
-                mapped.append({
-                    "代码": code,
-                    "市场": market,
-                    "ts_code": f"{code}.{'SZ' if market == 'sz' else 'SH'}",
-                    "名称": pos.get("name", ""),
-                    "成本": float(pos.get("cost", 0)),
-                    "数量": int(pos.get("shares", 0)),
-                    "止盈": float(pos.get("take_profit", 0)),
-                    "止损": float(pos.get("stop_loss", 0)),
-                    "买日": pos.get("buy_date", ""),
-                })
-            if mapped:
-                logging.getLogger().info(f"从positions.json读取到{len(mapped)}条持仓")
-                return mapped
-    except Exception as e:
-        logging.getLogger().warning(f"读取positions.json失败: {e}")
-
-    return []
+POSITION_ALERT_LOCK = __import__("threading").Lock()
 
 
 def calculate_atr_for_stock(ts_code):
@@ -252,13 +197,17 @@ def calculate_atr_for_stock(ts_code):
     try:
         import pymysql
 
-        from app_core import calculate_atr
+        from quant_app.utils.indicators import calculate_atr
+
         conn = pymysql.connect(**get_db_config())
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT high, low, close FROM daily_price
             WHERE ts_code = %s ORDER BY trade_date DESC LIMIT 20
-        """, (ts_code,))
+        """,
+            (ts_code,),
+        )
         rows = cur.fetchall()
         conn.close()
 
@@ -275,21 +224,22 @@ def calculate_atr_for_stock(ts_code):
         return None, None
 
 
-def _get_latest_close_from_db(code, market='SZ'):
+def _get_latest_close_from_db(code, market="SZ"):
     """当东财实时API不可用时，从MySQL daily_price表取最近交易日收盘价"""
     try:
         import pymysql
-        mkt = market.upper() if market else 'SZ'
+
+        mkt = market.upper() if market else "SZ"
         ts_code = f"{code}.{mkt}"
         db_config = get_db_config(connect_timeout=3)
         conn = pymysql.connect(**db_config)
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT close, pct_chg FROM daily_price WHERE ts_code=%s ORDER BY trade_date DESC LIMIT 1",
-            (ts_code,)
+            "SELECT close, pct_chg FROM daily_price WHERE ts_code=%s ORDER BY trade_date DESC LIMIT 1", (ts_code,)
         )
         row = cursor.fetchone()
-        cursor.close(); conn.close()
+        cursor.close()
+        conn.close()
         if row:
             return {"现价": float(row[0]), "涨跌幅": float(row[1] or 0)}
     except Exception:
@@ -298,6 +248,7 @@ def _get_latest_close_from_db(code, market='SZ'):
 
 
 # ========== 持仓 ==========
+
 
 @router.get("/api/positions")
 async def get_positions(request: FastAPIRequest, token: str = Cookie(None)):
@@ -314,7 +265,7 @@ async def get_positions(request: FastAPIRequest, token: str = Cookie(None)):
             rt = await loop.run_in_executor(None, get_stock_realtime, pos["代码"], pos["市场"])
             return rt, pos
         except Exception as e:
-            logging.getLogger().warning(f"获取 {pos.get('代码','?')} 实时数据失败: {e}")
+            logging.getLogger().warning(f"获取 {pos.get('代码', '?')} 实时数据失败: {e}")
             return None, pos
 
     current_positions = get_positions_data()
@@ -323,11 +274,11 @@ async def get_positions(request: FastAPIRequest, token: str = Cookie(None)):
     result = []
     alert_msgs = []
 
-    today = datetime.now().strftime('%Y-%m-%d')
+    today = datetime.now().strftime("%Y-%m-%d")
     with POSITION_ALERT_LOCK:
-        if POSITION_ALERT_STATE.get('_last_reset_date') != today:
+        if POSITION_ALERT_STATE.get("_last_reset_date") != today:
             POSITION_ALERT_STATE.clear()
-            POSITION_ALERT_STATE['_last_reset_date'] = today
+            POSITION_ALERT_STATE["_last_reset_date"] = today
 
     realtime_failed_count = 0
     db_fallback_count = 0
@@ -389,14 +340,22 @@ async def get_positions(request: FastAPIRequest, token: str = Cookie(None)):
                 pass
         atr_stop_loss = round(price - float(double_atr), 2) if atr_val else None
 
-        result.append({
-            "代码": f"{pos['市场'].upper()}{pos['代码']}", "名称": pos.get("名称") or pos.get("股票名称", ""),
-            "数量": qty, "成本": cost, "现价": price,
-            "浮动盈亏": round(float_pnl, 2), "盈亏比例": round(pnl_pct, 2),
-            "止损价": pos["止损"], "止盈价": pos["止盈"] if pos["止盈"] > 0 else None,
-            "信号": signal,
-            "atr_stop_loss": atr_stop_loss, "atr_val": round(atr_val, 3) if atr_val else None
-        })
+        result.append(
+            {
+                "代码": f"{pos['市场'].upper()}{pos['代码']}",
+                "名称": pos.get("名称") or pos.get("股票名称", ""),
+                "数量": qty,
+                "成本": cost,
+                "现价": price,
+                "浮动盈亏": round(float_pnl, 2),
+                "盈亏比例": round(pnl_pct, 2),
+                "止损价": pos["止损"],
+                "止盈价": pos["止盈"] if pos["止盈"] > 0 else None,
+                "信号": signal,
+                "atr_stop_loss": atr_stop_loss,
+                "atr_val": round(atr_val, 3) if atr_val else None,
+            }
+        )
 
     if alert_msgs:
         alert_text = "\n".join(alert_msgs)
@@ -410,7 +369,15 @@ async def get_positions(request: FastAPIRequest, token: str = Cookie(None)):
     total_pnl = total_value - total_cost
     total_pnl_pct = total_pnl / total_cost * 100 if total_cost else 0
 
-    resp = {"持仓": result, "汇总": {"总成本": round(total_cost, 2), "总市值": round(total_value, 2), "总盈亏": round(total_pnl, 2), "盈亏比例": round(total_pnl_pct, 2)}}
+    resp = {
+        "持仓": result,
+        "汇总": {
+            "总成本": round(total_cost, 2),
+            "总市值": round(total_value, 2),
+            "总盈亏": round(total_pnl, 2),
+            "盈亏比例": round(total_pnl_pct, 2),
+        },
+    }
     if db_fallback_count > 0 or realtime_failed_count > 0:
         parts = []
         if db_fallback_count > 0:
@@ -423,8 +390,16 @@ async def get_positions(request: FastAPIRequest, token: str = Cookie(None)):
 
 # ========== 回测 ==========
 
+
 @router.get("/api/backtest")
-def backtest(request: FastAPIRequest, code: str = "", market: str = "sz", start: str = "", end: str = "", token: str = Cookie(None)):
+def backtest(
+    request: FastAPIRequest,
+    code: str = "",
+    market: str = "sz",
+    start: str = "",
+    end: str = "",
+    token: str = Cookie(None),
+):
     user = get_current_user(token)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
@@ -437,37 +412,71 @@ def backtest(request: FastAPIRequest, code: str = "", market: str = "sz", start:
 
 
 @router.get("/api/backtest_bottom")
-def backtest_bottom_api(request: FastAPIRequest, code: str = "", market: str = "sz", start: str = "", end: str = "", token: str = Cookie(None)):
+def backtest_bottom_api(
+    request: FastAPIRequest,
+    code: str = "",
+    market: str = "sz",
+    start: str = "",
+    end: str = "",
+    token: str = Cookie(None),
+):
     """底部起步条件回测"""
     user = get_current_user(token)
-    if not user: raise HTTPException(status_code=401, detail="未登录")
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
     save_access_log(user, get_client_ip(request), f"底部起步回测 {code}")
     from quant_app.services.backtest_service import backtest_bottom
-    return backtest_bottom(code, market, start.replace("-",""), end.replace("-",""))
+
+    return backtest_bottom(code, market, start.replace("-", ""), end.replace("-", ""))
 
 
 @router.get("/api/backtest_strong")
-def backtest_strong_api(request: FastAPIRequest, code: str = "", market: str = "sz", start: str = "", end: str = "", token: str = Cookie(None)):
+def backtest_strong_api(
+    request: FastAPIRequest,
+    code: str = "",
+    market: str = "sz",
+    start: str = "",
+    end: str = "",
+    token: str = Cookie(None),
+):
     """强势活跃条件回测"""
     user = get_current_user(token)
-    if not user: raise HTTPException(status_code=401, detail="未登录")
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
     save_access_log(user, get_client_ip(request), f"强势活跃回测 {code}")
     from quant_app.services.backtest_service import backtest_strong
-    return backtest_strong(code, market, start.replace("-",""), end.replace("-",""))
+
+    return backtest_strong(code, market, start.replace("-", ""), end.replace("-", ""))
 
 
 @router.get("/api/backtest_combo")
-def backtest_combo_api(request: FastAPIRequest, code: str = "", market: str = "sz", start: str = "", end: str = "", token: str = Cookie(None)):
+def backtest_combo_api(
+    request: FastAPIRequest,
+    code: str = "",
+    market: str = "sz",
+    start: str = "",
+    end: str = "",
+    token: str = Cookie(None),
+):
     """组合策略条件回测"""
     user = get_current_user(token)
-    if not user: raise HTTPException(status_code=401, detail="未登录")
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
     save_access_log(user, get_client_ip(request), f"组合策略回测 {code}")
     from quant_app.services.backtest_service import backtest_combo
-    return backtest_combo(code, market, start.replace("-",""), end.replace("-",""))
+
+    return backtest_combo(code, market, start.replace("-", ""), end.replace("-", ""))
 
 
 @router.get("/api/backtest_enhanced")
-def backtest_enhanced(request: FastAPIRequest, code: str = "", market: str = "sz", start: str = "", end: str = "", token: str = Cookie(None)):
+def backtest_enhanced(
+    request: FastAPIRequest,
+    code: str = "",
+    market: str = "sz",
+    start: str = "",
+    end: str = "",
+    token: str = Cookie(None),
+):
     """增强版回测 - MACD+KDJ+布林带+止盈止损+风控指标"""
     user = get_current_user(token)
     if not user:
@@ -493,6 +502,7 @@ def technical_signals(request: FastAPIRequest, code: str = "", market: str = "sz
 
 
 # ========== 追踪统计 ==========
+
 
 @router.get("/api/track/stats")
 async def get_track_stats(token: str = Cookie(None)):
@@ -522,6 +532,7 @@ def get_track_history(token: str = Cookie(None)):
 
 # ========== 模拟交易 ==========
 
+
 @router.get("/api/sim_account")
 def get_sim_account(request: FastAPIRequest, token: str = Cookie(None)):
     """获取模拟账户状态（收益率、持仓、交易记录）"""
@@ -538,6 +549,7 @@ def get_sim_account(request: FastAPIRequest, token: str = Cookie(None)):
         if scripts_dir not in sys.path:
             sys.path.insert(0, scripts_dir)
         from sim_trading import get_sim_account_info
+
         data = get_sim_account_info()
 
         def convert(obj):
@@ -554,5 +566,86 @@ def get_sim_account(request: FastAPIRequest, token: str = Cookie(None)):
         return convert(data)
     except Exception as e:
         import traceback
+
         logger.error(f"sim_account error: {traceback.format_exc()}")
         return {"error": str(e)}
+
+
+@router.get("/api/track/curve")
+def get_track_curve(token: str = Cookie(None)):
+    """获取累计收益曲线 — 基于模拟建仓每日NAV快照"""
+    if not get_current_user(token):
+        raise HTTPException(status_code=401, detail="未登录")
+
+    import json
+    import os
+    from pathlib import Path
+
+    nav_path = Path(__file__).resolve().parent.parent.parent / "data" / "nav_history.json"
+    fallback_path = (
+        Path(os.getenv("DATA_DIR", str(Path(__file__).resolve().parent.parent.parent / "data"))) / "nav_history.json"
+    )
+
+    if not nav_path.exists():
+        nav_path = fallback_path
+
+    if not nav_path.exists():
+        logger.warning(f"nav_history.json not found at {nav_path} or {fallback_path}")
+        return {"curve": [], "summary": {"cum_ret": 0, "win_rate": 0, "total_trades": 0, "max_drawdown": 0}}
+
+    try:
+        with open(nav_path) as f:
+            snapshots = json.load(f)
+    except Exception as e:
+        logger.error(f"nav_history.json parse error: {e}")
+        return {"curve": [], "summary": {"cum_ret": 0, "win_rate": 0, "total_trades": 0, "max_drawdown": 0}}
+
+    if not snapshots:
+        logger.warning(f"nav_history.json is empty array: {nav_path}")
+        return {"curve": [], "summary": {"cum_ret": 0, "win_rate": 0, "total_trades": 0, "max_drawdown": 0}}
+
+    curve = []
+    initial_capital = 100000.0
+    for snap in snapshots:
+        total_value = float(snap.get("total_value", 0))
+        cum_ret = (total_value / initial_capital - 1) * 100
+        curve.append(
+            {
+                "date": snap.get("date", ""),
+                "total_value": round(total_value, 2),
+                "cash": round(float(snap.get("cash", 0)), 2),
+                "holdings": round(float(snap.get("holdings_value", 0)), 2),
+                "cum_ret": round(cum_ret, 2),
+            }
+        )
+
+    total_value = float(snapshots[-1].get("total_value", 0))
+    cum_ret = (total_value / initial_capital - 1) * 100
+    trade_count = snapshots[-1].get("trade_count", 0)
+    max_dd = float(max(s.get("max_drawdown", 0) for s in snapshots))
+
+    return {
+        "source": "sim_account",
+        "curve": curve,
+        "summary": {
+            "cum_ret": round(cum_ret, 2),
+            "initial_capital": round(initial_capital, 2),
+            "total_trades": trade_count,
+            "max_drawdown": round(max_dd, 2),
+        },
+    }
+
+
+def _compute_max_drawdown(curve_values):
+    """计算最大回撤（%）"""
+    if not curve_values:
+        return 0
+    peak = curve_values[0]
+    max_dd = 0
+    for v in curve_values:
+        if v > peak:
+            peak = v
+        dd = (peak - v) / (peak + 0.01)  # 避免除零
+        if dd > max_dd:
+            max_dd = dd
+    return round(max_dd * 100, 2)

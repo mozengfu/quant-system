@@ -1,4 +1,5 @@
 """board_concept 和 board_industry 表 ORM 模型。"""
+
 from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column
 

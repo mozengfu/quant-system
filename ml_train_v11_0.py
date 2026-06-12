@@ -18,15 +18,22 @@ ML选股模型训练 V11.0 — 三层堆叠集成 + 多源数据融合
 验证:  Purged Walk-Forward with 5-day embargo
 """
 
-import os, sys, json, logging, copy
+import json
+import logging
+import os
 from datetime import datetime, timedelta
+
 from dotenv import load_dotenv
+
 load_dotenv()
 
-import numpy as np, pandas as pd, pymysql, lightgbm as lgb
+import joblib
+import lightgbm as lgb
+import numpy as np
+import pandas as pd
+import pymysql
 import xgboost as xgb
 from scipy.stats import spearmanr
-import joblib
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -41,6 +48,7 @@ EXCLUDE_PREFIXES = ('68', '83', '87', '43')
 NO_PERM_PREFIXES_1 = ('8', '4', '9')
 
 from quant_app.utils.config import get_db_config
+
 DB_CONFIG = get_db_config()
 
 # ========== 特征子集定义 ==========
@@ -59,6 +67,10 @@ MOMENTUM_FEATURES = [
     'ret_autocorr_5d', 'vol_of_vol', 'max_drawdown_10d',
     'rel_strength_idx_5d', 'volume_shock',
     'high_low_spread', 'consecutive_wins', 'consecutive_losses',
+    # V11.1 均值回复+市场状态
+    'price_range_pos_10d', 'oversold_boost', 'ma_dispersion',
+    'volume_contraction', 'price_ma50_ratio', 'ret_vol_ratio_5d',
+    'mkt_zt_dt_spread', 'mkt_volatility', 'mkt_breadth',
 ]
 
 FLOW_FEATURES = [
@@ -94,15 +106,15 @@ def load_data(max_date=None):
     if max_date:
         logger.info(f"加载数据（截止 {max_date}）...")
         max_dt = datetime.strptime(max_date, '%Y-%m-%d')
-        min_dt = max_dt - timedelta(days=600)
+        min_dt = max_dt - timedelta(days=1000)
         trade_lt = f"trade_date < '{max_dt.date()}'"
         trade_bound = f"trade_date >= '{min_dt.date()}' AND {trade_lt}"
         end_bound = f"end_date >= '{min_dt.date()}' AND end_date <= '{max_dt.date()}'"
     else:
-        logger.info("加载最近 600 个交易日数据...")
+        logger.info("加载最近 1000 个交易日数据...")
         max_expr = "(SELECT MAX(trade_date) FROM daily_price)"
-        trade_bound = f"trade_date >= {max_expr} - INTERVAL 600 DAY AND trade_date < {max_expr}"
-        end_bound = f"end_date >= {max_expr} - INTERVAL 600 DAY AND end_date <= {max_expr}"
+        trade_bound = f"trade_date >= {max_expr} - INTERVAL 1000 DAY AND trade_date < {max_expr}"
+        end_bound = f"end_date >= {max_expr} - INTERVAL 1000 DAY AND end_date <= {max_expr}"
         trade_lt = f"trade_date < {max_expr}"
 
     conn = pymysql.connect(**DB_CONFIG)
@@ -145,7 +157,7 @@ def load_data(max_date=None):
     stock_info = pd.read_sql("SELECT ts_code, industry FROM stock_info", conn)
 
     # -- Alpha 信号 --
-    alpha_signals = pd.read_sql(f"""
+    alpha_signals = pd.read_sql("""
         SELECT ts_code, signal_date, MAX(score_boost) as max_boost
         FROM alpha_signals
         GROUP BY ts_code, signal_date
@@ -260,7 +272,7 @@ def load_data(max_date=None):
     # ========== V11.0 新增数据源 ==========
 
     # -- 财务指标 (fina_indicator — 季度财报实际数据) --
-    fina_ind = pd.read_sql(f"""
+    fina_ind = pd.read_sql("""
         SELECT ts_code, end_date, roe, yoy_sales, grossprofit_margin,
                netprofit_margin, eps
         FROM fina_indicator
@@ -285,12 +297,12 @@ def load_data(max_date=None):
         sector_mf['elg_net'] = sector_mf['buy_elg_amount'] - sector_mf['sell_elg_amount']
     logger.info(f"板块资金流: {len(sector_mf)} 条")
 
-    # -- 北向资金 (north_moneyflow) --
+    # -- 北向资金 (north_moneyflow) — 用 365 天窗口覆盖可用数据 --
     north_mf = pd.read_sql(f"""
         SELECT trade_date, north_money, hgt, sgt
         FROM north_moneyflow
         WHERE {trade_lt}
-          AND trade_date >= DATE_SUB(%s, INTERVAL 25 DAY)
+          AND trade_date >= DATE_SUB(%s, INTERVAL 365 DAY)
     """, conn, params=(max_date if max_date else datetime.now().strftime('%Y-%m-%d'),))
     if not north_mf.empty:
         north_mf['trade_date'] = pd.to_datetime(north_mf['trade_date'])
@@ -304,9 +316,47 @@ def load_data(max_date=None):
           AND trade_date >= DATE_SUB(%s, INTERVAL 20 DAY)
     """, conn, params=(max_date if max_date else datetime.now().strftime('%Y-%m-%d'),))
     if not ml_prev.empty:
-        ml_prev['trade_date'] = pd.to_datetime(ml_prev['trade_date'])
+        ml_prev['trade_date'] = pd.to_datetime(ml_prev['trade_date'], errors='coerce', format='mixed')
+        ml_prev = ml_prev.dropna(subset=['trade_date'])
         ml_prev['_ml_pred'] = pd.to_numeric(ml_prev['_ml_pred'], errors='coerce').fillna(0)
     logger.info(f"历史ML预测: {len(ml_prev)} 条")
+
+    # -- 涨跌停全量 (limit_list_d, 替代 zt_pool 窄覆盖) --
+    limit_list = pd.read_sql(f"""
+        SELECT trade_date, ts_code, pct_chg, limit_type, first_time, last_time,
+               open_times, limit_times, fd_amount, up_stat
+        FROM limit_list_d
+        WHERE {trade_bound}
+    """, conn)
+    if not limit_list.empty:
+        limit_list['trade_date'] = pd.to_datetime(limit_list['trade_date'])
+        limit_list['open_times'] = pd.to_numeric(limit_list['open_times'], errors='coerce').fillna(0).astype(int)
+        limit_list['limit_times'] = pd.to_numeric(limit_list['limit_times'], errors='coerce').fillna(0).astype(int)
+        limit_list['fd_amount'] = pd.to_numeric(limit_list['fd_amount'], errors='coerce').fillna(0)
+    logger.info(f"涨跌停全量: {len(limit_list)} 条")
+
+    # -- 机构席位 (top_inst, 比 dragon_tiger_inst 更全) --
+    top_inst_data = pd.read_sql(f"""
+        SELECT trade_date, ts_code, buy, sell, net_buy, buy_rate, sell_rate
+        FROM top_inst
+        WHERE {trade_bound}
+          AND exalter LIKE '%%机构%%'
+    """, conn)
+    if not top_inst_data.empty:
+        top_inst_data['trade_date'] = pd.to_datetime(top_inst_data['trade_date'])
+        for c in ['buy', 'sell', 'net_buy', 'buy_rate', 'sell_rate']:
+            top_inst_data[c] = pd.to_numeric(top_inst_data[c], errors='coerce').fillna(0)
+    logger.info(f"机构席位: {len(top_inst_data)} 条")
+
+    # -- 市场状态 (market_regime_daily) --
+    regime_data = pd.read_sql(f"""
+        SELECT trade_date, regime, prob_bull, prob_bear, prob_panic, prob_range, prob_overheated
+        FROM market_regime_daily
+        WHERE {trade_lt}
+    """, conn)
+    if not regime_data.empty:
+        regime_data['trade_date'] = pd.to_datetime(regime_data['trade_date'])
+    logger.info(f"市场状态: {len(regime_data)} 条")
 
     conn.close()
 
@@ -316,7 +366,7 @@ def load_data(max_date=None):
     stock_info['industry'] = stock_info['industry'].fillna('OTHER')
 
     dates = sorted(daily['trade_date'].unique())
-    min_date = dates[-400] if len(dates) > 400 else dates[0]
+    min_date = dates[-700] if len(dates) > 700 else dates[0]
     max_date_actual = dates[-1]
 
     logger.info(f"行情: {len(daily):,} 行, {daily['ts_code'].nunique()} 股 | "
@@ -328,12 +378,13 @@ def load_data(max_date=None):
             zt_pool, board_ind_hist, board_ind_cons, board_concept_cons, earnings,
             block_trade, stock_forecast,
             fina_ind, sector_mf, north_mf, ml_prev,
+            limit_list, top_inst_data, regime_data,
             min_date, max_date_actual)
 
 
 # ========== PART 2: FEATURE BUILDING ==========
 
-def build_features(data_tuple):
+def build_features(data_tuple, na_fill=True):
     """
     V11.0 特征构建:
     - V8.0 全部 ~105 基础特征
@@ -341,12 +392,17 @@ def build_features(data_tuple):
     - +9 regime概率特征
     - +rank特征
     - 标签: alpha_5d (行业中性 + 波动率调整)
+
+    Args:
+        data_tuple: load_data 返回的数据元组
+        na_fill: True=填充NaN+标签截断(最终模型用), False=不填充(给walk-forward per-fold填充)
     """
     (daily, idx_data, moneyflow, fundamentals, stock_info, alpha_signals,
      margin, dragon_tiger, dragon_tiger_inst, holder_change,
      zt_pool, board_ind_hist, board_ind_cons, board_concept_cons, earnings,
      block_trade, stock_forecast,
      fina_ind, sector_mf, north_mf, ml_prev,
+     limit_list, top_inst_data, regime_data,
      min_date, max_date) = data_tuple
 
     logger.info("构建特征 V8.0 基础 + V11.0 新增...")
@@ -467,8 +523,13 @@ def build_features(data_tuple):
             idx_close[row['trade_date']] = row
 
     results = []
+    total_stocks = daily['ts_code'].nunique()
+    stock_counter = 0
 
     for ts_code, group in daily.groupby('ts_code'):
+        stock_counter += 1
+        if stock_counter % 500 == 0 or stock_counter == 1:
+            logger.info(f"  特征构建进度: {stock_counter}/{total_stocks} 只股票 (当前: {ts_code})")
         if ts_code[:2] in EXCLUDE_PREFIXES or ts_code[:1] in NO_PERM_PREFIXES_1:
             continue
         group = group.sort_values('trade_date').reset_index(drop=True)
@@ -478,27 +539,38 @@ def build_features(data_tuple):
         g = group.copy()
         industry = ind_map.get(ts_code, 'OTHER')
 
+        # ⚠️ close 是未复权价格（有除权跳空），pct_chg 是复权后真实涨跌幅
+        # 用 pct_chg 反算前复权调整价（adj_close），所有多期计算都用 adj_close
+        g['adj_close'] = g['close'].iloc[0] * (1 + g['pct_chg'] / 100).cumprod()
+
+        # DB 提供的 ma5/ma10/ma20/high_52w/low_52w 基于未复权 close，全部重算
+        g['ma5_adj'] = g['adj_close'].rolling(5, min_periods=1).mean()
+        g['ma10_adj'] = g['adj_close'].rolling(10, min_periods=1).mean()
+        g['ma20_adj'] = g['adj_close'].rolling(20, min_periods=1).mean()
+        g['low_52w_adj'] = g['adj_close'].rolling(252, min_periods=1).min()
+        g['high_52w_adj'] = g['adj_close'].rolling(252, min_periods=1).max()
+
         # ============ 全部特征使用 shift(1) 防泄露 ============
 
         g['vol_5d'] = g['pct_chg'].shift(1).rolling(5).std()
         g['vol_10d'] = g['pct_chg'].shift(1).rolling(10).std()
         g['vol_20d'] = g['pct_chg'].shift(1).rolling(20).std()
 
-        g['ma5_ma10_ratio'] = g['ma5'] / g['ma10'].replace(0, np.nan)
-        g['ma10_ma20_ratio'] = g['ma10'] / g['ma20'].replace(0, np.nan)
-        g['price_ma5_ratio'] = g['close'] / g['ma5'].replace(0, np.nan)
-        g['price_ma20_ratio'] = g['close'] / g['ma20'].replace(0, np.nan)
+        g['ma5_ma10_ratio'] = g['ma5_adj'] / g['ma10_adj'].replace(0, np.nan)
+        g['ma10_ma20_ratio'] = g['ma10_adj'] / g['ma20_adj'].replace(0, np.nan)
+        g['price_ma5_ratio'] = g['adj_close'] / g['ma5_adj'].replace(0, np.nan)
+        g['price_ma20_ratio'] = g['adj_close'] / g['ma20_adj'].replace(0, np.nan)
 
-        g['chg_3d'] = g['close'].shift(1) / g['close'].shift(4) - 1
-        g['chg_5d'] = g['close'].shift(1) / g['close'].shift(6) - 1
-        g['chg_10d'] = g['close'].shift(1) / g['close'].shift(11) - 1
-        g['chg_20d'] = g['close'].shift(1) / g['close'].shift(21) - 1
+        g['chg_3d'] = g['adj_close'].shift(1) / g['adj_close'].shift(4) - 1
+        g['chg_5d'] = g['adj_close'].shift(1) / g['adj_close'].shift(6) - 1
+        g['chg_10d'] = g['adj_close'].shift(1) / g['adj_close'].shift(11) - 1
+        g['chg_20d'] = g['adj_close'].shift(1) / g['adj_close'].shift(21) - 1
 
         g['vr_ma5'] = g['volume_ratio'].shift(1).rolling(5).mean()
         g['vr_ma10'] = g['volume_ratio'].shift(1).rolling(10).mean()
         g['vol_trend'] = g['vr_ma5'] / g['vr_ma10'].replace(0, np.nan)
 
-        g['pos_52w'] = (g['close'] - g['low_52w']) / (g['high_52w'] - g['low_52w']).replace(0, np.nan)
+        g['pos_52w'] = (g['adj_close'] - g['low_52w_adj']) / (g['high_52w_adj'] - g['low_52w_adj']).replace(0, np.nan)
         g['rps_change'] = g['rps_20'].diff(5).shift(1)
 
         g['up_ratio_5d'] = (g['pct_chg'] > 0).shift(1).rolling(5).mean()
@@ -506,17 +578,17 @@ def build_features(data_tuple):
         g['vol_pct_corr'] = g['volume_ratio'].shift(1).rolling(10).corr(g['pct_chg'].shift(1))
 
         g['ma_pattern'] = 1
-        g.loc[(g['ma5'] > g['ma10']) & (g['ma10'] > g['ma20']), 'ma_pattern'] = 2
-        g.loc[(g['ma5'] < g['ma10']) & (g['ma10'] < g['ma20']), 'ma_pattern'] = 0
+        g.loc[(g['ma5_adj'] > g['ma10_adj']) & (g['ma10_adj'] > g['ma20_adj']), 'ma_pattern'] = 2
+        g.loc[(g['ma5_adj'] < g['ma10_adj']) & (g['ma10_adj'] < g['ma20_adj']), 'ma_pattern'] = 0
 
-        ema12 = g['close'].ewm(span=12, adjust=False).mean()
-        ema26 = g['close'].ewm(span=26, adjust=False).mean()
+        ema12 = g['adj_close'].ewm(span=12, adjust=False).mean()
+        ema26 = g['adj_close'].ewm(span=26, adjust=False).mean()
         g['macd_diff'] = (ema12 - ema26) / g['close']
         g['macd_signal_line'] = g['macd_diff'].ewm(span=9, adjust=False).mean()
         g['macd_hist'] = g['macd_diff'] - g['macd_signal_line']
         g[['macd_diff', 'macd_signal_line', 'macd_hist']] = g[['macd_diff', 'macd_signal_line', 'macd_hist']].shift(1)
 
-        delta = g['close'].diff()
+        delta = g['adj_close'].diff()
         gain = delta.where(delta > 0, 0).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rs = gain / loss.replace(0, np.nan)
@@ -525,8 +597,8 @@ def build_features(data_tuple):
 
         tr = pd.concat([
             (g['high'] - g['low']).abs(),
-            (g['high'] - g['close'].shift(1)).abs(),
-            (g['low'] - g['close'].shift(1)).abs()
+            (g['high'] - g['adj_close'].shift(1)).abs(),
+            (g['low'] - g['adj_close'].shift(1)).abs()
         ], axis=1).max(axis=1)
         up_move = g['high'] - g['high'].shift(1)
         down_move = g['low'].shift(1) - g['low']
@@ -554,13 +626,13 @@ def build_features(data_tuple):
         # V6.2 新特征
         g['amount_ma5'] = g['amount'].shift(1).rolling(5).mean()
         g['amount_ma5_ratio'] = g['amount'] / g['amount_ma5'].replace(0, np.nan)
-        g['low_10d'] = g['close'].shift(1).rolling(10).min()
-        g['high_10d'] = g['close'].shift(1).rolling(10).max()
+        g['low_10d'] = g['adj_close'].shift(1).rolling(10).min()
+        g['high_10d'] = g['adj_close'].shift(1).rolling(10).max()
         g['low_20d'] = g['close'].shift(1).rolling(20).min()
         g['high_20d'] = g['close'].shift(1).rolling(20).max()
-        g['pos_10d'] = (g['close'] - g['low_10d']) / (g['high_10d'] - g['low_10d']).replace(0, np.nan)
+        g['pos_10d'] = (g['adj_close'] - g['low_10d']) / (g['high_10d'] - g['low_10d']).replace(0, np.nan)
         g['pos_20d'] = (g['close'] - g['low_20d']) / (g['high_20d'] - g['low_20d']).replace(0, np.nan)
-        g['amplitude_10d'] = (g['high_10d'] - g['low_10d']) / g['close'].shift(1).rolling(10).mean().replace(0, np.nan)
+        g['amplitude_10d'] = (g['high_10d'] - g['low_10d']) / g['adj_close'].shift(1).rolling(10).mean().replace(0, np.nan)
         g['turnover_rate_ma20'] = g['turnover_rate'].shift(1).rolling(20).mean()
         g['turnover_ratio'] = g['turnover_rate'] / g['turnover_rate_ma20'].replace(0, np.nan)
         g['mom_divergence'] = g['chg_5d'] - g['chg_20d']
@@ -570,7 +642,7 @@ def build_features(data_tuple):
         g['ret_min_5d'] = g['pct_chg'].shift(1).rolling(5).min()
 
         # ---- 资金流 ----
-        g['amount_est'] = g['vol'] * g['close'] * 100
+        g['amount_est'] = g['vol'] * g['adj_close'] * 100
         if ts_code in mf_dict:
             mf = mf_dict[ts_code]
             g = g.merge(mf[['trade_date', 'main_net', 'net_mf_amount',
@@ -826,6 +898,27 @@ def build_features(data_tuple):
         g['consecutive_wins'] = (pct_chg_series.shift(1) > 0).rolling(10).sum()
         g['consecutive_losses'] = (pct_chg_series.shift(1) < 0).rolling(10).sum()
 
+        # ====== V11.1 新增：均值回复特征 ======
+        # 价格在10日高低位置 (0=near low, 1=near high)
+        high_10d = g['high'].shift(1).rolling(10).max()
+        low_10d = g['low'].shift(1).rolling(10).min()
+        range_10d = (high_10d - low_10d).replace(0, np.nan)
+        g['price_range_pos_10d'] = ((g['adj_close'].shift(1) - low_10d) / range_10d).clip(0, 1)
+        # 超卖综合信号 (价格低位 + RSI低位 + 缩量)
+        rsi_low = (g['rsi_14'].shift(1) < 35).astype(float)
+        price_low = (g['price_range_pos_10d'] < 0.25).astype(float)
+        vol_shrink = (g['volume_ratio'].shift(1) < 0.7).astype(float)
+        g['oversold_boost'] = (rsi_low + price_low + vol_shrink) / 3.0
+        # 均线发散度
+        g['ma_dispersion'] = (g[['ma5_adj', 'ma10_adj', 'ma20_adj']].shift(1).std(axis=1) /
+                              g[['ma5_adj', 'ma10_adj', 'ma20_adj']].shift(1).mean(axis=1).replace(0, np.nan))
+        # 成交量萎缩 (正值=缩量)
+        g['volume_contraction'] = -(g['vol'].shift(1) / g['vol'].shift(1).rolling(20).mean() - 1)
+        # 距离50日均线
+        g['price_ma50_ratio'] = (g['adj_close'].shift(1) / g['adj_close'].shift(1).rolling(50).mean() - 1)
+        # 收益波动比
+        g['ret_vol_ratio_5d'] = g['chg_5d'].shift(1) / (pct_chg_series.shift(1).rolling(5).std() + 1e-9)
+
         # -- V11.0: fina_indicator --
         if ts_code in fina_dict:
             fr = fina_dict[ts_code]
@@ -884,16 +977,16 @@ def build_features(data_tuple):
             g['ml_pred_prev'] = 0.5
             g['ml_pred_chg_5d'] = 0
 
-        # ---- 标签计算：industry-neutral alpha_5d ----
-        # 前向5日收益
-        g['fwd_ret_5d'] = g['close'].shift(-5) / g['close'] - 1
+        # ---- 标签计算：industry-neutral alpha (3日前向收益) ----
+        # 前向3日收益（短期信号更强）
+        g['fwd_ret'] = g['adj_close'].shift(-10) / g['adj_close'] - 1
 
         # 波动率调整（vol_20d 已知于T日，已shift(1)保护）
-        vol_20d_at_T = g['pct_chg'].shift(1).rolling(20).std() * np.sqrt(5)
-        g['target_5d_adj'] = g['fwd_ret_5d'] / (vol_20d_at_T + 0.01)
+        vol_T = g['pct_chg'].shift(1).rolling(20).std() * np.sqrt(10)
+        g['target_adj'] = g['fwd_ret'] / (vol_T + 0.01)
 
         # 只保留特征和目标字段（行业中性化在 concat 后做）
-        valid = g.dropna(subset=['target_5d_adj'])
+        valid = g.dropna(subset=['target_adj'])
         # 取 min_date 之后的数据（给特征留足历史）
         valid = valid[valid['trade_date'] >= pd.Timestamp(min_date)]
         if len(valid) < 10:
@@ -910,15 +1003,17 @@ def build_features(data_tuple):
     ind_df = stock_info[['ts_code', 'industry']].dropna()
     result = result.merge(ind_df, on='ts_code', how='left')
     result['industry'] = result['industry'].fillna('OTHER')
-    result['industry_avg_5d'] = result.groupby(['trade_date', 'industry'])['target_5d_adj'].transform('mean')
-    result['alpha_5d'] = result['target_5d_adj'] - result['industry_avg_5d']
+    result['industry_avg'] = result.groupby(['trade_date', 'industry'])['target_adj'].transform('mean')
+    result['alpha_5d'] = result['target_adj'] - result['industry_avg']
 
-    # 3sigma winsorize
-    label_col = 'alpha_5d'
-    mean_val = result[label_col].mean()
-    std_val = result[label_col].std()
-    if std_val > 0:
-        result[label_col] = result[label_col].clip(mean_val - 3 * std_val, mean_val + 3 * std_val)
+    # 3sigma winsorize — 仅在 na_fill=True 时执行
+    # walk-forward 中每个 fold 独立截断（防泄漏）
+    _label = 'alpha_5d'
+    if na_fill:
+        mean_val = result[_label].mean()
+        std_val = result[_label].std()
+        if std_val > 0:
+            result[_label] = result[_label].clip(mean_val - 3 * std_val, mean_val + 3 * std_val)
 
     # === Alpha 情绪特征 ===
     if not alpha_signals.empty:
@@ -957,6 +1052,113 @@ def build_features(data_tuple):
     result['rel_strength_idx_5d'] = result.groupby('trade_date')['chg_5d'].transform(
         lambda x: x / x.median() if x.median() != 0 else 1.0
     )
+
+    # ====== V11.1 全局市场状态特征 ======
+    logger.info("计算全局市场状态特征...")
+    try:
+        daily_mkt = daily[['trade_date', 'pct_chg']].copy()
+        daily_mkt['is_zt'] = (daily_mkt['pct_chg'] > 9.5).astype(int)
+        daily_mkt['is_dt'] = (daily_mkt['pct_chg'] < -9.5).astype(int)
+        mkt_stats = daily_mkt.groupby('trade_date').agg(
+            zt_cnt=('is_zt', 'sum'), dt_cnt=('is_dt', 'sum'),
+            ret_std=('pct_chg', 'std'),
+            above_zero=('pct_chg', lambda x: (x > 0).mean()),
+        ).reset_index()
+        mkt_stats['mkt_zt_dt_spread'] = mkt_stats['zt_cnt'] - mkt_stats['dt_cnt']
+        mkt_stats['mkt_zt_dt_spread'] = mkt_stats['mkt_zt_dt_spread'].rolling(5).mean()
+        mkt_stats['mkt_volatility'] = mkt_stats['ret_std'].rolling(5).mean()
+        mkt_stats['mkt_breadth'] = mkt_stats['above_zero'].rolling(5).mean()
+        result = result.merge(
+            mkt_stats[['trade_date', 'mkt_zt_dt_spread', 'mkt_volatility', 'mkt_breadth']],
+            on='trade_date', how='left'
+        )
+    except Exception as e:
+        logger.warning(f"V11.1 市场状态特征失败: {e}")
+
+    # ====== 新增：market_regime_daily 预计算市场状态 ======
+    if not regime_data.empty:
+        try:
+            regime_data['regime_code'] = regime_data['regime'].map({
+                'bull': 4, 'overheated': 3, 'range': 2, 'bear': 1, 'panic': 0
+            }).fillna(2).astype(int)
+            result = result.merge(
+                regime_data[['trade_date', 'regime_code', 'prob_bull', 'prob_bear', 'prob_panic', 'prob_range']],
+                on='trade_date', how='left'
+            )
+            for c in ['regime_code', 'prob_bull', 'prob_bear', 'prob_panic', 'prob_range']:
+                if c in result.columns:
+                    result[c] = result[c].fillna(2.0 if c == 'regime_code' else 0.0)
+            logger.info(f"市场状态特征已合并: {len(regime_data)} 条")
+        except Exception as e:
+            logger.warning(f"market_regime_daily 特征失败: {e}")
+    for c in ['regime_code', 'prob_bull', 'prob_bear', 'prob_panic', 'prob_range']:
+        if c not in result.columns:
+            result[c] = 0.0
+
+    # ====== 新增：limit_list_d 涨跌停特征（全量版）======"
+    if not limit_list.empty:
+        try:
+            limit_list['is_zt'] = (limit_list['limit_type'] == 'L').astype(int)
+            limit_list['is_dt'] = (limit_list['limit_type'] == 'D').astype(int)
+            limit_list['early_zt'] = limit_list['first_time'].str[:2].astype(int).fillna(99)  # 首次涨停小时
+            limit_list['zt_strong'] = ((limit_list['open_times'] == 0) & (limit_list['is_zt'] == 1)).astype(int)
+            zt_agg = limit_list.groupby(['ts_code', 'trade_date']).agg(
+                zt_flag=('is_zt', 'max'), dt_flag=('is_dt', 'max'),
+                zt_first_hour=('early_zt', lambda x: min(x) if any(x < 12) else 99),
+                zt_open_times=('open_times', 'sum'),
+                zt_fd_amount=('fd_amount', 'sum'),
+                zt_strong_flag=('zt_strong', 'max'),
+                zt_limit_times=('limit_times', 'max'),
+            ).reset_index()
+            zt_agg['zt_first_hour'] = zt_agg['zt_first_hour'].replace(99, 0)
+            result = result.merge(zt_agg, on=['ts_code', 'trade_date'], how='left')
+            # Rolling features (shifted)
+            result = result.sort_values(['ts_code', 'trade_date'])
+            for col, shift_name in [('zt_flag', 'zt_flag'), ('zt_strong_flag', 'zt_strong')]:
+                result[f'{shift_name}_30d'] = result.groupby('ts_code')[col].transform(
+                    lambda x: x.shift(1).rolling(30, min_periods=1).sum()
+                )
+            result['zt_fd_amount_30d'] = result.groupby('ts_code')['zt_fd_amount'].transform(
+                lambda x: x.shift(1).rolling(30, min_periods=1).sum()
+            )
+            result['zt_open_times_30d'] = result.groupby('ts_code')['zt_open_times'].transform(
+                lambda x: x.shift(1).rolling(30, min_periods=1).sum()
+            )
+            result['zt_limit_times_30d'] = result.groupby('ts_code')['zt_limit_times'].transform(
+                lambda x: x.shift(1).rolling(30, min_periods=1).max()
+            )
+        except Exception as e:
+            logger.warning(f"limit_list 特征失败: {e}")
+    for c in ['zt_flag_30d', 'zt_strong_30d', 'zt_fd_amount_30d', 'zt_open_times_30d', 'zt_limit_times_30d',
+              'zt_flag', 'zt_first_hour', 'zt_open_times', 'zt_fd_amount', 'zt_limit_times']:
+        if c not in result.columns:
+            result[c] = 0.0
+
+    # ====== 新增：top_inst 机构席位特征 ======
+    if not top_inst_data.empty:
+        try:
+            inst_daily = top_inst_data.groupby(['ts_code', 'trade_date']).agg(
+                inst_net_buy=('net_buy', 'sum'),
+                inst_buy=('buy', 'sum'),
+                inst_sell=('sell', 'sum'),
+                inst_avg_buy_rate=('buy_rate', 'mean'),
+            ).reset_index()
+            result = result.merge(inst_daily, on=['ts_code', 'trade_date'], how='left')
+            result = result.sort_values(['ts_code', 'trade_date'])
+            for col, n in [('inst_net_buy', 5), ('inst_net_buy', 10), ('inst_avg_buy_rate', 5)]:
+                rn = f'{col}_{n}d' if n else col
+                result[rn] = result.groupby('ts_code')[col].transform(
+                    lambda x: x.shift(1).rolling(n, min_periods=1).sum()
+                ) if 'buy' in col else result.groupby('ts_code')[col].transform(
+                    lambda x: x.shift(1).rolling(n, min_periods=1).mean()
+                )
+        except Exception as e:
+            logger.warning(f"top_inst 特征失败: {e}")
+    for c in ['inst_net_buy_5d', 'inst_net_buy_10d', 'inst_avg_buy_rate_5d']:
+        if c not in result.columns:
+            result[c] = 0.0
+        for c in ['mkt_zt_dt_spread', 'mkt_volatility', 'mkt_breadth']:
+            if c not in result.columns: result[c] = 0.0
 
     # ---- Money flow divergence（V10.0 已有，补全） ----
     result['money_flow_div_5d'] = result['main_cum5']
@@ -1010,18 +1212,24 @@ def build_features(data_tuple):
     v11_feature_cols = [
         # fina_indicator
         'fina_roe', 'fina_yoy_sales', 'fina_gross_margin', 'fina_net_margin', 'fina_eps',
+        # 市场状态
+        'regime_code', 'prob_bull', 'prob_bear', 'prob_panic', 'prob_range',
+        # 估值因子 (daily_basic 已补全)
+        'pe_ttm', 'pb', 'total_mv', 'circ_mv',
+        # V11.1 均值回复
+        'price_range_pos_10d', 'oversold_boost', 'ma_dispersion',
+        'volume_contraction', 'price_ma50_ratio', 'ret_vol_ratio_5d',
+        # V11.1 市场状态
+        'mkt_zt_dt_spread', 'mkt_volatility', 'mkt_breadth',
         # sector_moneyflow
         'sector_netflow_1d', 'sector_netflow_5d', 'sector_flow_divergence',
         # north_moneyflow
         'north_flow_1d',
-        # ml_predictions
-        'ml_pred_prev', 'ml_pred_chg_5d',
-        # 新衍生
-        'ret_autocorr_5d', 'vol_of_vol', 'max_drawdown_10d',
-        'rel_strength_idx_5d', 'volume_shock', 'turnover_zscore_20d',
-        'high_low_spread', 'consecutive_wins', 'consecutive_losses',
+        # 新衍生（保留核心）
+        'vol_shock', 'turnover_zscore_20d',
+        'consecutive_wins', 'consecutive_losses',
         # 资金流衍生
-        'money_flow_div_5d', 'money_flow_div_10d', 'flow_accel_5d',
+        'money_flow_div_5d', 'money_flow_div_10d',
         # sector pct
         'sector_pct_5d',
     ]
@@ -1035,7 +1243,29 @@ def build_features(data_tuple):
         if col not in result.columns:
             result[col] = np.nan
 
-    # === 横截面排名特征 ===
+    # === 多重共线性剔除（每组 |corr| > 0.8 只保留方差最高的特征） ===
+    # 参考 docs/etf_factor_guide.md 3.4 节
+    try:
+        _corr = result[feature_cols].corr().abs()
+        _upper = _corr.where(np.triu(np.ones(_corr.shape), k=1).astype(bool))
+        _var = result[feature_cols].var()
+        _to_drop = set()
+        for _col in _upper.columns:
+            if _col in _to_drop:
+                continue
+            _high_corr = _upper.index[_upper[_col] > 0.8].tolist()
+            if not _high_corr:
+                continue
+            _candidates = [_col] + _high_corr
+            _best = max(_candidates, key=lambda c: _var.get(c, 0))
+            _to_drop.update(c for c in _candidates if c != _best)
+        if _to_drop:
+            feature_cols = [c for c in feature_cols if c not in _to_drop]
+            logger.info(f"多重共线性剔除: 去掉 {len(_to_drop)} 个冗余特征, 剩余 {len(feature_cols)} 个")
+    except Exception as e:
+        logger.warning(f"多重共线性剔除跳过: {e}")
+
+    # === 横截面排名特征（部分特征，保留原始值作补充） ===
     rank_features = [
         'pct_chg', 'turnover_rate', 'volume_ratio', 'rps_20',
         'lg_ratio', 'main_net_ratio', 'pos_52w',
@@ -1043,6 +1273,7 @@ def build_features(data_tuple):
         'amount_ma5_ratio', 'pos_10d', 'turnover_ratio', 'mom_divergence',
         'dragon_net_buy_30d', 'dragon_count_30d',
         'zt_count_30d', 'zt_max_board_30d',
+        'zt_flag_30d', 'zt_strong_30d', 'zt_open_times_30d',
         'ind_board_pct_5d', 'ind_board_pct_10d',
         'concept_count', 'concept_mom_5d',
         'net_profit_yoy', 'revenue_yoy',
@@ -1050,17 +1281,20 @@ def build_features(data_tuple):
         'bt_count_30d', 'bt_premium_avg_30d',
         'forecast_type_code', 'forecast_is_positive', 'forecast_net_profit_max',
         'fina_roe', 'ml_pred_prev',
+        'zt_flag', 'zt_limit_times', 'inst_net_buy_5d',
     ]
     for col in rank_features:
         if col in result.columns:
             result[f'{col}_rank'] = result.groupby('trade_date')[col].rank(pct=True)
 
-    # === 填充 NaN ===
+    # === 填充 NaN（仅在 na_fill=True 时） ===
+    # walk-forward 中每个 fold 独立填充（防泄漏）
     global_medians = {}
     for col in feature_cols:
         med = result[col].median()
         global_medians[col] = float(med) if not np.isnan(med) else 0.0
-        result[col] = result[col].fillna(global_medians[col])
+        if na_fill:
+            result[col] = result[col].fillna(global_medians[col])
 
     logger.info(f"构建完成: {len(result):,} 样本, {result['ts_code'].nunique()} 股, {len(feature_cols)} 特征")
 
@@ -1084,11 +1318,17 @@ def safe_qcut(s, n_bins=5):
 
 
 def purged_walk_forward(df, feature_cols, label_col='alpha_5d',
-                        n_folds=8, embargo=5, val_size=60):
+                        n_folds=5, embargo=5, val_size=60, compute_trades=False):
     """
     Purged walk-forward 验证。
     Purging: 去除训练样本中标签计算窗口与验证集重叠的样本。
     Embargo: 训练集最后 N 天留空，防止 rolling 特征泄露。
+
+    Args:
+        compute_trades: 若 True, 额外计算每 fold 的模拟交易收益（选 TopN，持 N 天）
+    Returns:
+        cv_results: 每折的IC指标
+        trade_results: (仅 compute_trades=True) 每折的交易记录列表
     """
     df_sorted = df.sort_values('trade_date').copy()
     dates = sorted(df_sorted['trade_date'].unique())
@@ -1134,24 +1374,44 @@ def purged_walk_forward(df, feature_cols, label_col='alpha_5d',
         val_mask = df_sorted['trade_date'].isin(val_dates)
 
         # Purging: 去掉训练样本，其前向收益窗口与验证集重叠
-        if 'fwd_ret_5d' in df_sorted.columns:
+        if 'fwd_ret' in df_sorted.columns:
             valid_min = dates[val_start]
-            # 样本 T 的前向收益用到 T+1 到 T+5，约10个自然日
-            purge_mask = df_sorted['trade_date'] < pd.Timestamp(valid_min) - pd.Timedelta(days=12)
+            # 样本 T 的前向收益用到 T+1 到 T+10，约17个自然日
+            purge_mask = df_sorted['trade_date'] < pd.Timestamp(valid_min) - pd.Timedelta(days=17)
             train_mask = train_mask & purge_mask
 
-        X_train = df_sorted.loc[train_mask, feature_cols].values
-        y_train = df_sorted.loc[train_mask, label_col].values
-        X_val = df_sorted.loc[val_mask, feature_cols].values
-        y_val = df_sorted.loc[val_mask, label_col].values
+        # ====== Per-fold NaN 填充（防泄漏） ======
+        train_data = df_sorted.loc[train_mask].copy()
+        val_data = df_sorted.loc[val_mask].copy()
+
+        fold_medians = {}
+        for col in feature_cols:
+            med = train_data[col].median()
+            fold_medians[col] = float(med) if not np.isnan(med) else 0.0
+            train_data[col] = train_data[col].fillna(fold_medians[col])
+            val_data[col] = val_data[col].fillna(fold_medians[col])
+
+        # ====== Per-fold 标签 winsorization（仅训练集，防泄漏） ======
+        train_label_mean = train_data[label_col].mean()
+        train_label_std = train_data[label_col].std()
+        if train_label_std > 0:
+            train_data[label_col] = train_data[label_col].clip(
+                train_label_mean - 3 * train_label_std,
+                train_label_mean + 3 * train_label_std
+            )
+
+        X_train = train_data[feature_cols].values
+        y_train = train_data[label_col].values
+        X_val = val_data[feature_cols].values
+        y_val = val_data[label_col].values
 
         if len(X_train) < 500 or len(X_val) < 50:
             logger.warning(f"  Fold {fold+1}: 样本不足 train={len(X_train)}, val={len(X_val)}")
             continue
 
-        # LambdaRank 离散化
-        train_df = df_sorted.loc[train_mask].copy()
-        val_df = df_sorted.loc[val_mask].copy()
+        # LambdaRank 离散化（用填充后的 train_data）
+        train_df = train_data.copy()
+        val_df = val_data.copy()
         train_df['label_rank'] = train_df.groupby('trade_date')[label_col].transform(
             lambda x: safe_qcut(x, 10)
         )
@@ -1164,10 +1424,10 @@ def purged_walk_forward(df, feature_cols, label_col='alpha_5d',
         train_group = train_df.groupby('trade_date').size().to_numpy()
         val_group = val_df.groupby('trade_date').size().to_numpy()
 
-        # 时间衰减权重
+        # 时间衰减权重（加速衰减，聚焦近期数据）
         max_known_date = train_df['trade_date'].max()
         train_df['days_ago'] = (max_known_date - train_df['trade_date']).dt.days
-        train_df['weight'] = np.exp(-0.005 * train_df['days_ago'])
+        train_df['weight'] = np.exp(-0.008 * train_df['days_ago'])
         sample_weight = train_df['weight'].values
 
         # 训练 LGB LambdaRank
@@ -1180,18 +1440,18 @@ def purged_walk_forward(df, feature_cols, label_col='alpha_5d',
             'label_gain': list(range(10)),
             'boosting_type': 'gbdt',
             'num_leaves': 48,
-            'learning_rate': 0.03,
+            'learning_rate': 0.008,
             'feature_fraction': 0.8,
             'bagging_fraction': 0.8,
             'bagging_freq': 5,
             'min_child_samples': 200,
-            'lambda_l2': 0.01,
+            'lambda_l2': 0.1,
             'verbose': -1,
             'seed': 42 + fold,
         }
 
         model = lgb.train(
-            params, td, num_boost_round=1500, valid_sets=[vd],
+            params, td, num_boost_round=2000, valid_sets=[vd],
             callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)]
         )
 
@@ -1208,8 +1468,8 @@ def purged_walk_forward(df, feature_cols, label_col='alpha_5d',
         bottom_avg_ret = y_val[bottom_idx].mean()
         spread = (top_avg_ret - bottom_avg_ret)
 
-        # 日频 IC
-        val_df_cv = df_sorted.loc[val_mask].copy()
+        # 日频 IC（用填充后的 val_data 而非 df_sorted）
+        val_df_cv = val_data.copy()
         val_df_cv['pred'] = vp
         daily_ic = val_df_cv.groupby('trade_date').apply(
             lambda x: spearmanr(x[label_col], x['pred'])[0], include_groups=False
@@ -1217,6 +1477,31 @@ def purged_walk_forward(df, feature_cols, label_col='alpha_5d',
         mean_daily_ic = daily_ic.mean()
         daily_ic_std = daily_ic.std()
         ic_ir = mean_daily_ic / (daily_ic_std + 1e-9)
+
+        # ====== 可选: Walk-Forward 模拟交易收益 ======
+        fold_trades = []
+        if compute_trades and 'fwd_ret' in val_data.columns:
+            try:
+                top_n = 3
+                for vdate in sorted(val_data['trade_date'].unique()):
+                    day_idx = val_data['trade_date'] == vdate
+                    if day_idx.sum() < top_n:
+                        continue
+                    day_preds = vp[day_idx.values]
+                    day_codes = val_data.loc[day_idx, 'ts_code'].values
+                    sorted_idx = np.argsort(day_preds)[-top_n:]
+                    for si in sorted_idx:
+                        fwd_ret = val_data.loc[day_idx, 'fwd_ret'].values[si]
+                        if not np.isnan(fwd_ret):
+                            fold_trades.append({
+                                'fold': fold + 1,
+                                'entry_date': vdate,
+                                'ts_code': day_codes[si],
+                                'pred_score': float(day_preds[si]),
+                                'fwd_return_pct': float(fwd_ret * 100),
+                            })
+            except Exception as e:
+                logger.warning(f"Fold {fold+1} 模拟交易失败: {e}")
 
         cv_results.append({
             'fold': fold + 1,
@@ -1230,6 +1515,7 @@ def purged_walk_forward(df, feature_cols, label_col='alpha_5d',
             'n_val': len(X_val),
             'train_dates': f"{min(dates)} ~ {dates[train_end-1]}",
             'val_dates': f"{dates[val_start]} ~ {dates[val_end-1]}",
+            'trades': fold_trades if fold_trades else [],
         })
 
         r = cv_results[-1]
@@ -1249,13 +1535,26 @@ def purged_walk_forward(df, feature_cols, label_col='alpha_5d',
     logger.info(f"  Purged Walk-Forward 平均: RankIC={avg_ic:.3f}, "
                 f"日频IC={avg_daily_ic:.3f}, ICIR={avg_icir:.2f}, Spread={avg_spread:.1f}bp")
 
+    # ====== Walk-Forward 模拟交易汇总 ======
+    all_trades = []
+    for r in cv_results:
+        all_trades.extend(r.get('trades', []))
+    if all_trades:
+        trade_rets = np.array([t['fwd_return_pct'] for t in all_trades])
+        win_rate = (trade_rets > 0).mean() * 100
+        avg_ret = trade_rets.mean()
+        total_ret = (1 + trade_rets / 100).prod() - 1
+        logger.info(f"  Walk-Forward 模拟交易 (Top3, 持5日): "
+                    f"{len(all_trades)} 笔, 胜率={win_rate:.1f}%, "
+                    f"平均收益={avg_ret:+.2f}%, 累积={total_ret*100:+.1f}%")
+
     return cv_results
 
 
 # ========== PART 4: BASE MODEL TRAINING ==========
 
 def train_base_models(df, feature_cols, label_col='alpha_5d',
-                      use_alpha_features=False, n_seeds=7):
+                      use_alpha_features=False, n_seeds=8):
     """
     训练 Layer 1 基础模型：
     - Tier A: 5 个 LGB LambdaRank (不同种子)
@@ -1280,10 +1579,10 @@ def train_base_models(df, feature_cols, label_col='alpha_5d',
     )
     y_lr = df_temp['label_rank'].fillna(4).astype(int).values
 
-    # 时间衰减权重
+    # 时间衰减权重（与 walk-forward 一致，加速衰减）
     max_date = df_sorted['trade_date'].max()
     df_temp['days_ago'] = (max_date - df_temp['trade_date']).dt.days
-    df_temp['weight'] = np.exp(-0.005 * df_temp['days_ago'])
+    df_temp['weight'] = np.exp(-0.008 * df_temp['days_ago'])
     sample_weight = df_temp['weight'].values
 
     base_ds = lgb.Dataset(X, label=y_lr, group=group, weight=sample_weight)
@@ -1299,16 +1598,16 @@ def train_base_models(df, feature_cols, label_col='alpha_5d',
             'label_gain': list(range(10)),
             'boosting_type': 'gbdt',
             'num_leaves': 48,
-            'learning_rate': 0.01,
-            'feature_fraction': [0.65, 0.7, 0.75, 0.8, 0.65, 0.7, 0.75][i],
+            'learning_rate': 0.008,
+            'feature_fraction': [0.65, 0.7, 0.75, 0.8, 0.65, 0.7, 0.75, 0.8, 0.65, 0.7, 0.75, 0.8, 0.65, 0.7][i],
             'bagging_fraction': 0.8,
             'bagging_freq': 5,
-            'min_child_samples': 500,
+            'min_child_samples': 200,
             'lambda_l2': 0.1,
             'verbose': -1,
             'seed': 42 + i * 7,
         }
-        model = lgb.train(params, base_ds, num_boost_round=1500, callbacks=[lgb.log_evaluation(0)])
+        model = lgb.train(params, base_ds, num_boost_round=2000, callbacks=[lgb.log_evaluation(0)])
         models[f'lgb_seed_{42 + i * 7}'] = model
         logger.info(f"  Tier A/{i+1}: seed={42 + i * 7}, feature_fraction={params['feature_fraction']}")
 
@@ -1358,7 +1657,7 @@ def train_base_models(df, feature_cols, label_col='alpha_5d',
             'verbose': -1,
             'seed': 77,
         }
-        model = lgb.train(params, sub_ds, num_boost_round=1000, callbacks=[lgb.log_evaluation(0)])
+        model = lgb.train(params, sub_ds, num_boost_round=1500, callbacks=[lgb.log_evaluation(0)])
         models[name] = {'model': model, 'feature_cols': valid_cols}
         logger.info(f"  Tier C/{name}: {len(valid_cols)} 个特征")
 
@@ -1409,10 +1708,11 @@ def main():
      zt_pool, board_ind_hist, board_ind_cons, board_concept_cons, earnings,
      block_trade, stock_forecast,
      fina_ind, sector_mf, north_mf, ml_prev,
+     limit_list, top_inst_data, regime_data,
      min_date, max_date) = data
 
-    # Step 2: 构建特征
-    result_tuple = build_features(data)
+    # Step 2: 构建特征（不填充 NaN — walk-forward 中每个 fold 独立填充，防泄漏）
+    result_tuple = build_features(data, na_fill=False)
     if result_tuple[0].empty:
         logger.error("特征构建失败")
         return
@@ -1422,21 +1722,34 @@ def main():
     logger.info(f"V11.0 特征: {len(feature_cols)} 列, {len(features):,} 样本")
     logger.info(f"{'='*60}")
 
-    # Step 3: Purged Walk-Forward 验证
-    cv_results = purged_walk_forward(features, feature_cols)
+    # Step 3: Purged Walk-Forward 验证（内部 per-fold 填充 NaN，防泄漏）
+    cv_results = purged_walk_forward(features, feature_cols, compute_trades=(args.max_date is None))
 
-    # Step 4: 训练 Layer 1 基础模型
-    base_models = train_base_models(features, feature_cols, use_alpha_features=use_alpha_features)
+    # ====== 为最终模型训练创建填充后的特征（用全局中位数） ======
+    # 注：最终模型用全量数据训练，此时 "未来" 即为全量 → 全局中位数合理
+    filled_features = features.copy()
+    for col in feature_cols:
+        filled_features[col] = filled_features[col].fillna(global_medians[col])
+    # 标签截断（全量数据）
+    label_mean = filled_features['alpha_5d'].mean()
+    label_std = filled_features['alpha_5d'].std()
+    if label_std > 0:
+        filled_features['alpha_5d'] = filled_features['alpha_5d'].clip(
+            label_mean - 3 * label_std, label_mean + 3 * label_std
+        )
+
+    # Step 4: 训练 Layer 1 基础模型（用填充后的全量数据）
+    base_models = train_base_models(filled_features, feature_cols, use_alpha_features=use_alpha_features)
 
     # Step 5: 特征重要性
     importance = compute_feature_importance(base_models, feature_cols)
-    logger.info(f"\n特征重要性 Top 20:")
+    logger.info("\n特征重要性 Top 20:")
     for k, v in list(importance.items())[:20]:
         logger.info(f"  {k}: {v:.0f}")
 
-    # Step 6: 全数据评估
-    X_all = features[feature_cols].values
-    y_all = features['alpha_5d'].values
+    # Step 6: 全数据评估（用填充后的数据）
+    X_all = filled_features[feature_cols].values
+    y_all = filled_features['alpha_5d'].values
     all_preds = []
     for name, model in base_models.items():
         if isinstance(model, dict) and 'model' in model:
@@ -1474,6 +1787,10 @@ def main():
             'value_quality': VALUE_QUALITY_FEATURES,
         },
         'global_medians': global_medians,
+        # V11.1 新增特征默认中位数
+        'price_range_pos_10d': 0.5, 'oversold_boost': 0.0, 'ma_dispersion': 0.05,
+        'volume_contraction': 0.0, 'price_ma50_ratio': 0.0, 'ret_vol_ratio_5d': 0.0,
+        'mkt_zt_dt_spread': 60.0, 'mkt_volatility': 3.0, 'mkt_breadth': 0.5,
         'trained_at': datetime.now().isoformat(),
         'n_samples': len(features),
         'n_stocks': int(features['ts_code'].nunique()),
@@ -1492,6 +1809,10 @@ def main():
     config = {
         'feature_cols': feature_cols,
         'global_medians': global_medians,
+        # V11.1 新增特征默认中位数
+        'price_range_pos_10d': 0.5, 'oversold_boost': 0.0, 'ma_dispersion': 0.05,
+        'volume_contraction': 0.0, 'price_ma50_ratio': 0.0, 'ret_vol_ratio_5d': 0.0,
+        'mkt_zt_dt_spread': 60.0, 'mkt_volatility': 3.0, 'mkt_breadth': 0.5,
         'feature_subsets': bundle['feature_subsets'],
         'model_path': str(oos_model_path),
         'trained_at': bundle['trained_at'],
@@ -1515,7 +1836,7 @@ def main():
     try:
         records = []
         if os.path.exists(MONITOR_HISTORY_PATH):
-            with open(MONITOR_HISTORY_PATH, 'r') as f:
+            with open(MONITOR_HISTORY_PATH) as f:
                 records = json.load(f)
         records.append(monitor_record)
         with open(MONITOR_HISTORY_PATH, 'w') as f:
@@ -1529,13 +1850,13 @@ def main():
     logger.info(f"{'='*60}")
 
     if cv_results:
-        logger.info(f"Purged Walk-Forward 均值:")
+        logger.info("Purged Walk-Forward 均值:")
         logger.info(f"  Rank IC:   {np.mean([r['rank_ic'] for r in cv_results]):.3f}")
         logger.info(f"  日频 IC:   {np.mean([r['mean_daily_ic'] for r in cv_results]):.3f}")
         logger.info(f"  IC IR:     {np.mean([r['ic_ir'] for r in cv_results]):.2f}")
         logger.info(f"  Spread:    {np.mean([r['spread'] for r in cv_results]):.1f}bp")
 
-    logger.info(f"全数据集成融合:")
+    logger.info("全数据集成融合:")
     if all_preds:
         logger.info(f"  Rank IC:   {final_ic:.3f}")
 

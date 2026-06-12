@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """V4策略新因子详细分析 — 多维度拆解"""
-import os, sys, json, time
+import json
+import os
+import sys
 from collections import defaultdict
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from quant_app.utils.config import get_db_config
 import pymysql
+
+from quant_app.utils.config import get_db_config
 
 PY = "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3"
 DB = get_db_config()
@@ -193,7 +196,7 @@ def get_holder_bonus(ts_code, date, hc_map):
 # ============================================================
 def run_backtest_detailed(use_factors=False, label=""):
     trades = []  # 每笔: {date, code, name, industry, score, dt_bonus, hc_bonus, pct_chg, ret_1d, ret_3d, ret_5d, market_pct}
-    
+
     for idx, date in enumerate(trade_dates):
         stocks = by_date.get(date, [])
         if not stocks: continue
@@ -236,7 +239,7 @@ def run_backtest_detailed(use_factors=False, label=""):
                 'ret_5d': fr.get(5),
                 'market_pct': market_daily.get(date, 0),
             })
-    
+
     return trades
 
 
@@ -245,7 +248,7 @@ def run_backtest_detailed(use_factors=False, label=""):
 # ============================================================
 def analyze(label, trades):
     results = {}
-    
+
     # 总体
     for hd in [1, 3, 5]:
         vals = [t[f'ret_{hd}d'] for t in trades if t.get(f'ret_{hd}d') is not None]
@@ -340,7 +343,7 @@ for label, trades in [("V4原版", t0), ("V4+新因子", t1)]:
     for t in trades:
         ind = t['industry'] or "未知"
         industries[ind].append(t)
-    
+
     # 取前10个板块
     sorted_inds = sorted(industries.items(), key=lambda x: len(x[1]), reverse=True)[:10]
     for ind, subset in sorted_inds:
@@ -385,7 +388,7 @@ for label, trades in [("V4原版", t0), ("V4+新因子", t1)]:
         if t.get('ret_3d') is not None:
             month = t['date'][:7]
             monthly[month].append(t['ret_3d'])
-    
+
     for month in sorted(monthly.keys()):
         vals = monthly[month]
         n = len(vals)
@@ -399,7 +402,7 @@ section("七、连续盈亏分析（3日持有）")
 for label, trades in [("V4原版", t0), ("V4+新因子", t1)]:
     print(f"\n【{label}】")
     vals = [t['ret_3d'] for t in trades if t.get('ret_3d') is not None]
-    
+
     max_consec_loss = 0
     curr_loss = 0
     max_consec_win = 0
@@ -407,7 +410,7 @@ for label, trades in [("V4原版", t0), ("V4+新因子", t1)]:
     worst_drawdown = 0
     curr_peak = 0
     cumsum = 0
-    
+
     for v in vals:
         cumsum += v
         if v > 0:
@@ -418,10 +421,10 @@ for label, trades in [("V4原版", t0), ("V4+新因子", t1)]:
             curr_loss += 1
             max_consec_loss = max(max_consec_loss, curr_loss)
             curr_win = 0
-        
+
         curr_peak = max(curr_peak, cumsum)
         worst_drawdown = min(worst_drawdown, cumsum - curr_peak)
-    
+
     print(f"  最大连续亏损: {max_consec_loss}次")
     print(f"  最大连续盈利: {max_consec_win}次")
     print(f"  最大回撤: {worst_drawdown:+.2f}%")
@@ -439,7 +442,7 @@ detail_out = {
 
 for label, trades in [("V4原版", t0), ("V4+新因子", t1)]:
     detail_out['base_comparison'][label] = analyze(label, trades)
-    
+
     # 市场环境
     for regime in ["上涨", "下跌", "震荡"]:
         key = f"{label}_{regime}"
@@ -453,7 +456,7 @@ for label, trades in [("V4原版", t0), ("V4+新因子", t1)]:
                     'wr': sum(1 for v in vals if v > 0)/len(vals)*100,
                     'avg': sum(vals)/len(vals)
                 }
-    
+
     # 因子贡献
     detail_out['by_factor'][label] = {}
     for flabel, fsubset in [
@@ -471,7 +474,7 @@ for label, trades in [("V4原版", t0), ("V4+新因子", t1)]:
                     'wr': sum(1 for v in vals if v > 0)/len(vals)*100,
                     'avg': sum(vals)/len(vals)
                 }
-    
+
     # 月度
     detail_out['monthly'][label] = {}
     monthly = defaultdict(list)

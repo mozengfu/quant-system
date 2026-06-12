@@ -1434,7 +1434,7 @@
           "price": 37.31,
           "score": 100,
           "recommendation_time": "08:10",
-          "1day_result": null,
+          "1day_result": 8.2,
           "1week_result": null,
           "1month_result": null
         },
@@ -1444,7 +1444,7 @@
           "price": 150.22,
           "score": 99,
           "recommendation_time": "08:10",
-          "1day_result": null,
+          "1day_result": -1.41,
           "1week_result": null,
           "1month_result": null
         },
@@ -1454,13 +1454,13 @@
           "price": 29.3,
           "score": 96,
           "recommendation_time": "08:10",
-          "1day_result": null,
+          "1day_result": -8.5,
           "1week_result": null,
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-05-23",
@@ -1472,7 +1472,7 @@
           "price": 21.29,
           "score": 99,
           "recommendation_time": "07:37",
-          "1day_result": null,
+          "1day_result": 0.99,
           "1week_result": null,
           "1month_result": null
         },
@@ -1482,7 +1482,7 @@
           "price": 110.5,
           "score": 97,
           "recommendation_time": "07:37",
-          "1day_result": null,
+          "1day_result": -0.73,
           "1week_result": null,
           "1month_result": null
         },
@@ -1492,6 +1492,652 @@
           "price": 21.18,
           "score": 99,
           "recommendation_time": "07:37",
+          "1day_result": -2.27,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": true,
+      "result": "partial"
+    },
+    {
+      "date": "2026-05-24",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "603127",
+          "name": "昭衍新药",
+          "price": 41.35,
+          "score": 0,
+          "recommendation_time": "00:12",
+          "1day_result": -9.36,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "000725",
+          "name": "京东方Ａ",
+          "price": 5.16,
+          "score": 0,
+          "recommendation_time": "00:12",
+          "1day_result": 11.82,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002169",
+          "name": "智光电气",
+          "price": 18.87,
+          "score": 0,
+          "recommendation_time": "00:12",
+          "1day_result": -2.97,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": true,
+      "result": "partial"
+    },
+    {
+      "date": "2026-05-25",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "603127",
+          "name": "昭衍新药",
+          "price": 41.35,
+          "score": 0,
+          "recommendation_time": "07:37",
+          "1day_result": -9.36,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "000725",
+          "name": "京东方Ａ",
+          "price": 5.16,
+          "score": 0,
+          "recommendation_time": "07:37",
+          "1day_result": 11.82,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002169",
+          "name": "智光电气",
+          "price": 18.87,
+          "score": 0,
+          "recommendation_time": "07:37",
+          "1day_result": -2.97,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": true,
+      "result": "partial"
+    },
+    {
+      "date": "2026-05-26",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "000060",
+          "name": "中金岭南",
+          "price": 7.7,
+          "score": 1,
+          "recommendation_time": "08:52",
+          "1day_result": -1.95,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002938",
+          "name": "鹏鼎控股",
+          "price": 114.32,
+          "score": 1,
+          "recommendation_time": "08:52",
+          "1day_result": -7.36,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "603936",
+          "name": "博敏电子",
+          "price": 24.85,
+          "score": 1,
+          "recommendation_time": "08:52",
+          "1day_result": -2.94,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": true,
+      "result": "partial"
+    },
+    {
+      "date": "2026-05-27",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "000636",
+          "name": "风华高科",
+          "price": 41.7,
+          "score": 1,
+          "recommendation_time": "08:37",
+          "1day_result": 16.64,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002156",
+          "name": "通富微电",
+          "price": 75.39,
+          "score": 1,
+          "recommendation_time": "08:37",
+          "1day_result": -8.08,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "605111",
+          "name": "新洁能",
+          "price": 64.35,
+          "score": 1,
+          "recommendation_time": "08:37",
+          "1day_result": 8.0,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": true,
+      "result": "partial"
+    },
+    {
+      "date": "2026-05-28",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "002957",
+          "name": "科瑞技术",
+          "price": 56.33,
+          "score": 0,
+          "recommendation_time": "06:44",
+          "1day_result": 10.14,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002185",
+          "name": "华天科技",
+          "price": 20.15,
+          "score": 0,
+          "recommendation_time": "06:44",
+          "1day_result": -4.02,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "600378",
+          "name": "昊华科技",
+          "price": 40.0,
+          "score": 0,
+          "recommendation_time": "06:44",
+          "1day_result": -3.25,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": true,
+      "result": "partial"
+    },
+    {
+      "date": "2026-05-29",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "002579",
+          "name": "中京电子",
+          "price": 18.19,
+          "score": 0,
+          "recommendation_time": "07:06",
+          "1day_result": 3.74,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "603663",
+          "name": "三祥新材",
+          "price": 63.7,
+          "score": 0,
+          "recommendation_time": "07:06",
+          "1day_result": -6.55,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002484",
+          "name": "江海股份",
+          "price": 74.07,
+          "score": 0,
+          "recommendation_time": "07:06",
+          "1day_result": 6.86,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": true,
+      "result": "partial"
+    },
+    {
+      "date": "2026-05-30",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "001270",
+          "name": "铖昌科技",
+          "price": 145.8,
+          "score": 0,
+          "recommendation_time": "01:13",
+          "1day_result": -13.42,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "600360",
+          "name": "华微电子",
+          "price": 12.0,
+          "score": 0,
+          "recommendation_time": "01:13",
+          "1day_result": 6.42,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "000636",
+          "name": "风华高科",
+          "price": 53.03,
+          "score": 0,
+          "recommendation_time": "01:13",
+          "1day_result": 12.97,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": true,
+      "result": "partial"
+    },
+    {
+      "date": "2026-06-01",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "600593",
+          "name": "大连圣亚",
+          "price": 37.6,
+          "score": 132,
+          "recommendation_time": "09:00",
+          "1day_result": 1.94,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "301238",
+          "name": "瑞泰新材",
+          "price": 25.43,
+          "score": 131,
+          "recommendation_time": "09:00",
+          "1day_result": -0.47,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "000920",
+          "name": "沃顿科技",
+          "price": 12.85,
+          "score": 129,
+          "recommendation_time": "09:00",
+          "1day_result": -4.44,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": true,
+      "result": "partial"
+    },
+    {
+      "date": "2026-06-02",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "001286",
+          "name": "陕西能源",
+          "price": 13.75,
+          "score": 128,
+          "recommendation_time": "09:00",
+          "1day_result": -5.6,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002608",
+          "name": "江苏国信",
+          "price": 10.12,
+          "score": 124,
+          "recommendation_time": "09:00",
+          "1day_result": 1.78,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "605011",
+          "name": "杭州热电",
+          "price": 23.06,
+          "score": 123,
+          "recommendation_time": "09:00",
+          "1day_result": -3.95,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": true,
+      "result": "partial"
+    },
+    {
+      "date": "2026-06-03",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "600063",
+          "name": "皖维高新",
+          "price": 7.37,
+          "score": 142,
+          "recommendation_time": "09:00",
+          "1day_result": 1.36,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "601918",
+          "name": "新集能源",
+          "price": 10.97,
+          "score": 142,
+          "recommendation_time": "09:00",
+          "1day_result": 2.28,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002608",
+          "name": "江苏国信",
+          "price": 10.42,
+          "score": 139,
+          "recommendation_time": "09:00",
+          "1day_result": 0.77,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": true,
+      "result": "partial"
+    },
+    {
+      "date": "2026-06-04",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "002258",
+          "name": "利尔化学",
+          "price": 13.13,
+          "score": 129,
+          "recommendation_time": "09:00",
+          "1day_result": 1.83,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "000960",
+          "name": "锡业股份",
+          "price": 43.75,
+          "score": 126,
+          "recommendation_time": "09:00",
+          "1day_result": -11.09,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002611",
+          "name": "东方精工",
+          "price": 18.01,
+          "score": 125,
+          "recommendation_time": "09:00",
+          "1day_result": 2.33,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": true,
+      "result": "partial"
+    },
+    {
+      "date": "2026-06-05",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "600596",
+          "name": "新安股份",
+          "price": 14.32,
+          "score": 134,
+          "recommendation_time": "09:00",
+          "1day_result": -5.17,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "601231",
+          "name": "环旭电子",
+          "price": 45.76,
+          "score": 125,
+          "recommendation_time": "09:00",
+          "1day_result": -15.25,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002137",
+          "name": "实益达",
+          "price": 10.54,
+          "score": 124,
+          "recommendation_time": "09:00",
+          "1day_result": -6.93,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": true,
+      "result": "partial"
+    },
+    {
+      "date": "2026-06-08",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "603262",
+          "name": "技源集团",
+          "price": 28.16,
+          "score": 133,
+          "recommendation_time": "09:00",
+          "1day_result": -0.04,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "300920",
+          "name": "润阳科技",
+          "price": 49.22,
+          "score": 133,
+          "recommendation_time": "09:00",
+          "1day_result": 4.31,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "605018",
+          "name": "长华集团",
+          "price": 17.62,
+          "score": 128,
+          "recommendation_time": "09:00",
+          "1day_result": 12.2,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": true,
+      "result": "partial"
+    },
+    {
+      "date": "2026-06-09",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "603725",
+          "name": "天安新材",
+          "price": 12.69,
+          "score": 132,
+          "recommendation_time": "09:00",
+          "1day_result": -9.85,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "600114",
+          "name": "东睦股份",
+          "price": 39.93,
+          "score": 128,
+          "recommendation_time": "09:00",
+          "1day_result": 0.7,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "600906",
+          "name": "财达证券",
+          "price": 6.81,
+          "score": 127,
+          "recommendation_time": "09:00",
+          "1day_result": -1.91,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": true,
+      "result": "partial"
+    },
+    {
+      "date": "2026-06-10",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "603124",
+          "name": "江南新材",
+          "price": 166.32,
+          "score": 129,
+          "recommendation_time": "09:00",
+          "1day_result": 7.5,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "300001",
+          "name": "特锐德",
+          "price": 40.7,
+          "score": 128,
+          "recommendation_time": "09:00",
+          "1day_result": -10.79,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002587",
+          "name": "奥拓电子",
+          "price": 7.13,
+          "score": 118,
+          "recommendation_time": "09:00",
+          "1day_result": -4.07,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": true,
+      "result": "partial"
+    },
+    {
+      "date": "2026-06-11",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "000920",
+          "name": "沃顿科技",
+          "price": 13.82,
+          "score": 125,
+          "recommendation_time": "09:00",
+          "1day_result": null,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "603150",
+          "name": "万朗磁塑",
+          "price": 77.77,
+          "score": 123,
+          "recommendation_time": "09:00",
+          "1day_result": null,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002137",
+          "name": "实益达",
+          "price": 10.7,
+          "score": 122,
+          "recommendation_time": "09:00",
+          "1day_result": null,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": false,
+      "result": null
+    },
+    {
+      "date": "2026-06-12",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "000691",
+          "name": "亚太实业",
+          "price": 9.93,
+          "score": 127,
+          "recommendation_time": "09:00",
+          "1day_result": null,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "603661",
+          "name": "恒林股份",
+          "price": 36.17,
+          "score": 124,
+          "recommendation_time": "09:00",
+          "1day_result": null,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "000920",
+          "name": "沃顿科技",
+          "price": 13.58,
+          "score": 122,
+          "recommendation_time": "09:00",
           "1day_result": null,
           "1week_result": null,
           "1month_result": null
@@ -1502,14 +2148,14 @@
     }
   ],
   "stats": {
-    "total_days": 40,
-    "total_recommendations": 118,
+    "total_days": 57,
+    "total_recommendations": 169,
     "profit_days": 0,
     "loss_days": 0,
-    "total_pnl": 328.24,
-    "win_count": 62,
-    "loss_count": 48,
-    "win_rate": 56.36,
-    "avg_profit": 2.98
+    "total_pnl": 298.14,
+    "win_count": 84,
+    "loss_count": 77,
+    "win_rate": 52.17,
+    "avg_profit": 1.85
   }
 }

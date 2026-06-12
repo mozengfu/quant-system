@@ -3,8 +3,11 @@
 主力资金意图评分模块
 计算主力意图评分（满分100分），识别主力行为阶段
 """
-import os, sys, logging
+import logging
+import os
+import sys
 from datetime import datetime, timedelta
+
 import pymysql
 
 logger = logging.getLogger(__name__)
@@ -52,7 +55,7 @@ def calculate_mainforce_score(ts_code, trade_date=None, conn=None):
         conn = get_db_conn()
     signals = []
     total_score = 0
-    
+
     try:
         # 如果没有指定日期，用最新交易日
         if trade_date is None:
@@ -63,50 +66,50 @@ def calculate_mainforce_score(ts_code, trade_date=None, conn=None):
             trade_date = row[0] if row else None
             if not trade_date:
                 return {'ts_code': ts_code, 'name': get_stock_name(conn, ts_code), 'score': 0, 'level': '无数据', 'signals': [], 'action': '无交易数据'}
-        
+
         name = get_stock_name(conn, ts_code)
-        
+
         # ===== 1. 资金流向评分（30分）=====
         mf_score, mf_signal = _score_moneyflow(conn, ts_code, trade_date)
         total_score += mf_score
         if mf_signal:
             signals.append(mf_signal)
-        
+
         # ===== 2. 股东集中度评分（20分）=====
         holder_score, holder_signal = _score_holder_concentration(conn, ts_code)
         total_score += holder_score
         if holder_signal:
             signals.append(holder_signal)
-        
+
         # ===== 3. 大宗交易评分（15分）=====
         block_score, block_signal = _score_block_trade(conn, ts_code)
         total_score += block_score
         if block_signal:
             signals.append(block_signal)
-        
+
         # ===== 4. 量价配合评分（15分）=====
         vp_score, vp_signal = _score_volume_price(conn, ts_code, trade_date)
         total_score += vp_score
         if vp_signal:
             signals.append(vp_signal)
-        
+
         # ===== 5. 融资融券评分（10分）=====
         margin_score, margin_signal = _score_margin(conn, ts_code)
         total_score += margin_score
         if margin_signal:
             signals.append(margin_signal)
-        
+
         # ===== 6. 龙虎榜评分（10分）=====
         dt_score, dt_signal = _score_dragon_tiger(conn, ts_code, trade_date)
         total_score += dt_score
         if dt_signal:
             signals.append(dt_signal)
-        
+
         total_score = min(100, max(0, total_score))
-        
+
         # 判断主力阶段
         level, action = _determine_level(total_score, signals)
-        
+
         return {
             'ts_code': ts_code,
             'name': name,
@@ -129,7 +132,7 @@ def _score_moneyflow(conn, ts_code, trade_date):
     近5日主力净流入占比 + 股价不涨 = 高分
     """
     cur = conn.cursor()
-    
+
     # 近5日主力净流入
     cur.execute("""
         SELECT trade_date, main_net, net_mf_amount
@@ -139,10 +142,10 @@ def _score_moneyflow(conn, ts_code, trade_date):
     """, (ts_code, trade_date))
     rows = cur.fetchall()
     cur.close()
-    
+
     if not rows or len(rows) < 3:
         return 5, {'type': '资金流向', 'desc': '数据不足', 'score': 5}
-    
+
     # 计算5日主力净流入总额
     total_main_net = sum(float(r[1]) for r in rows)
     # 获取同期股价变化
@@ -159,14 +162,14 @@ def _score_moneyflow(conn, ts_code, trade_date):
         """, (ts_code, start_d, end_d))
         price_rows = cur.fetchall()
         cur.close()
-        
+
         price_chg_pct = 0
         if len(price_rows) >= 2:
             first_close = float(price_rows[0][1]) if price_rows[0][1] else 0
             last_close = float(price_rows[-1][1]) if price_rows[-1][1] else 0
             if first_close > 0:
                 price_chg_pct = (last_close - first_close) / first_close * 100
-        
+
         # 评分逻辑：持续净入 + 股价不涨 = 主力在吸筹 = 高分
         if total_main_net > 5000 and price_chg_pct < 3:
             score = 30
@@ -183,9 +186,9 @@ def _score_moneyflow(conn, ts_code, trade_date):
         else:
             score = 3
             desc = f"5日主力净流出{abs(total_main_net):.0f}万"
-        
+
         return score, {'type': '资金流向', 'desc': desc, 'score': score}
-    
+
     cur.close()
     return 5, {'type': '资金流向', 'desc': '数据不足', 'score': 5}
 
@@ -204,10 +207,10 @@ def _score_holder_concentration(conn, ts_code):
     """, (ts_code,))
     rows = cur.fetchall()
     cur.close()
-    
+
     if not rows or len(rows) < 2:
         return 10, {'type': '股东集中度', 'desc': '数据不足', 'score': 10}
-    
+
     # 检查最近4期股东人数变化
     decreases = 0
     total_change_pct = 0
@@ -216,7 +219,7 @@ def _score_holder_concentration(conn, ts_code):
         if r[2] and int(r[2]) < 0:  # holder_num_change < 0 = 减少
             decreases += 1
         total_change_pct += change_pct
-    
+
     if decreases >= 3 and total_change_pct < -5:
         score = 20
         desc = f"股东人数连续{decreases}期减少，累计降幅{abs(total_change_pct):.1f}%（筹码高度集中）"
@@ -229,7 +232,7 @@ def _score_holder_concentration(conn, ts_code):
     else:
         score = 5
         desc = "股东人数增加，筹码分散"
-    
+
     return score, {'type': '股东集中度', 'desc': desc, 'score': score}
 
 
@@ -305,16 +308,16 @@ def _score_volume_price(conn, ts_code, trade_date):
     """, (ts_code, trade_date))
     rows = cur.fetchall()
     cur.close()
-    
+
     if not rows or len(rows) < 5:
         return 7, {'type': '量价配合', 'desc': '数据不足', 'score': 7}
-    
+
     # 分析量价关系
     up_days = 0
     up_high_vol = 0
     down_days = 0
     down_low_vol = 0
-    
+
     for r in rows:
         pct = float(r[1]) if r[1] else 0
         vr = float(r[2]) if r[2] else 1.0
@@ -326,12 +329,12 @@ def _score_volume_price(conn, ts_code, trade_date):
             down_days += 1
             if vr < 1.0:
                 down_low_vol += 1
-    
+
     # 放量涨 + 缩量跌 = 理想洗盘
     if up_days > 0 and down_days > 0:
         up_vol_ratio = up_high_vol / up_days
         down_vol_ratio = down_low_vol / down_days
-        
+
         if up_vol_ratio > 0.6 and down_vol_ratio > 0.6:
             score = 15
             desc = f"量价完美配合：{up_days}涨中{up_high_vol}次放量，{down_days}跌中{down_low_vol}次缩量"
@@ -347,7 +350,7 @@ def _score_volume_price(conn, ts_code, trade_date):
     else:
         score = 7
         desc = "量价数据不足"
-    
+
     return score, {'type': '量价配合', 'desc': desc, 'score': score}
 
 
@@ -366,17 +369,17 @@ def _score_margin(conn, ts_code):
     """, (ts_code,))
     rows = cur.fetchall()
     cur.close()
-    
+
     if not rows or len(rows) < 10:
         return 5, {'type': '融资融券', 'desc': '数据不足', 'score': 5}
-    
+
     # 近20日净流入趋势
     recent_10 = [float(r[1]) for r in rows[:10]]
     prev_10 = [float(r[1]) for r in rows[10:]]
-    
+
     avg_recent = sum(recent_10) / len(recent_10)
     avg_prev = sum(prev_10) / len(prev_10)
-    
+
     if avg_recent > 1000 and avg_recent > avg_prev:
         score = 10
         desc = f"近10日平均净流入{avg_recent:.0f}万，较前期增加"
@@ -386,7 +389,7 @@ def _score_margin(conn, ts_code):
     else:
         score = 3
         desc = f"近10日平均净流出{abs(avg_recent):.0f}万"
-    
+
     return score, {'type': '融资融券', 'desc': desc, 'score': score}
 
 
@@ -445,7 +448,7 @@ def _determine_level(score, signals):
     has_holder_concentrate = any(s['type'] == '股东集中度' and s['score'] >= 15 for s in signals)
     has_inst_buy = any(s['type'] == '机构动向' and s['score'] >= 12 for s in signals)
     has_wash_pattern = any(s['type'] == '量价配合' and s['score'] >= 12 for s in signals)
-    
+
     if score >= 75 and has_strong_inflow and has_wash_pattern:
         return '即将拉升', '主力吸筹完毕，准备启动'
     elif score >= 60 and has_strong_inflow:
