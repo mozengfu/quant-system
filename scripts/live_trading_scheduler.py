@@ -62,7 +62,6 @@ def _get_dynamic_positions():
 
 def _is_trading_day(for_intraday=False):
     import datetime
-from pathlib import Path
     today = datetime.date.today()
     if today.weekday() >= 5: return False
     try:
@@ -413,6 +412,25 @@ def cmd_scan():
     logger.info("=== 交易调度器每日扫描开始 [%s] ===", mode_label)
 
     ml_candidates = []  # 防御初始化，防止在某些分支未赋值
+
+    # === 盘前清理: 过期旧信号, 新候选接管 ===
+    # 17:30 扫描前将前日所有"待执行"标记为"已过期"
+    # 确保次日 monitor 只看到今日新写入的信号, 不会消费旧的
+    # 17:30 后才会写入新信号, 因此旧信号存活整日但不会被消费
+    # (monitor 的 SQL 已按 DATE(created_at)=CURDATE() 过滤, 但清理更干净)
+    try:
+        import pymysql as _pm
+        _c = _pm.connect(**DB_CONFIG)
+        _cu = _c.cursor()
+        _cu.execute(
+            "UPDATE sim_signals SET status='已过期' WHERE status='待执行'"
+        )
+        _c.commit()
+        _cu.close()
+        _c.close()
+        logger.info("已清理旧待执行信号")
+    except Exception as _e:
+        logger.debug("清理旧信号失败(可能表空): %s", _e)
 
     # 1. 获取市场状态
     mkt_info = _get_realtime_market_state()
