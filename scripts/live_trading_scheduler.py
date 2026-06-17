@@ -8,12 +8,15 @@ import argparse
 import logging
 import os
 import sys
+from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+BASE_DIR = Path(__file__).parent.parent
 
 import pymysql
 
@@ -513,12 +516,18 @@ def cmd_scan():
                     shares = int(v11_budget / v11_slots / price / 100) * 100 if v11_budget > 0 else 0
                     if shares < 100:
                         continue
-                    record_signal("买入候选", ts_code, name, price, shares,
-                                f"周线板RPS+ML({pick.get('model_ver','V11.2')})",
-                                pick.get("ml_prob",0), pick.get("ml_score",0),
-                                _mp_buy.get("state","常态"),
-                                f"周线板RPS {pick.get('model_ver','V11.2')} 排序{pick.get('ml_score',0):.3f}",
-                                status="待执行")
+                    # 捕获 uk_sim_signals_executed 唯一索引冲突 (同日同股重复)
+                    # 旧代码会直接抛 IntegrityError 中断 scan 循环,导致后续候选丢失
+                    try:
+                        record_signal("买入候选", ts_code, name, price, shares,
+                                    f"周线板RPS+ML({pick.get('model_ver','V11.2')})",
+                                    pick.get("ml_prob",0), pick.get("ml_score",0),
+                                    _mp_buy.get("state","常态"),
+                                    f"周线板RPS {pick.get('model_ver','V11.2')} 排序{pick.get('ml_score',0):.3f}",
+                                    status="待执行")
+                    except Exception as _sig_err:
+                        logger.debug("[scan] 跳过重复信号 %s: %s", ts_code, _sig_err)
+                        continue
                     ml_candidates.append(pick)
                     logger.info("[周线板RPS+ML] 候选: %s %.2f ML=%.3f", name, price, pick.get('ml_score',0))
             # ---- 实时扫描已停用，全部资金归 V11.0 ----
@@ -950,7 +959,7 @@ def cmd_monitor():
     # === 心跳写入 (供 feishu_alerts.py 检测 monitor 是否在跑) ===
     # 放在最开始, 确保即使后续逻辑 crash, 心跳也会被记录
     try:
-        Path("data/monitor_heartbeat.txt").write_text(datetime.datetime.now().isoformat())
+        (BASE_DIR / "data" / "monitor_heartbeat.txt").write_text(datetime.datetime.now().isoformat())
     except Exception as e:
         logger.warning("心跳写入失败: %s", e)
 
