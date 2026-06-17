@@ -62,6 +62,7 @@ def _get_dynamic_positions():
 
 def _is_trading_day(for_intraday=False):
     import datetime
+from pathlib import Path
     today = datetime.date.today()
     if today.weekday() >= 5: return False
     try:
@@ -928,6 +929,13 @@ def cmd_monitor():
     1. 持仓监控 — 检查所有持仓，触发止损/止盈/超时自动卖出
     2. V11.0择时入场 — 监测盘后选出的候选股，满足量价条件时买入
     """
+    # === 心跳写入 (供 feishu_alerts.py 检测 monitor 是否在跑) ===
+    # 放在最开始, 确保即使后续逻辑 crash, 心跳也会被记录
+    try:
+        Path("data/monitor_heartbeat.txt").write_text(datetime.datetime.now().isoformat())
+    except Exception as e:
+        logger.warning("心跳写入失败: %s", e)
+
     if not _is_trading_day(for_intraday=True):
         logger.info("今日非交易日, 跳过监控")
         return
@@ -1019,6 +1027,13 @@ def cmd_monitor():
                 pass
         days_held = _count_trading_days_since(buy_date) if buy_date else 0
 
+        # === A股 T+1 检查: 今日买入当日不可卖出, 跳过止盈止损 ===
+        # 即便 QMT 拒单也是浪费一次下单, 直接 skip 干净
+        # 注意: buy_date 未知(QMT 有但 sim 没有的孤儿持仓)不 skip, 让止损和峰值止盈照常跑
+        if days_held == 0 and buy_date:
+            logger.info("⏸ %s 今日买入 (T+1), 跳过卖出检查", pos["stock_name"])
+            continue
+
         if price <= final_stop:
             # 实盘止损：必须市价单确保成交，不能用限价单挂单
             loss_pct = (price - cost_price) / cost_price * 100
@@ -1107,7 +1122,9 @@ def cmd_monitor():
         #       时才允许此规则触发, 亏损状态下走止损规则(ATR / -7%)。
         elif peak_profit >= 3.0 and peak_profit <= 8.0 and days_held >= 1 and cost_price > 0:
             trigger_price = cost_price * 1.03
-            if price <= trigger_price and price > cost_price:
+            # 修复: 主人 2026-06-17 反馈, 用 price >= cost_price (>= 而非 >)
+            # 打平也算"保住本钱", 浮亏才不卖
+            if price <= trigger_price and price >= cost_price:
                 should_sell = True
                 remain_pct = (price - cost_price) / cost_price * 100
                 sell_reason = f"兜底止盈(+3%): 峰值{peak_profit:.0f}%回落到剩{remain_pct:.1f}%"
