@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent.parent
 
+# 国信手续费: 佣金 0.0004% (5元起), 印花税 卖出 0.1% / 买入 0
+# 预算 buffer 0.1% 覆盖 0.04% 佣金 + 5元 min + 安全余量
+COMMISSION_BUFFER = 0.001
+
 import pymysql
 
 from quant_app.services.notification_service import send_feishu
@@ -416,22 +420,23 @@ def cmd_scan():
 
     ml_candidates = []  # 防御初始化，防止在某些分支未赋值
 
-    # === 盘前清理: 过期旧信号, 新候选接管 ===
-    # 17:30 扫描前将前日所有"待执行"标记为"已过期"
-    # 确保次日 monitor 只看到今日新写入的信号, 不会消费旧的
-    # 17:30 后才会写入新信号, 因此旧信号存活整日但不会被消费
-    # (monitor 的 SQL 已按 DATE(created_at)=CURDATE() 过滤, 但清理更干净)
+    # === 盘前清理: 仅清掉昨日及更早的"待执行"信号 ===
+    # 修复: 之前没日期过滤, 14:00 手动跑 scan 会清掉当日已写的信号,
+    #       导致 monitor 看不到早上的候选
+    # 加 DATE(created_at) < CURDATE() 后: 手动 scan 不会影响当日信号,
+    # 17:30 cron scan 时昨日信号自动被清, 今日新信号照常写入
     try:
         import pymysql as _pm
         _c = _pm.connect(**DB_CONFIG)
         _cu = _c.cursor()
         _cu.execute(
-            "UPDATE sim_signals SET status='已过期' WHERE status='待执行'"
+            "UPDATE sim_signals SET status='已过期' "
+            "WHERE status='待执行' AND DATE(created_at) < CURDATE()"
         )
         _c.commit()
         _cu.close()
         _c.close()
-        logger.info("已清理旧待执行信号")
+        logger.info("已清理旧待执行信号 (仅 < 今日)")
     except Exception as _e:
         logger.debug("清理旧信号失败(可能表空): %s", _e)
 
@@ -513,7 +518,9 @@ def cmd_scan():
                     price = pick.get("price", 0)
                     if price <= 0:
                         continue
-                    shares = int(v11_budget / v11_slots / price / 100) * 100 if v11_budget > 0 else 0
+                    # 预算扣 0.1% buffer 覆盖佣金+5元min (国信 0.0004% 佣金, 5元起)
+                    _v11_budget_eff = v11_budget * (1 - COMMISSION_BUFFER) if v11_budget > 0 else 0
+                    shares = int(_v11_budget_eff / v11_slots / price / 100) * 100 if _v11_budget_eff > 0 else 0
                     if shares < 100:
                         continue
                     # 捕获 uk_sim_signals_executed 唯一索引冲突 (同日同股重复)
@@ -614,6 +621,14 @@ def _monitor_v11_entry(executor, mkt_info, market_params):
     blocked, block_reason = _is_market_blocked(mkt_info)
     if blocked:
         logger.info("[V11入场] 市场阻断: %s, 跳过", block_reason)
+        return
+
+    # === 尾盘 cutoff: 14:55 后不开新仓 ===
+    # 收盘前 5 分钟信号质量差 (尾盘常拉/砸), T+1 风险高
+    import datetime as _dt
+    _n = _dt.datetime.now()
+    if _n.hour * 100 + _n.minute >= 1455:
+        logger.info("[V11入场] 尾盘不开新仓 (%02d:%02d), 跳过", _n.hour, _n.minute)
         return
 
     # 加载今日待执行 V11.0 信号
@@ -730,7 +745,8 @@ def _monitor_v11_entry(executor, mkt_info, market_params):
             continue
 
         # ── 执行买入 ──
-        shares = int(budget_per_slot / price / 100) * 100
+        # 预算扣 0.1% buffer 覆盖佣金+5元min
+        shares = int(budget_per_slot * (1 - COMMISSION_BUFFER) / price / 100) * 100
         if shares < 100:
             logger.info("[V11入场] %s 资金不足(需%.0f/预算%.0f)", ts_code, price*100, budget_per_slot)
             continue
@@ -824,6 +840,13 @@ def _monitor_board_rps_entry(executor, mkt_info, market_params):
         logger.info("[板RPS实时] 市场阻断: %s, 跳过", block_reason)
         return
 
+    # === 尾盘 cutoff: 14:55 后不开新仓 ===
+    import datetime as _dt
+    _n = _dt.datetime.now()
+    if _n.hour * 100 + _n.minute >= 1455:
+        logger.info("[板RPS实时] 尾盘不开新仓 (%02d:%02d), 跳过", _n.hour, _n.minute)
+        return
+
     # 获取当前持仓（去重用）
     current_holds = get_holding_positions_from_executor(executor)
     held_codes = {p["ts_code"] for p in current_holds}
@@ -850,9 +873,10 @@ def _monitor_board_rps_entry(executor, mkt_info, market_params):
         logger.info("[板RPS实时] 无合格信号")
         return
 
-    # 过滤: 只取实时分 >= 60 (BUY及以上) 且 ML概率 > 0
+    # 过滤: 实时分 >= 60 (BUY及以上) + ML 概率 >= 0.3 (不能是模型勉强)
+    # 修复: 之前 ml_prob > 0 等于不卡 ML, 0.001 概率也买入, 太松
     buys = [s for s in signals
-            if s['realtime_score'] >= 60 and s['ml_prob'] > 0
+            if s['realtime_score'] >= 60 and s['ml_prob'] >= 0.3
             and s['ts_code'] not in held_codes]
 
     if not buys:
@@ -896,12 +920,15 @@ def _monitor_board_rps_entry(executor, mkt_info, market_params):
         # 入场风控
         if pct_chg > 5 or pct_chg < -5:
             continue
+        # 涨停兜底 (分板块, 与 board_rps_scanner 对齐)
         pre_close = quote.get("昨收", price) or price
-        if price >= pre_close * 1.095:
+        limit_up_pct = 0.20 if (ts_code.startswith("3") or ts_code.startswith("688")) else 0.10
+        if price >= pre_close * (1 + limit_up_pct * 0.995):
             continue
 
         # 预算买股
-        shares = int(budget_per_slot / price / 100) * 100
+        # 预算扣 0.1% buffer 覆盖佣金+5元min
+        shares = int(budget_per_slot * (1 - COMMISSION_BUFFER) / price / 100) * 100
         if shares < 100:
             continue
 
