@@ -158,6 +158,34 @@ def check_position_alerts(alerted_state_file=None):
         except Exception:
             alerted = {}
 
+    # 实时监控心跳检查: 检测 cmd_monitor 是否在正常运行
+    # 除了处理正常持仓的止盈止损, 也要确保监控进程本身健康
+    # 仅工作日盘中检查 (9:15-15:00), 其他时段不报警
+    from datetime import date as _date
+    _today = _date.today()
+    _now = datetime.now()
+    if _today.weekday() < 5 and 915 <= _now.hour * 100 + _now.minute <= 1500:
+        _hb_file = BASE_DIR / "data" / "monitor_heartbeat.txt"
+        if _hb_file.exists():
+            try:
+                _hb_time_str = _hb_file.read_text().strip()
+                _hb_time = datetime.fromisoformat(_hb_time_str)
+                _elapsed = (_now - _hb_time).total_seconds()
+                if _elapsed > 600:  # 超过 10 分钟没有心跳 → 报警
+                    _hb_alert_key = "monitor_heartbeat"
+                    if alerted.get(_hb_alert_key) != str(_today):  # 每日去重
+                        send_feishu(
+                            "⚠️ 监控心跳异常\n\n"
+                            f"cmd_monitor 最后心跳: {_hb_time_str}\n"
+                            f"当前时间: {_now.isoformat()}\n"
+                            f"已停止运行 {_elapsed//60:.0f} 分钟\n"
+                            f"请检查: crontab / live_trading_scheduler.py 状态"
+                        )
+                        alerted[_hb_alert_key] = str(_today)
+                        logger.warning("监控心跳异常告警已发送, 最后心跳: %s", _hb_time_str)
+            except Exception as e:
+                logger.debug("心跳检查失败: %s", e)
+
     # 读取持仓
     if not POSITIONS_FILE.exists():
         logger.warning("positions.json 不存在")
