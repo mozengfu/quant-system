@@ -28,6 +28,38 @@ from scripts.sim_trading import _count_trading_days_since, record_signal, sync_p
 from scripts.sim_trading import get_market_params as _get_market_params
 
 
+def _get_dynamic_positions():
+    """根据市场状态动态分配 ML 和 Scanner 的仓位上限
+
+    原则:
+      - 趋势上涨(trend_up): ML追强势板块有效 → ML多
+      - 震荡(range): 短线技术因子有效 → Scanner多
+      - 趋势下跌(trend_down): 逆势选股ML更好 → 都减但ML略多
+      - 恐慌/过热: 都压到最低
+    """
+    try:
+        mp = _get_market_params()
+        state = mp.get("state", "range")
+    except Exception:
+        state = "range"
+
+    base_alloc = {
+        "trend_up":     (3, 2),   # ML追涨有效
+        "range":        (2, 3),   # 震荡市短线更优
+        "trend_down":   (2, 1),   # 都减仓，ML略可逆势
+        "panic":        (1, 0),   # 不开新仓
+        "overheated":   (2, 1),   # 减仓防回调
+    }
+    ml, sc = base_alloc.get(state, (2, 2))
+    # 不超过 market_state 的总仓位上限
+    max_pos = mp.get("max_positions", 3)
+    total = ml + sc
+    if total > max_pos:
+        ml = max(1, round(ml * max_pos / total))
+        sc = max(max_pos - ml, 0)
+    return (ml, sc)
+
+
 def _is_trading_day(for_intraday=False):
     import datetime
     today = datetime.date.today()
@@ -65,11 +97,57 @@ def get_holding_positions_from_executor(executor):
                  "position_id": getattr(p, "position_id", 0) or 0} for p in positions]
     except: return []
 
+def _log_trade_buy(strategy, ts_code, stock_name, price, shares):
+    """记录策略买入到 strategy_trade_log"""
+    try:
+        conn = pymysql.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO strategy_trade_log (strategy, ts_code, stock_name, buy_date, buy_price, shares, status) "
+            "VALUES (%s, %s, %s, CURDATE(), %s, %s, '持有')",
+            (strategy, ts_code, stock_name, price, shares)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.debug("记录买入日志失败: %s", e)
+
+
+def _log_trade_sell(ts_code, sell_price, shares):
+    """记录策略卖出 — 匹配最新一条持有中的买入记录，计算盈亏"""
+    try:
+        conn = pymysql.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, buy_price FROM strategy_trade_log "
+            "WHERE ts_code=%s AND status='持有' ORDER BY buy_date DESC LIMIT 1",
+            (ts_code,)
+        )
+        row = cur.fetchone()
+        if row:
+            log_id, buy_price = row
+            pnl = (sell_price - buy_price) * shares
+            pnl_pct = (sell_price - buy_price) / buy_price if buy_price > 0 else 0
+            cur.execute(
+                "UPDATE strategy_trade_log SET status='已平仓', sell_date=CURDATE(), "
+                "sell_price=%s, pnl=%s, pnl_pct=%s, hold_days=DATEDIFF(CURDATE(), buy_date) "
+                "WHERE id=%s",
+                (sell_price, pnl, pnl_pct, log_id)
+            )
+            conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.debug("记录卖出日志失败: %s", e)
+
+
 def _executor_sell_and_record(executor, pos, price, shares, label, reason):
     try:
         executor.sell(pos.get("position_id", 0) or 0, pos["ts_code"], price, shares)
         record_signal(label, pos["ts_code"], pos["stock_name"], price, shares,
                      "持仓管理", 0, 0, pos.get("market_state",""), reason, "已平仓")
+        _log_trade_sell(pos["ts_code"], price, shares)
     except Exception as e:
         logger.error("卖出失败: %s", e)
 
@@ -83,13 +161,14 @@ def _executor_market_sell_and_record(executor, pos, price, shares, label, reason
             if order and order.status not in ("rejected",):
                 record_signal(label, pos["ts_code"], pos["stock_name"], price, shares,
                              "持仓管理", 0, 0, pos.get("market_state",""), reason, "已平仓")
+                _log_trade_sell(pos["ts_code"], price, shares)
                 logger.info("市价卖出成功: %s %d股", pos["stock_name"], shares)
             else:
-                # 市价失败降级为限价卖出
                 logger.warning("市价卖出失败，降级为限价卖出: %s", pos["stock_name"])
                 executor.sell(pid, pos["ts_code"], price, shares)
                 record_signal(label, pos["ts_code"], pos["stock_name"], price, shares,
                              "持仓管理", 0, 0, pos.get("market_state",""), reason, "已平仓")
+                _log_trade_sell(pos["ts_code"], price, shares)
         else:
             executor.sell(pid, pos["ts_code"], price, shares)
     except Exception as e:
@@ -274,14 +353,17 @@ def _classify_holds_by_strategy(current_holds):
             else:
                 # 从 sim_signals 推断
                 cur.execute(
-                    "SELECT signal_type FROM sim_signals WHERE ts_code=%s AND status IN ('已执行','部分成交') ORDER BY id DESC LIMIT 1",
+                    "SELECT strategy FROM sim_signals WHERE ts_code=%s AND status IN ('已执行','部分成交') ORDER BY id DESC LIMIT 1",
                     (ts_code,))
                 row2 = cur.fetchone()
                 if row2 and row2[0]:
-                    if '扫描' in row2[0]:
+                    s = row2[0]
+                    if '扫描' in s or 'Scanner' in s:
                         scanner_holds += 1
-                    else:
+                    elif 'ML' in s or 'V11' in s:
                         ml_holds += 1
+                    else:
+                        unknown_holds += 1
                 else:
                     unknown_holds += 1
         cur.close()
@@ -329,6 +411,8 @@ def cmd_scan():
     mode_label = "实盘" if trading_config.is_live else "模拟"
     logger.info("=== 交易调度器每日扫描开始 [%s] ===", mode_label)
 
+    ml_candidates = []  # 防御初始化，防止在某些分支未赋值
+
     # 1. 获取市场状态
     mkt_info = _get_realtime_market_state()
     is_market_bear = mkt_info.get("is_bear", False)
@@ -343,35 +427,35 @@ def cmd_scan():
     ml_held_s, scanner_held_s, unknown_held_s = _classify_holds_by_strategy(current_holds)
     balance = executor.get_balance()
 
-    # 全部资金用于 V11.0（已停用实时扫描策略）
-    v11_ratio = 1.0
-    scanner_ratio = 0.0
     total_cap = 100000
     try:
         from quant_app.services.scanner_strategy import get_v11_capital
         total_cap = get_v11_capital()
     except Exception:
         pass
-    logger.info("资金分配: ML V11=100%% | 总资金=%.0f", total_cap)
+    logger.info("仓位分配: ML最多%d只 实时扫描最多%d只 | 总资金=%.0f",
+                *(_get_dynamic_positions()), total_cap)
 
     # 3. 选股（按策略分别计算可用仓位）
+    ml_max, scanner_max = _get_dynamic_positions()
     _mp_buy = _get_market_params()
-    max_pos_s = _mp_buy["max_positions"]
-    ml_max_s = max(1, round(max_pos_s * v11_ratio)) if v11_ratio > 0 else 0
-    scanner_max_s = max(1, round(max_pos_s * scanner_ratio)) if scanner_ratio > 0 else 0
-    ml_unknown_s = max(0, int(unknown_held_s * v11_ratio + 0.5))
-    scanner_unknown_s = unknown_held_s - ml_unknown_s
-    ml_avail_s = max(0, ml_max_s - ml_held_s - ml_unknown_s)
-    scanner_avail_s = max(0, scanner_max_s - scanner_held_s - scanner_unknown_s)
+    ml_avail_s = max(0, ml_max - ml_held_s)
+    scanner_avail_s = max(0, scanner_max - scanner_held_s)
     total_avail = ml_avail_s + scanner_avail_s
     if is_market_bear:
         logger.info("大盘逆市，仓位后续在风控阶段处理")
 
     if total_avail <= 0:
-        logger.info("双策略均已满仓(ML:%d/%d Scanner:%d/%d)", ml_held_s + unknown_held_s, ml_max_s, scanner_held_s + unknown_held_s, scanner_max_s)
+        ml_candidates = []
+        scanner_candidates = []
+        logger.info("双策略均已满仓(ML:%d/%d Scanner:%d/%d)", ml_held_s + unknown_held_s, ml_max, scanner_held_s + unknown_held_s, scanner_max)
     elif balance and balance.profit_pct < -0.15:
+        ml_candidates = []
+        scanner_candidates = []
         logger.warning("回撤断路器: %.1f%%", balance.profit_pct*100)
     elif not balance:
+        ml_candidates = []
+        scanner_candidates = []
         logger.warning("远程服务不可用")
     else:
         # 风控判定
@@ -396,11 +480,11 @@ def cmd_scan():
             scanner_candidates = []
         else:
             # ---- 策略A: ML V11 选股 ----
-            v11_slots = ml_avail_s if v11_ratio > 0 and ml_avail_s > 0 else 0
-            v11_budget = (balance.available or total_cap) * v11_ratio if balance and balance.available else 0
+            v11_slots = ml_avail_s if ml_avail_s > 0 else 0
+            v11_budget = (balance.available or total_cap) * 0.7 if balance and balance.available else 0
             ml_candidates = []
             if v11_slots > 0:
-                ml_raw = _factor_scan_recommend(top_n=max(v11_slots, 2))
+                ml_raw = _board_rps_scan_recommend(top_n=max(v11_slots, 2))
                 for pick in (ml_raw or [])[:v11_slots]:
                     ts_code = pick["ts_code"]
                     name = pick["name"]
@@ -411,22 +495,25 @@ def cmd_scan():
                     if shares < 100:
                         continue
                     record_signal("买入候选", ts_code, name, price, shares,
-                                f"纯ML({pick.get('model_ver','V11.2')})",
+                                f"周线板RPS+ML({pick.get('model_ver','V11.2')})",
                                 pick.get("ml_prob",0), pick.get("ml_score",0),
                                 _mp_buy.get("state","常态"),
-                                f"V11 {pick.get('model_ver','V11.2')} 排序{pick.get('ml_score',0):.3f}",
+                                f"周线板RPS {pick.get('model_ver','V11.2')} 排序{pick.get('ml_score',0):.3f}",
                                 status="待执行")
                     ml_candidates.append(pick)
-                    logger.info("[ML-V11] 候选: %s %.2f ML=%.3f", name, price, pick.get('ml_score',0))
-
+                    logger.info("[周线板RPS+ML] 候选: %s %.2f ML=%.3f", name, price, pick.get('ml_score',0))
             # ---- 实时扫描已停用，全部资金归 V11.0 ----
 
             # 汇总飞书通知
             all_candidates = ml_candidates
             if all_candidates and trading_config.is_real_trading_enabled:
-                lines = ["明日买入候选 (V11.0)"]
+                day_label = "今日" if __import__('datetime').datetime.now().hour < 15 else "明日"
+                lines = [f"{day_label}买入候选 (周线板RPS+V11.2)"]
                 if ml_candidates:
-                    lines.append("-- ML V11 --")
+                    if ml_candidates[0].get('model_ver', '') == 'V11.0(板RPS周线)':
+                        lines.append("-- 板RPS周线 Top5 + V11.2 ML --")
+                    else:
+                        lines.append("-- ML V11(降级) --")
                     for p in ml_candidates:
                         lines.append(f"  {p['name']}({p['ts_code']}) ML={p.get('ml_score',0):.3f}")
                 send_feishu("\n".join(lines))
@@ -473,6 +560,20 @@ def _factor_scan_recommend(top_n=3):
         return []
 
 
+def _board_rps_scan_recommend(top_n=3):
+    """周线板RPS + V11.2 ML 排序 — 替代5因子等权模型"""
+    try:
+        from quant_app.services.board_rps_scanner import board_scan_recommend
+        result = board_scan_recommend(top_n=max(top_n, 2))
+        if result is not None:
+            return result
+        logger.warning("周线板RPS扫描返回None，降级到纯ML")
+    except Exception as e:
+        logger.warning("周线板RPS扫描失败: %s，降级到纯ML", e)
+    return _v11_scan_recommend(top_n=top_n)
+
+
+
 def _monitor_v11_entry(executor, mkt_info, market_params):
     """5因子 候选股盘中择时入场 — 监测待执行信号，满足条件时买入
 
@@ -492,10 +593,10 @@ def _monitor_v11_entry(executor, mkt_info, market_params):
         conn_sig = pymysql.connect(**DB_CONFIG)
         cur_sig = conn_sig.cursor()
         cur_sig.execute(
-            "SELECT id, ts_code, price as rec_price, shares as rec_shares, score "
+            "SELECT id, ts_code, price as rec_price, shares as rec_shares, ml_prob, strategy "
             "FROM sim_signals "
             "WHERE (strategy LIKE '%%V11%%' OR strategy LIKE '%%因子%%' OR strategy LIKE '%%5因子%%') AND status='待执行' AND DATE(created_at)=CURDATE() "
-            "ORDER BY score DESC"
+            "ORDER BY ml_prob DESC"
         )
         pending = [dict(zip([d[0] for d in cur_sig.description], row)) for row in cur_sig.fetchall()]
         cur_sig.close()
@@ -513,13 +614,12 @@ def _monitor_v11_entry(executor, mkt_info, market_params):
     current_holds = get_holding_positions_from_executor(executor)
     held_codes = {p["ts_code"] for p in current_holds}
 
-    # 计算可用仓位
-    max_pos = market_params.get("max_positions", 3)
-    ml_held = sum(1 for p in current_holds
-                  if _classify_single_hold(p) == "ML")
-    avail_slots = max(0, max_pos - ml_held)
+    # 计算可用仓位（扣减全部持仓，不区分策略）
+    ml_max, _ = _get_dynamic_positions()
+    total_held = len(current_holds)
+    avail_slots = max(0, ml_max - total_held)
     if avail_slots <= 0:
-        logger.info("[V11入场] ML仓位已满 (%d/%d)", ml_held, max_pos)
+        logger.info("[V11入场] 仓位已满 (%d/%d)", total_held, ml_max)
         return
 
     # 计算每只预算
@@ -569,10 +669,11 @@ def _monitor_v11_entry(executor, mkt_info, market_params):
             logger.info("[入场] %s 跌%.1f%%，等企稳", ts_code, pct_chg)
             continue
 
-        # 3. 非涨停
-        limit_up = pre_close * 1.10
+        # 3. 非涨停（科创20%/创业板20%/主板10%）
+        limit_up_pct = 0.20 if ts_code.startswith("3") or ts_code.startswith("688") else 0.10
+        limit_up = pre_close * (1 + limit_up_pct)
         if price >= limit_up * 0.995:
-            logger.info("[入场] %s 已涨停，跳过", ts_code)
+            logger.info("[入场] %s 已涨停(%.0f%%), 跳过", ts_code, limit_up_pct * 100)
             continue
 
         # 4. 分时条件：回踩开盘价 / 回抽均价线 / 放量启动 满足其一即可
@@ -620,10 +721,13 @@ def _monitor_v11_entry(executor, mkt_info, market_params):
 
         logger.info("[V11入场] 买入: %s(%s) %.2f %d股 %s", name, ts_code, price, shares, reason)
 
-        order = executor.buy(ts_code, name, market, price, shares, strategy="5因子择时")
+        strategy_label = sig.get("strategy", "周线板RPS+ML")
+        order = executor.buy(ts_code, name, market, price, shares, strategy=strategy_label)
         if order is None or getattr(order, "status", None) in ("rejected", "failed"):
             logger.warning("[V11入场] 买入失败: %s", ts_code)
             continue
+
+        _log_trade_buy(strategy_label, ts_code, name, price, shares)
 
         # 更新 sim_signals 状态
         try:
@@ -638,8 +742,8 @@ def _monitor_v11_entry(executor, mkt_info, market_params):
         except Exception:
             pass
 
-        _sync_position_after_buy(ts_code, name, market, shares, price)
-        _notify_trade("买入", name, ts_code, price, shares, f"V11.0盘中择时 {reason}")
+        _sync_position_after_buy(ts_code, name, market, shares, price, strategy_label, sig.get("ml_prob", 0))
+        _notify_trade("买入", name, ts_code, price, shares, f"V11择时 {reason}")
         held_codes.add(ts_code)
         bought += 1
         available_cash -= shares * price
@@ -658,19 +762,167 @@ def _classify_single_hold(pos):
         cur_c.execute(
             "SELECT strategy FROM sim_positions WHERE ts_code=%s ORDER BY id DESC LIMIT 1", (ts_code,))
         row = cur_c.fetchone()
+        if not row or not row[0]:
+            # fallback: 从 sim_signals 取 strategy
+            cur_c.execute(
+                "SELECT strategy FROM sim_signals WHERE ts_code=%s AND status IN ('已执行','部分成交') ORDER BY id DESC LIMIT 1",
+                (ts_code,))
+            row = cur_c.fetchone()
         cur_c.close(); conn_c.close()
         if row and row[0]:
             strategy = row[0] or strategy
     except Exception:
         pass
+    if "扫描" in strategy or "Scanner" in strategy:
+        return "scanner"
     if "ML" in strategy or "V11" in strategy:
         return "ML"
     return "other"
 
 
+def _monitor_board_rps_entry(executor, mkt_info, market_params):
+    """板RPS候选股盘中实时扫描入场 — 30%仓位
+
+    流程:
+      1. 获取板RPS候选股 → ML排序
+      2. 拉QMT实时行情 → 实时因子评分（量能/动量/趋势/盘口等）
+      3. 综合分排序 → 取符合条件的买入
+
+    与 _monitor_v11_entry 共用相同的仓位/风控框架。
+    """
+    # 市场阻断检查
+    blocked, block_reason = _is_market_blocked(mkt_info)
+    if blocked:
+        logger.info("[板RPS实时] 市场阻断: %s, 跳过", block_reason)
+        return
+
+    # 获取当前持仓（去重用）
+    current_holds = get_holding_positions_from_executor(executor)
+    held_codes = {p["ts_code"] for p in current_holds}
+
+    # 计算板RPS实时扫描可用仓位（上限 scanner_max，且不超总剩余）
+    ml_max, scanner_max = _get_dynamic_positions()
+    scanner_held = sum(1 for p in current_holds
+                       if _classify_single_hold(p) == "scanner")
+    total_avail = max(0, ml_max + scanner_max - len(current_holds))
+    avail_slots = max(0, min(scanner_max - scanner_held, total_avail))
+    if avail_slots <= 0:
+        logger.debug("[板RPS实时] 仓位已满 (%d/%d)", scanner_held, scanner_max)
+        return
+
+    # 获取板RPS实时信号
+    try:
+        from quant_app.services.board_rps_scanner import board_rps_realtime_signals
+        signals = board_rps_realtime_signals()
+    except Exception as e:
+        logger.warning("[板RPS实时] 获取信号失败: %s", e)
+        return
+
+    if not signals:
+        logger.info("[板RPS实时] 无合格信号")
+        return
+
+    # 过滤: 只取实时分 >= 60 (BUY及以上) 且 ML概率 > 0
+    buys = [s for s in signals
+            if s['realtime_score'] >= 60 and s['ml_prob'] > 0
+            and s['ts_code'] not in held_codes]
+
+    if not buys:
+        logger.info("[板RPS实时] 无触发买入条件的候选")
+        return
+
+    # 预算
+    balance = executor.get_balance()
+    available_cash = (balance.available or 0) if balance else 0
+    # 50% 资金预算 (2026-06-16 调整: 0.3→0.5, 生益科技179元股价单手需1.8万, 0.3预算10694元买不起1手)
+    scanner_budget = available_cash * 0.5
+    if scanner_budget < 5000:
+        logger.info("[板RPS实时] 可用资金不足 %.0f", scanner_budget)
+        return
+    budget_per_slot = scanner_budget / max(avail_slots, 1)
+
+    bought = 0
+    for sig in buys:
+        if bought >= avail_slots:
+            break
+
+        ts_code = sig['ts_code']
+        if ts_code in held_codes:
+            continue
+
+        code = ts_code.split(".")[0]
+        market = "SH" if ts_code.startswith("6") else "SZ"
+
+        # 获取最新实时行情
+        quote = _get_qmt_realtime(code, market)
+        if not quote:
+            continue
+
+        price = quote.get("现价", 0)
+        if price <= 0:
+            continue
+
+        pct_chg = quote.get("涨跌幅", 0) or 0
+        vol_ratio = quote.get("量比", 1.0) or 1.0
+
+        # 入场风控
+        if pct_chg > 5 or pct_chg < -5:
+            continue
+        pre_close = quote.get("昨收", price) or price
+        if price >= pre_close * 1.095:
+            continue
+
+        # 预算买股
+        shares = int(budget_per_slot / price / 100) * 100
+        if shares < 100:
+            continue
+
+        strategy_tag = "板RPS实时"
+        reason = (f"[{strategy_tag}]实时扫描: ML分{sig['ml_score']:.3f} "
+                  f"实时分{sig['realtime_score']} 量比{vol_ratio:.1f}")
+
+        order = executor.buy(
+            ts_code, sig['name'], market, price, shares,
+            strategy=strategy_tag,
+            ml_prob=sig['ml_prob'],
+            enhanced_score=sig['combined_score'],
+            market_state=mkt_info.get('state_name', ''),
+            reason=reason,
+        )
+        if order:
+            bought += 1
+            held_codes.add(ts_code)
+            _log_trade_buy(strategy_tag, ts_code, sig['name'], price, shares)
+            logger.info("[板RPS实时] 买入 %s(%s) %.0f股@%.2f 分%.1f",
+                        sig['name'], ts_code, shares, price, sig['combined_score'])
+            # 写 sim_signals
+            try:
+                conn_sig = pymysql.connect(**DB_CONFIG)
+                cur_sig = conn_sig.cursor()
+                from datetime import datetime; today = datetime.now().strftime('%Y-%m-%d')
+                cur_sig.execute(
+                    "INSERT IGNORE INTO sim_signals "
+                    "(ts_code, stock_name, signal_date, signal_type, strategy, enhanced_score, "
+                    " ml_prob, price, shares, status, reason, created_at) "
+                    "VALUES (%s,%s,%s,'买入',%s,%s,%s,%s,%s,'已执行',%s,NOW())",
+                    (ts_code, sig['name'], today, strategy_tag,
+                     sig['combined_score'], sig['ml_prob'], price, shares, reason)
+                )
+                conn_sig.commit()
+                cur_sig.close()
+                conn_sig.close()
+            except Exception:
+                pass
+            _sync_position_after_buy(ts_code, sig['name'], market, shares, price, strategy_tag, sig['ml_prob'])
+            _notify_trade("买入", sig['name'], ts_code, price, shares, strategy_tag)
+
+    logger.info("[板RPS实时] 本轮买入 %d/%d 只 (预算%.0f/只)",
+                bought, len(buys), budget_per_slot)
+
+
 def cmd_monitor():
     """
-    盘中持仓监控 + V11.0候选股择时入场
+    盘中持仓监控 + V11.0候选股择时入场 + 板RPS实时扫描
 
     每5分钟运行一次:
     1. 持仓监控 — 检查所有持仓，触发止损/止盈/超时自动卖出
@@ -740,16 +992,31 @@ def cmd_monitor():
         else:
             stop_price = round(cost_price * (1 + sl_pct), 2)
 
-        # === 实盘硬性兜底止损线（C3.0 -5%）===
+        # === 实盘硬性兜底止损线（主人 2026-06-16 改: -5%→-7%）===
         # 之前依赖 sim_positions.stop_loss，但实盘持仓(QMT同步)经常为 0 → 止损失效
-        # 现在用主人规则硬性兜底：成本 × 0.95 必触发，与上面计算的 stop_price 取更低者
-        hard_stop = round(cost_price * 0.95, 2)
+        # 现在用主人规则硬性兜底：成本 × 0.93 必触发，与上面计算的 stop_price 取更低者
+        hard_stop = round(cost_price * 0.93, 2)
         final_stop = min(stop_price, hard_stop)
         if final_stop < stop_price:
             logger.info("🛡 硬性兜底止损覆盖: ATR/动态止损 %.2f → C3.0 兜底 %.2f",
                         stop_price, final_stop)
 
         buy_date = pos.get("buy_date")
+        # QMT 实盘不返回 buy_date，从 sim_positions 补查
+        if not buy_date:
+            try:
+                conn_bd = pymysql.connect(**DB_CONFIG)
+                cur_bd = conn_bd.cursor()
+                cur_bd.execute(
+                    "SELECT buy_date FROM sim_positions WHERE ts_code=%s AND status='HOLD' ORDER BY buy_date DESC LIMIT 1",
+                    (pos["ts_code"],))
+                row_bd = cur_bd.fetchone()
+                cur_bd.close()
+                conn_bd.close()
+                if row_bd and row_bd[0]:
+                    buy_date = str(row_bd[0])
+            except Exception:
+                pass
         days_held = _count_trading_days_since(buy_date) if buy_date else 0
 
         if price <= final_stop:
@@ -797,21 +1064,54 @@ def cmd_monitor():
         sell_reason = ""
         sell_label = ""
 
-        # a) ATR移动止盈：峰值盈利>5%后，回落2×ATR即锁利
-        if peak_profit > 5.0 and atr_val and atr_val > 0 and cost_price > 0:
-            trail_dist = 2.0 * atr_val / cost_price  # ATR回落比例
-            trail_min = 0.03  # 最低3%回落兜底
-            trail_dist = max(trail_dist, trail_min)
-            if price <= peak_price * (1 - trail_dist):
+        # a) 峰值止盈(分级): 峰值盈利>8%后才进锁利区
+        #    第一档(峰值<20%): 回落到"剩8%利润"就锁利,稳赚不贪
+        #    第二档(峰值>=20%): 锁定"剩30%利润",让利润跑(大牛股也能稳赚30%)
+        #    设计: 主人 2026-06-16 改, 解决"大牛股卖在8%利润"的盲点
+        #    修复: 2026-06-16 11:04 bug - 烽火峰值5.2%被误判,必须先到8%才进锁利
+        #    改进: 2026-06-16 11:20 第二档从"回吐30%"改为"剩30%利润",避免大牛股卖在5%
+        if peak_profit > 8.0 and cost_price > 0:
+            if peak_profit < 20.0:
+                # 第一档: 小涨稳赚
+                profit_floor_pct = 8.0
+                trigger_price = cost_price * (1 + profit_floor_pct / 100)
+                regime = "小涨稳赚"
+            else:
+                # 第二档: 大涨放飞, ATR 动态 trailing stop (让利润真正跑)
+                # 修复: 主人 2026-06-17 反馈, 旧版 trigger=cost*1.30 是绝对地板
+                #   在 peak 触达 20% 时 price 已低于 30% 地板, 立即触发
+                #   反而比第一档还早卖, 失去了"让利润跑"的意义
+                # 改为 peak - 2*ATR 动态 trailing, 与止损用同一 ATR 系数
+                if atr_val and atr_val > 0:
+                    trigger_price = round(peak_price - 2 * atr_val, 2)
+                else:
+                    # ATR 不可用时兜底: peak 回吐 8% 绝对值
+                    trigger_price = round(peak_price * 0.92, 2)
+                regime = "大涨放飞"
+            if price <= trigger_price:
                 should_sell = True
-                sell_reason = f"ATR移动止盈: 峰值{peak_profit:.0f}%回落{trail_dist*100:.1f}%"
-                sell_label = "移动止盈"
-        elif peak_profit > 5.0:
-            # ATR不可用时降级为固定3.5%
-            if price <= peak_price * 0.965:
+                remain_pct = (price - cost_price) / cost_price * 100
+                if regime == "小涨稳赚":
+                    sell_reason = (f"峰值止盈[小涨稳赚]: 峰值{peak_profit:.0f}%回落到剩{remain_pct:.1f}% "
+                                  f"(<8%锁利线)")
+                else:
+                    sell_reason = (f"峰值止盈[大涨放飞]: 峰值{peak_profit:.0f}%回落到剩{remain_pct:.1f}% "
+                                  f"(<30%锁利线)")
+                sell_label = "峰值止盈"
+
+        # a2) 兜底固定止盈+3%: 峰值到过3%但未到8%, 回落到3%就锁利
+        #     意图: 解决"涨了一点没跑, 最后亏损卖出"的问题
+        #     修复: 主人 2026-06-17 反馈, 旧版没检查当前价是否高于成本,
+        #       导致 600183 这类股票在 -0.55% 浮亏位被错误触发卖出。
+        #       加 price > cost_price 后: 仅在当前价仍高于成本(浮盈)
+        #       时才允许此规则触发, 亏损状态下走止损规则(ATR / -7%)。
+        elif peak_profit >= 3.0 and peak_profit <= 8.0 and days_held >= 1 and cost_price > 0:
+            trigger_price = cost_price * 1.03
+            if price <= trigger_price and price > cost_price:
                 should_sell = True
-                sell_reason = f"移动止盈: 峰值{peak_profit:.0f}%回落至{pct_chg:.1f}%"
-                sell_label = "移动止盈"
+                remain_pct = (price - cost_price) / cost_price * 100
+                sell_reason = f"兜底止盈(+3%): 峰值{peak_profit:.0f}%回落到剩{remain_pct:.1f}%"
+                sell_label = "兜底止盈"
 
         # b) 超时卖出：持有>=5天且盈利<3%（弱股不耗时间）
         elif days_held >= 5 and pct_chg < 3.0:
@@ -839,29 +1139,10 @@ def cmd_monitor():
     # ====== 5因子 候选股盘中择时入场 ======
     _monitor_v11_entry(executor, mkt_info, market_params)
 
-    # 飞书通知：持仓状态（每30分钟一次，避免刷屏）
-    if trading_config.is_real_trading_enabled:
-        import time as _time
-        now_ts = int(_time.time())
-        last_notify = getattr(cmd_monitor, "_last_feishu_ts", 0)
-        if now_ts - last_notify >= 3600:  # 1小时
-            cmd_monitor._last_feishu_ts = now_ts
-            # 重新获取最新持仓（包含本轮盘中扫描买入的）
-            latest_positions = get_holding_positions_from_executor(executor)
-            if latest_positions:
-                total_mv = sum(float(p.get("market_value", 0)) for p in latest_positions)
-                total_pnl = sum(float(p.get("profit_loss", 0)) for p in latest_positions)
-                lines_msg = [f"持仓监控 ({len(latest_positions)}只) 总市值{total_mv:.0f}"]
-                for p in latest_positions:
-                    name = p.get("stock_name", p.get("name", ""))
-                    code = p.get("ts_code", "").split(".")[0]
-                    qty = int(p.get("shares", 0))
-                    cost = float(p.get("cost_price", 0))
-                    cur = float(p.get("current_price", 0))
-                    pnl = float(p.get("profit_loss", 0))
-                    pnl_str = f"{pnl:+.0f}"
-                    lines_msg.append(f"  {name}({code}) {qty}股 成本{cost:.2f} 现价{cur:.2f} {pnl_str}")
-                send_feishu("\n".join(lines_msg))
+    # ====== 板RPS候选股实时扫描入场（30%仓位）======
+    _monitor_board_rps_entry(executor, mkt_info, market_params)
+
+    # 飞书通知已默认由各买卖操作(_notify_trade)触发，不再定时推送持仓状态
     logger.info("=== 持仓监控完成 [%s] ===", mode_label)
 
 
