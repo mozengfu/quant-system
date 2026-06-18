@@ -663,6 +663,7 @@ def _monitor_v11_entry(executor, mkt_info, market_params):
         return
 
     if not pending:
+        logger.info("[V11入场] 今日无待执行信号 (scan 17:30后才会有)")
         return
 
     logger.info("[V11入场] %d只候选股待择时入场", len(pending))
