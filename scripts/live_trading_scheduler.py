@@ -8,6 +8,7 @@ import argparse
 import logging
 import os
 import sys
+import datetime
 from pathlib import Path
 
 import numpy as np
@@ -32,6 +33,7 @@ from quant_app.utils.config import get_db_config
 DB_CONFIG = get_db_config()
 
 from scripts.sim_trading import _count_trading_days_since, record_signal, sync_positions_to_json
+from scripts.intraday_t_monitor import main as intraday_t_main, TConfig
 from scripts.sim_trading import get_market_params as _get_market_params
 
 
@@ -542,7 +544,7 @@ def cmd_scan():
             # 汇总飞书通知
             all_candidates = ml_candidates
             if all_candidates and trading_config.is_real_trading_enabled:
-                day_label = "今日" if __import__('datetime').datetime.now().hour < 15 else "明日"
+                day_label = "今日" if datetime.datetime.now().hour < 15 else "明日"
                 lines = [f"{day_label}买入候选 (周线板RPS+V11.2)"]
                 if ml_candidates:
                     if ml_candidates[0].get('model_ver', '') == 'V11.0(板RPS周线)':
@@ -554,6 +556,18 @@ def cmd_scan():
                 send_feishu("\n".join(lines))
 
     logger.info("=== 扫描完成 [%s] ML=%d ===", mode_label, len(ml_candidates))
+
+    # ---- 更新 QMT 股票池（基于RPS板块选股，盘后自动同步到 QMT）----
+    try:
+        from quant_app.services.strategy_service import scan_daily_pool
+        pool_result = scan_daily_pool()
+        if pool_result and 'error' not in pool_result:
+            logger.info("QMT股票池已更新: %d只候选 → stockpool.json 已同步",
+                       pool_result.get("total_candidates", 0))
+        else:
+            logger.warning("QMT股票池更新失败: %s", pool_result.get("error", "未知"))
+    except Exception as e:
+        logger.warning("QMT股票池扫描异常: %s", e)
 
 def _factor_scan_recommend(top_n=3):
     """5因子等权模型选股 — 替代旧的 ML V11 预测"""
@@ -1538,12 +1552,31 @@ def _v11_scan_recommend(top_n=3, min_score=0):
     return result
 
 
+
+def cmd_t_monitor():
+    """日内做T监控入口"""
+    import sys
+    mode = os.environ.get("T_MONITOR_MODE", "dryrun")
+    once = "--once" in sys.argv
+    config = TConfig()
+    logger.info("启动日内做T监控: mode=%s, once=%s", mode, once)
+
+    executor = None
+    if mode in ("sim",):
+        from quant_app.trading.modes.sim_executor import SimExecutor
+        executor = SimExecutor()
+    elif mode == "real":
+        executor = get_executor()
+
+    intraday_t_main(mode=mode, once=once, shared_executor=executor)
+
+
 def main():
     parser = argparse.ArgumentParser(description="交易调度器（模拟/实盘）")
     parser.add_argument(
         "action",
-        choices=["scan", "morning", "monitor", "status", "init", "sync", "ping", "keepalive"],
-        help="scan=盘后选股(记录候选), morning=早盘择时买入(9:35), monitor=盘中监控, status=账户状态, init=初始化, sync=同步JSON, ping=远程连接健康检查, keepalive=保活",
+        choices=["scan", "morning", "monitor", "status", "init", "sync", "ping", "keepalive", "t_monitor"],
+        help="scan=盘后选股(记录候选), morning=早盘择时买入(9:35), monitor=盘中监控, status=账户状态, init=初始化, sync=同步JSON, ping=远程连接健康检查, keepalive=保活, t_monitor=日内做T监控",
     )
     args = parser.parse_args()
 
@@ -1569,6 +1602,7 @@ def main():
         "sync": cmd_sync,
         "ping": cmd_ping,
         "keepalive": cmd_keepalive,
+        "t_monitor": cmd_t_monitor,
     }
     action_map[args.action]()
 
