@@ -23,6 +23,9 @@ BASE_DIR = Path(__file__).parent.parent
 # 预算 buffer 0.1% 覆盖 0.04% 佣金 + 5元 min + 安全余量
 COMMISSION_BUFFER = 0.001
 
+# 每日扫描候选数量 (不随仓位变动,多产生候选让 monitor 择时)
+ML_CANDIDATES_COUNT = 3
+
 import pymysql
 
 from quant_app.services.notification_service import send_feishu
@@ -481,8 +484,8 @@ def cmd_scan():
             v11_budget = (balance.available or total_cap) if balance and balance.available else 0
             ml_candidates = []
             if v11_slots > 0:
-                ml_raw = _board_rps_scan_recommend(top_n=max(v11_slots, 2))
-                for pick in (ml_raw or [])[:v11_slots]:
+                ml_raw = _board_rps_scan_recommend(top_n=ML_CANDIDATES_COUNT)
+                for pick in (ml_raw or [])[:ML_CANDIDATES_COUNT]:
                     ts_code = pick["ts_code"]
                     name = pick["name"]
                     price = pick.get("price", 0)
