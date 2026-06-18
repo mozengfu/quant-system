@@ -1192,7 +1192,10 @@ def cmd_monitor():
             trigger_price = cost_price * 1.03
             # 修复: 主人 2026-06-17 反馈, 用 price >= cost_price (>= 而非 >)
             # 打平也算"保住本钱", 浮亏才不卖
-            if price <= trigger_price and price >= cost_price:
+            # 修复: 2026-06-18 600183 盘中从 -2.2% 反弹到 +0.4% 就被卖
+            #   peak 5.4% 是昨天的, 今天日内最高只到 +0.4%, 从未到 3%
+            #   加 today_high >= trigger_price 确保只有今天到过 3% 以上的才算"回落到"
+            if price <= trigger_price and price >= cost_price and today_high >= trigger_price:
                 should_sell = True
                 remain_pct = (price - cost_price) / cost_price * 100
                 sell_reason = f"兜底止盈(+3%): 峰值{peak_profit:.0f}%回落到剩{remain_pct:.1f}%"
