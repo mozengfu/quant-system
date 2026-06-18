@@ -478,7 +478,7 @@ def cmd_scan():
         else:
             # ---- 策略A: ML V11 选股 ----
             v11_slots = ml_avail_s if ml_avail_s > 0 else 0
-            v11_budget = (balance.available or total_cap) * 0.7 if balance and balance.available else 0
+            v11_budget = (balance.available or total_cap) if balance and balance.available else 0
             ml_candidates = []
             if v11_slots > 0:
                 ml_raw = _board_rps_scan_recommend(top_n=max(v11_slots, 2))
@@ -870,7 +870,7 @@ def _monitor_board_rps_entry(executor, mkt_info, market_params):
     balance = executor.get_balance()
     available_cash = (balance.available or 0) if balance else 0
     # 50% 资金预算 (2026-06-16 调整: 0.3→0.5, 生益科技179元股价单手需1.8万, 0.3预算10694元买不起1手)
-    scanner_budget = available_cash * 0.5
+    scanner_budget = available_cash
     if scanner_budget < 5000:
         logger.info("[板RPS实时] 可用资金不足 %.0f", scanner_budget)
         return
