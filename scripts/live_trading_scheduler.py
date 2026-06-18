@@ -335,51 +335,19 @@ def _get_realtime_market_state():
 
 
 def _classify_holds_by_strategy(current_holds):
-    """将QMT持仓按策略分类(ML/Scanner/unknown)，综合sim_positions和sim_signals"""
+    """将QMT持仓按策略分类(ML/Scanner/unknown)，复用 _classify_single_hold"""
     ml_holds = 0
     scanner_holds = 0
     unknown_holds = 0
 
-    # 从 sim_positions 获取策略标签
-    try:
-        import pymysql
-        conn = pymysql.connect(**DB_CONFIG)
-        cur = conn.cursor()
-        for h in current_holds:
-            ts_code = h["ts_code"]
-            cur.execute(
-                "SELECT strategy FROM sim_positions WHERE ts_code=%s AND status='HOLD' ORDER BY id DESC LIMIT 1",
-                (ts_code,))
-            row = cur.fetchone()
-            if row and row[0]:
-                s = row[0]
-                if '扫描' in s or 'Scanner' in s:
-                    scanner_holds += 1
-                elif 'ML' in s or 'V11' in s:
-                    ml_holds += 1
-                else:
-                    unknown_holds += 1
-            else:
-                # 从 sim_signals 推断
-                cur.execute(
-                    "SELECT strategy FROM sim_signals WHERE ts_code=%s AND status IN ('已执行','部分成交') ORDER BY id DESC LIMIT 1",
-                    (ts_code,))
-                row2 = cur.fetchone()
-                if row2 and row2[0]:
-                    s = row2[0]
-                    if '扫描' in s or 'Scanner' in s:
-                        scanner_holds += 1
-                    elif 'ML' in s or 'V11' in s:
-                        ml_holds += 1
-                    else:
-                        unknown_holds += 1
-                else:
-                    unknown_holds += 1
-        cur.close()
-        conn.close()
-    except Exception as e:
-        logger.warning("策略分类持仓失败: %s", e)
-        unknown_holds = len(current_holds)
+    for h in current_holds:
+        c = _classify_single_hold(h)
+        if c == "ML":
+            ml_holds += 1
+        elif c == "scanner":
+            scanner_holds += 1
+        else:
+            unknown_holds += 1
 
     logger.info("持仓分类: ML=%d Scanner=%d 未知=%d (总计%d)", ml_holds, scanner_holds, unknown_holds, len(current_holds))
     return ml_holds, scanner_holds, unknown_holds
@@ -832,7 +800,7 @@ def _classify_single_hold(pos):
             strategy = row[0] or strategy
     except Exception:
         pass
-    if "扫描" in strategy or "Scanner" in strategy:
+    if "扫描" in strategy or "Scanner" in strategy or "板RPS" in strategy:
         return "scanner"
     if "ML" in strategy or "V11" in strategy:
         return "ML"
