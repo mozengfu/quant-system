@@ -8,6 +8,7 @@ import time
 import uuid
 from collections import deque
 from datetime import datetime
+import threading
 
 from quant_app.utils.config import (
     ALIYUN_SMS_ACCESS_KEY,
@@ -28,6 +29,7 @@ _FEISHU_LAST_TS = 0.0
 _FEISHU_WINDOW = 60.0
 _FEISHU_WINDOW_MAX = 10
 _FEISHU_DEDUP_WINDOW = 30.0
+_FEISHU_LOCK = threading.Lock()  # 修复: 多线程并发推送时保护 _FEISHU_RECENT 等全局变量
 
 logger = logging.getLogger(__name__)
 
@@ -120,18 +122,19 @@ def send_feishu(message):
     now = time.time()
     msg_hash = hash(message)
 
-    # 1. 同消息 30s 内去重
-    if msg_hash == _FEISHU_LAST_HASH and (now - _FEISHU_LAST_TS) < _FEISHU_DEDUP_WINDOW:
-        logger.debug("飞书去重: 相同消息 30s 内已发送, 跳过 (msg=%r...)", message[:40])
-        return False
+    with _FEISHU_LOCK:
+        # 1. 同消息 30s 内去重
+        if msg_hash == _FEISHU_LAST_HASH and (now - _FEISHU_LAST_TS) < _FEISHU_DEDUP_WINDOW:
+            logger.debug("飞书去重: 相同消息 30s 内已发送, 跳过 (msg=%r...)", message[:40])
+            return False
 
-    # 2. 60s 滑窗限流
-    while _FEISHU_RECENT and (now - _FEISHU_RECENT[0][0]) > _FEISHU_WINDOW:
-        _FEISHU_RECENT.popleft()
-    if len(_FEISHU_RECENT) >= _FEISHU_WINDOW_MAX:
-        logger.warning("飞书限流: 60s 内已发 %d 条, 跳过 (msg=%r...)",
-                      len(_FEISHU_RECENT), message[:40])
-        return False
+        # 2. 60s 滑窗限流
+        while _FEISHU_RECENT and (now - _FEISHU_RECENT[0][0]) > _FEISHU_WINDOW:
+            _FEISHU_RECENT.popleft()
+        if len(_FEISHU_RECENT) >= _FEISHU_WINDOW_MAX:
+            logger.warning("飞书限流: 60s 内已发 %d 条, 跳过 (msg=%r...)",
+                          len(_FEISHU_RECENT), message[:40])
+            return False
 
     try:
         import ssl
@@ -143,9 +146,10 @@ def send_feishu(message):
         result = json.loads(resp.read().decode())
         if result.get("StatusCode") == 0 or result.get("code") == 0:
             logger.info("飞书消息已发送")
-            _FEISHU_RECENT.append((now, msg_hash))
-            _FEISHU_LAST_HASH = msg_hash
-            _FEISHU_LAST_TS = now
+            with _FEISHU_LOCK:
+                _FEISHU_RECENT.append((now, msg_hash))
+                _FEISHU_LAST_HASH = msg_hash
+                _FEISHU_LAST_TS = now
         else:
             logger.warning(f"飞书发送返回异常: {result}")
         return True

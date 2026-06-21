@@ -418,17 +418,29 @@ class RemoteTraderExecutor(AbstractTradeExecutor):
             cur.close()
             conn.close()
 
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            # 批量并行拉腾讯行情，避免 N 只持仓串行 HTTP
+            quote_futures = {}
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                for row in rows:
+                    (pid, ts_code, name, market, qty, cost, cur_price,
+                     stop_loss, take_profit, buy_date, ml_prob, strategy) = row
+
+                    ts_code = _ts_code_add_suffix(ts_code) if '.' not in ts_code else ts_code
+                    market = _resolve_market(ts_code)
+                    code_only = ts_code.split('.')[0]
+
+                    future = pool.submit(_get_tencent_quote, code_only, market)
+                    quote_futures[future] = (pid, ts_code, name, market, qty, cost, cur_price,
+                                              stop_loss, take_profit, buy_date, ml_prob, strategy, code_only)
+
             positions = []
-            for row in rows:
+            for future in as_completed(quote_futures):
                 (pid, ts_code, name, market, qty, cost, cur_price,
-                 stop_loss, take_profit, buy_date, ml_prob, strategy) = row
+                 stop_loss, take_profit, buy_date, ml_prob, strategy, code_only) = quote_futures[future]
 
-                ts_code = _ts_code_add_suffix(ts_code) if '.' not in ts_code else ts_code
-                market = _resolve_market(ts_code)
-                code_only = ts_code.split('.')[0]
-
-                # Refresh current price from Tencent
-                quote = _get_tencent_quote(code_only, market)
+                quote = future.result()
                 price = quote["price"] if quote else float(cur_price or 0)
                 name = name or (quote["name"] if quote else "")
 

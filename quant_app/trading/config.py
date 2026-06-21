@@ -29,7 +29,7 @@ class TradingConfig:
     max_single_order_amount: float = float(os.getenv("MAX_SINGLE_ORDER_AMOUNT", "50000"))
     max_position_pct: float = float(os.getenv("MAX_POSITION_PCT", "30"))
     price_deviation_pct: float = float(os.getenv("PRICE_DEVIATION_PCT", "1.0"))
-    enable_real_trading: bool = os.getenv("ENABLE_REAL_TRADING", "false").lower() == "true"
+    enable_real_trading: bool = os.getenv("ENABLE_REAL_TRADING", "false").lower() in ("true", "1", "yes")
 
     # 远程交易服务端配置（macOS + Windows VM 架构）
     remote_trader_host: str = os.getenv("REMOTE_TRADER_HOST", "")
