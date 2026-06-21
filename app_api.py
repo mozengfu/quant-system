@@ -176,8 +176,11 @@ async def startup_auto_import_logs():
             return
 
         import pymysql
+        from pymysql.err import OperationalError, IntegrityError
+
         conn = pymysql.connect(**get_db_config())
         cursor = conn.cursor()
+        conn.begin()
 
         cursor.execute("SELECT COUNT(*) FROM system_logs")
         existing = cursor.fetchone()[0]
@@ -193,7 +196,8 @@ async def startup_auto_import_logs():
             new_logs = logs
 
         if not new_logs:
-            logger.info(f"启动检查：无新日志需要导入（已有{existing}条）")
+            logger.info("启动检查：无新日志需要导入（已有%s条）", existing)
+            conn.rollback()
             conn.close()
             return
 
@@ -207,14 +211,18 @@ async def startup_auto_import_logs():
                      log.get("action", "unknown"), module, log.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                 )
                 imported += 1
+            except (OperationalError, IntegrityError) as _e:
+                logger.error("日志迁移插入失败（事务回滚）: %s", _e)
+                conn.rollback()
+                break
             except Exception as _e:
-                logger.error(f"Error in app_api.py: {_e}")
+                logger.error("日志迁移预期外异常: %s", _e)
 
         conn.commit()
         conn.close()
-        logger.info(f"启动自动导入完成：{imported} 条日志已迁移到 MySQL（总计{existing + imported}条）")
+        logger.info("启动自动导入完成：%d 条日志已迁移到 MySQL（总计%d条）", imported, existing + imported)
     except Exception as e:
-        logger.warning(f"启动自动导入失败: {e}")
+        logger.warning("启动自动导入失败: %s", e)
 
     # 后台预加载 ML 模型，避免首次请求冷启动 3-5s
     try:

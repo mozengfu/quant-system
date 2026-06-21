@@ -13,15 +13,17 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 项目根路径: scripts/ 自动加入 PYTHONPATH（由 crontab 或 start.sh 注入）
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent.parent
 
-# 国信手续费: 佣金 0.0004% (5元起), 印花税 卖出 0.1% / 买入 0
-# 预算 buffer 0.1% 覆盖 0.04% 佣金 + 5元 min + 安全余量
-COMMISSION_BUFFER = 0.001
+# 国信手续费: 佣金 0.025% (5元起), 印花税 卖出 0.1% / 买入 0
+# 预算 buffer 0.5% 覆盖佣金 + 最低5元 + 印花税 + 安全余量
+#      100股@10.00 买入费用=5元 卖出费用≈6元 → 总费用≈11, buffer=50, 够
+# 验证: 1200股@17.57 买入费用=5元 卖出费用≈26.63元 → 总费用≈31.63, buffer=105.42, 够
+COMMISSION_BUFFER = 0.005
 
 # 每日扫描候选数量 (不随仓位变动,多产生候选让 monitor 择时)
 ML_CANDIDATES_COUNT = 3
@@ -1669,6 +1671,7 @@ def _get_qmt_realtime(code, market="sz", with_history=False):
                     "最高": 0,
                     "最低": 0,
                     "量比": 0,
+                    "volume": float(s.get("volume", 0) or 0),  # 修复 P0: 当前股票成交量，量比计算用
                 }
                 break
     if qmt_hit:
@@ -1709,7 +1712,9 @@ def _get_qmt_realtime(code, market="sz", with_history=False):
             if row:
                 result["今开"] = float(row[0] or 0)
             # 量比 = 今日成交量 / 近5日均量
-            today_vol = float(_qmt_market_cache.get("stocks", [{}])[0].get("volume", 0)) if _qmt_market_cache else 0
+            # 修复 P0: 之前用 _qmt_market_cache[0] 拿的是第一只股票的 volume, 所有股票量比相同
+            # 现在用 result["volume"] (从 qmt_hit 传入) 拿当前股票真实成交量
+            today_vol = float(result.get("volume", 0) or 0)
             cur.execute("""
                 SELECT AVG(vol) FROM (
                     SELECT vol FROM daily_price
