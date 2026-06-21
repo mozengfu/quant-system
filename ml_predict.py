@@ -52,188 +52,41 @@ def _get_engine():
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_DAYS = 80  # V6特征构建所需历史天数
-_v6_bundle = None  # V6 回归模型
-_v6_2_bundle = None  # V6.2 集成模型
-_v6_3_bundle = None  # V6.3 集成模型
-_v6_4_bundle = None  # V6.4 集成模型（实验性）
-_v6_5_bundle = None  # V6.5 精选特征集成模型
-_v6_6_bundle = None  # V6.6 五组新因子集成模型
-_v6_7_bundle = None  # V6.7 泄漏修复+调参集成模型
-_v8_1_bundle = None  # V8.1 市场状态感知模型
-_v8_0_bundle = None  # V8.0 改进标签+新特征集成模型
-_v8_6_bundle = None  # V8.6 V6核心精简集(52+10特征, WF IC=0.058, 超越原版v8.0)
-_v9_0_bundle = None  # V9.0 V6.5超参回归+波动率截断+去rank特征集成模型
-_v11_0_bundle = None  # V11.0 三层堆叠集成模型
-_v10_0_bundle = None  # V10.0 Regime-Aware 多周期集成模型 (12 models)
-_model_lock = threading.Lock()  # 模型加载并发锁
+# 模型加载委托给 quant_app.utils.model_loader.load_model()（已用 @lru_cache 缓存），
+# 此处仅做首次加载日志。无需重复维护版本清单。
 
 # 最近一次批量扫描的 ML 结果缓存（股票代码 → ML 预测）
 # 个股分析时直接使用，不重新计算（单只股票 rank 特征全是 1.0 导致模型输出失真）
 _last_scan_results = {}
 
 def _load_model(version="v6"):
-    """加载指定版本的模型（线程安全）"""
-    with _model_lock:
-        if version == "v8.1":
-            global _v8_1_bundle
-            if _v8_1_bundle is None:
-                _v8_1_bundle = load_model("v8.1")
-                if _v8_1_bundle is None:
-                    return None
-                n_features = _v8_1_bundle.get('n_features', 0)
-                ic = _v8_1_bundle.get('final_rank_ic', 'N/A')
-                logger.info(f"V8.1 市场状态感知模型已加载 ({_v8_1_bundle.get('n_models', 5)}个子模型, {n_features}特征, rank_ic={ic})")
-            return _v8_1_bundle
-        if version == "v8.0":
-            global _v8_0_bundle
-            if _v8_0_bundle is None:
-                _v8_0_bundle = load_model("v8.0")
-            return _v8_0_bundle
-        if version == "v8.6":
-            global _v8_6_bundle
-            if _v8_6_bundle is None:
-                _v8_6_bundle = load_model("v8.6")
-                if _v8_6_bundle is None:
-                    return None
-                ic = _v8_6_bundle.get('final_rank_ic', 'N/A')
-                n_models = _v8_6_bundle.get('ensemble_n_models', 1)
-                n_features = _v8_6_bundle.get('n_features', 0)
-                logger.info(f"V8.6 V6核心精简模型已加载 ({n_models}个子模型, {n_features}特征, rank_ic={ic})")
-            return _v8_6_bundle
-        if version == "v9.0":
-            global _v9_0_bundle
-            if _v9_0_bundle is None:
-                _v9_0_bundle = load_model("v9.0")
-                if _v9_0_bundle is None:
-                    return None
-                ic = _v9_0_bundle.get('final_rank_ic', 'N/A')
-                n_models = _v9_0_bundle.get('ensemble_n_models', 1)
-                n_features = _v9_0_bundle.get('n_features', 0)
-                logger.info(f"V9.0 V6.5超参回归模型已加载 ({n_models}个子模型, {n_features}特征, rank_ic={ic})")
-            return _v9_0_bundle
-        if version == "v11.0":
-            global _v11_0_bundle
-            if _v11_0_bundle is None:
-                _v11_0_bundle = load_model("v11.0")
-                if _v11_0_bundle is None:
-                    return None
-                n_models = _v11_0_bundle.get('n_models', 9)
-                n_features = _v11_0_bundle.get('n_features', 0)
-                ic = _v11_0_bundle.get('final_rank_ic', 'N/A')
-                logger.info(f"V11.0 堆叠集成模型已加载 ({n_models}个子模型, {n_features}特征, rank_ic={ic})")
-            return _v11_0_bundle
-        if version == "v10.0":
-            global _v10_0_bundle
-            if _v10_0_bundle is None:
-                _v10_0_bundle = load_model("v10.0")
-                if _v10_0_bundle is None:
-                    return None
-                n_models = _v10_0_bundle.get('n_models', 0)
-                n_features = _v10_0_bundle.get('n_features', 0)
-                ic = _v10_0_bundle.get('final_rank_ic', 'N/A')
-                logger.info(f"V10.0 Regime-Aware 模型已加载 ({n_models}个子模型, {n_features}特征, rank_ic={ic})")
-            return _v10_0_bundle
-        if version == "v6.7":
-            global _v6_7_bundle
-            if _v6_7_bundle is None:
-                _v6_7_bundle = load_model("v6.7")
-                if _v6_7_bundle is None:
-                    return None
-                ic = _v6_7_bundle.get('final_rank_ic', 'N/A')
-                n_models = _v6_7_bundle.get('ensemble_n_models', 1)
-                logger.info(f"V6.7 泄漏修复+调参集成模型已加载 ({n_models}个子模型, rank_ic={ic})")
-            return _v6_7_bundle
-        if version == "v6.6":
-            global _v6_6_bundle
-            if _v6_6_bundle is None:
-                _v6_6_bundle = load_model("v6.6")
-                if _v6_6_bundle is None:
-                    return None
-                ic = _v6_6_bundle.get('final_rank_ic', 'N/A')
-                n_models = _v6_6_bundle.get('ensemble_n_models', 1)
-                logger.info(f"V6.6 五组新因子集成模型已加载 ({n_models}个子模型, rank_ic={ic})")
-            return _v6_6_bundle
-        if version == "v6.5":
-            global _v6_5_bundle
-            if _v6_5_bundle is None:
-                _v6_5_bundle = load_model("v6.5")
-                if _v6_5_bundle is None:
-                    return None
-                ic = _v6_5_bundle.get('final_rank_ic', 'N/A')
-                n_models = _v6_5_bundle.get('ensemble_n_models', 1)
-                logger.info(f"V6.5 精选集成模型已加载 ({n_models}个子模型, rank_ic={ic})")
-            return _v6_5_bundle
-        if version == "v6.4":
-            global _v6_4_bundle
-            if _v6_4_bundle is None:
-                _v6_4_bundle = load_model("v6.4")
-                if _v6_4_bundle is None:
-                    return None
-                ic = _v6_4_bundle.get('final_rank_ic', 'N/A')
-                n_models = _v6_4_bundle.get('ensemble_n_models', 1)
-                logger.info(f"V6.4 集成模型已加载 ({n_models}个子模型, rank_ic={ic})")
-            return _v6_4_bundle
-        if version == "v6.3":
-            global _v6_3_bundle
-            if _v6_3_bundle is None:
-                _v6_3_bundle = load_model("v6.3")
-                if _v6_3_bundle is None:
-                    return None
-                ic = _v6_3_bundle.get('final_rank_ic', 'N/A')
-                n_models = _v6_3_bundle.get('ensemble_n_models', 1)
-                logger.info(f"V6.3 集成模型已加载 ({n_models}个子模型, rank_ic={ic})")
-            return _v6_3_bundle
-        if version == "v6.2":
-            global _v6_2_bundle
-            if _v6_2_bundle is None:
-                _v6_2_bundle = load_model("v6.2")
-                if _v6_2_bundle is None:
-                    return None
-                ic = _v6_2_bundle.get('final_rank_ic', 'N/A')
-                n_models = _v6_2_bundle.get('ensemble_n_models', 1)
-                logger.info(f"V6.2 集成模型已加载 ({n_models}个子模型, rank_ic={ic})")
-            return _v6_2_bundle
-        else:
-            global _v6_bundle
-            if _v6_bundle is None:
-                _v6_bundle = load_model("v6")
-                if _v6_bundle is None:
-                    return None
-                ver = _v6_bundle.get('version', 'unknown')
-                ic = _v6_bundle.get('final_rank_ic', 'N/A')
-                logger.info(f"V6回归模型已加载 (version={ver}, rank_ic={ic})")
-            return _v6_bundle
+    """加载指定版本的模型。委托给 quant_app.utils.model_loader.load_model()，
+    后者已用 @lru_cache(maxsize=4) 线程安全缓存。此函数仅输出版本特征日志。"""
+    bundle = load_model(version)
+    if bundle is None:
+        return None
+    n_models = bundle.get('ensemble_n_models') or bundle.get('n_models', 1)
+    n_features = bundle.get('n_features', 0)
+    ic = bundle.get('final_rank_ic', 'N/A')
+    logger.info(
+        "ML模型加载: version=%s models=%d features=%d rank_ic=%s",
+        version, n_models, n_features, ic,
+    )
+    return bundle
+
 
 def _load_v6_model():
     """向后兼容：加载V6模型"""
     return _load_model("v6")
 
 def _load_best_model():
-    """加载最佳可用模型：优先 V11.0 > V10.0 > V8.1 > ..."""
+    """加载最佳可用模型。降级链: V11.0 → V11.2(thin)"""
     bundle = _load_model("v11.0")
     if bundle:
         return bundle, "v11.0"
-    bundle = _load_model("v10.0")
+    bundle = _load_model("v11.2")
     if bundle:
-        return bundle, "v10.0"
-    bundle = _load_model("v8.1")
-    if bundle:
-        return bundle, "v8.1"
-    bundle = _load_model("v8.0")
-    if bundle:
-        return bundle, "v10.0"
-    bundle = _load_model("v8.6")
-    if bundle:
-        return bundle, "v8.6"
-    bundle = _load_model("v9.0")
-    if bundle:
-        return bundle, "v9.0"
-    bundle = _load_model("v6.7")
-    if bundle:
-        return bundle, "v6.7"
-    bundle = _load_model("v6.6")
-    if bundle:
-        return bundle, "v6.6"
+        return bundle, "v11.2"
     bundle = _load_model("v6.5")
     if bundle:
         return bundle, "v6.5"

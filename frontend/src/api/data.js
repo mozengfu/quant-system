@@ -72,6 +72,10 @@ export function getSimAccount() {
   return api.get('/sim_account')
 }
 
-export function getPnlSummary() {
-  return api.get("/pnl/summary")
+export function getPnlSummary(mode = "live") {
+  return api.get("/pnl/summary", { params: { mode } })
+}
+
+export function getMarketAttribution(mode = "live") {
+  return api.get("/pnl/market_attribution", { params: { mode } })
 }

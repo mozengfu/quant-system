@@ -23,3 +23,7 @@ export function getStockFundFlow(tsCode) {
 export function getMainforceScan() {
   return api.get('/mainforce_scan')
 }
+
+export function getStrategyCompare() {
+  return api.get('/strategy/compare')
+}

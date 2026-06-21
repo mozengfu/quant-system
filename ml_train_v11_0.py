@@ -93,6 +93,7 @@ VALUE_QUALITY_FEATURES = [
     'forecast_type_code', 'forecast_is_positive', 'forecast_days_since', 'forecast_net_profit_max',
     'zt_count_30d', 'zt_max_board_30d', 'zt_seal_amount_30d',
     'concept_count', 'concept_mom_avg', 'concept_mom_5d', 'concept_mom_10d',
+    'board_rps_max', 'board_rps_mean', 'in_top5_board',
 ]
 
 
@@ -373,12 +374,22 @@ def load_data(max_date=None):
                 f"资金流: {len(moneyflow):,} | 基本面: {len(fundamentals):,} | "
                 f"窗口: {len(dates)} 交易日 / {min_date.date()} ~ {max_date_actual.date()}")
 
+    # V11.2 板 RPS: 一次性预计算每周板块 RPS (概念板块 + 行业板块)
+    weekly_board_rps = None
+    try:
+        from quant_app.services.board_rps_scanner import compute_weekly_board_rps_history
+        weekly_board_rps = compute_weekly_board_rps_history()
+        logger.info(f"每周板RPS: {len(weekly_board_rps)} 条")
+    except Exception as e:
+        logger.warning(f"每周板RPS加载失败: {e}")
+
     return (daily, idx_data, moneyflow, fundamentals, stock_info, alpha_signals,
             margin, dragon_tiger, dragon_tiger_inst, holder_change,
             zt_pool, board_ind_hist, board_ind_cons, board_concept_cons, earnings,
             block_trade, stock_forecast,
             fina_ind, sector_mf, north_mf, ml_prev,
             limit_list, top_inst_data, regime_data,
+            weekly_board_rps, board_concept_cons,  # 末尾加两个 (向后兼容位置)
             min_date, max_date_actual)
 
 
@@ -403,6 +414,7 @@ def build_features(data_tuple, na_fill=True):
      block_trade, stock_forecast,
      fina_ind, sector_mf, north_mf, ml_prev,
      limit_list, top_inst_data, regime_data,
+     weekly_board_rps, board_cons,  # 跟 load_data 末尾对应
      min_date, max_date) = data_tuple
 
     logger.info("构建特征 V8.0 基础 + V11.0 新增...")
@@ -801,6 +813,52 @@ def build_features(data_tuple, na_fill=True):
             g['concept_mom_5d'] = 0
             g['concept_mom_10d'] = 0
             g['concept_count'] = 0
+
+        # ====== V11.2 周线板 RPS 特征 (board_rps_max / board_rps_mean / in_top5_board) ======
+        g['board_rps_max'] = 50.0
+        g['board_rps_mean'] = 50.0
+        g['in_top5_board'] = 0.0
+        if weekly_board_rps is not None and board_cons is not None and not board_cons.empty:
+            try:
+                stock_boards = board_cons[board_cons['ts_code'] == ts_code]['board_code'].unique()
+                if len(stock_boards) > 0:
+                    g['_date'] = g['trade_date']
+                    g['_year'] = g['_date'].dt.isocalendar().year
+                    g['_week'] = g['_date'].dt.isocalendar().week
+                    week_data = weekly_board_rps[
+                        weekly_board_rps.set_index(['year', 'week']).index.isin(
+                            g[['_year', '_week']].drop_duplicates().itertuples(index=False, name=None)
+                        )
+                    ]
+                    if not week_data.empty:
+                        matching = week_data[week_data['board_code'].isin(stock_boards)]
+                        if not matching.empty:
+                            # Top5 用 rps>=95.0 推断 (836 板块 top5 约 RPS>=95)
+                            rps_by_week = (matching.groupby(['year', 'week'])
+                                                     .agg(rps_max=('rps', 'max'),
+                                                          rps_mean=('rps', 'mean'))
+                                                     .reset_index())
+                            # Top5 标志: 该周板块的 rps >= 95 视为 Top5 之一
+                            top5_in_week = (matching[matching['rps'] >= 95.0]
+                                            .groupby(['year', 'week']).size()
+                                            .reset_index(name='cnt'))
+                            rps_by_week = rps_by_week.merge(top5_in_week, on=['year','week'], how='left')
+                            rps_by_week['has_top5'] = (rps_by_week['cnt'] > 0).astype(float)
+                            rps_by_week = rps_by_week.drop(columns=['cnt'])
+                            g['_ym'] = list(zip(g['_year'], g['_week']))
+                            rps_dict_max = rps_by_week.set_index(['year', 'week'])['rps_max'].to_dict()
+                            rps_dict_mean = rps_by_week.set_index(['year', 'week'])['rps_mean'].to_dict()
+                            rps_dict_top5 = rps_by_week.set_index(['year', 'week'])['has_top5'].astype(float).to_dict()
+                            g['board_rps_max'] = g['_ym'].map(lambda k: rps_dict_max.get(k, 50.0))
+                            g['board_rps_mean'] = g['_ym'].map(lambda k: rps_dict_mean.get(k, 50.0))
+                            g['in_top5_board'] = g['_ym'].map(lambda k: rps_dict_top5.get(k, 0.0))
+                            g = g.drop(columns=['_ym'])
+            except Exception as e:
+                pass  # 保持默认值
+            # 清理临时列 (独立 try 避免 KeyError 把整个段吃掉)
+            for _tmp in ['_date', '_year', '_week', '_ym']:
+                if _tmp in g.columns:
+                    g = g.drop(columns=[_tmp])
 
         # 业绩因子
         if ts_code in earn_dict:
@@ -1201,6 +1259,7 @@ def build_features(data_tuple, na_fill=True):
         'zt_count_30d', 'zt_max_board_30d', 'zt_seal_amount_30d',
         'ind_board_pct_5d', 'ind_board_pct_10d', 'ind_board_pct_20d',
         'concept_count', 'concept_mom_avg', 'concept_mom_5d', 'concept_mom_10d',
+        'board_rps_max', 'board_rps_mean', 'in_top5_board',
         'revenue_yoy', 'net_profit_yoy', 'roe', 'gross_margin',
         # V8.0
         'ret_1d_reversal', 'volume_div_days_10d', 'turnover_std_ratio',
@@ -1242,6 +1301,20 @@ def build_features(data_tuple, na_fill=True):
     for col in feature_cols:
         if col not in result.columns:
             result[col] = np.nan
+
+    # === DEBUG: 板 RPS 3 特征在训练数据中的状态 (写文件) ===
+    with open('/tmp/board_rps_debug.log', 'a') as _f:
+        _f.write(f"--- {datetime.now().isoformat()} ---\n")
+        for _c in ['board_rps_max', 'board_rps_mean', 'in_top5_board']:
+            if _c in result.columns:
+                _s = result[_c].dropna()
+                _f.write(f"  {_c}: nunique={_s.nunique()}, var={_s.var():.4f}, range=[{_s.min():.2f}, {_s.max():.2f}], in_feature_cols={_c in feature_cols}\n")
+            else:
+                _f.write(f"  {_c}: NOT IN RESULT.COLUMNS\n")
+        _f.write(f"  total feature_cols before dedup: {len(feature_cols)}\n")
+        # 关键: dedup 后剩几个
+        _board_rps_in_cols = [c for c in feature_cols if c in ('board_rps_max', 'board_rps_mean', 'in_top5_board')]
+        _f.write(f"  board_rps_* in feature_cols: {_board_rps_in_cols}\n")
 
     # === 多重共线性剔除（每组 |corr| > 0.8 只保留方差最高的特征） ===
     # 参考 docs/etf_factor_guide.md 3.4 节

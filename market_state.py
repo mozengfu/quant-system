@@ -211,9 +211,9 @@ def get_market_state(db_conn=None):
         # ========== 5. 综合评分 ==========
         # 各指标加权
         total_score = (
-            sh_trend_score * 0.35 +
+            sh_trend_score * 0.40 +       # 上证趋势（提高权重，趋势信号最直接）
             cyb_trend_score * 0.15 +
-            market_breadth * 0.25 +
+            market_breadth * 0.20 +        # 市场广度（降低权重，避免大盘涨但小票跌就判下跌）
             volatility_score * 0.15 +
             volume_score * 0.10
         )
@@ -228,11 +228,11 @@ def get_market_state(db_conn=None):
             state = 'trend_up'
             state_name = '趋势上涨'
             advice = '市场趋势向好，可适当加仓，持有强势股'
-        elif total_score >= -15:
+        elif total_score >= -20:
             state = 'range'
             state_name = '震荡'
             advice = '市场震荡，短线操作，快进快出'
-        elif total_score >= -40:
+        elif total_score >= -45:
             state = 'trend_down'
             state_name = '趋势下跌'
             advice = '市场偏弱，控制仓位，严格止损'
@@ -301,7 +301,7 @@ def _get_strategy_params(state):
     params = {
         'trend_up': {
             'stop_loss_pct': -7,
-            'take_profit_pct': 999,
+            'take_profit_pct': 8,
             'max_positions': 4,     # 趋势上涨可满仓
             'position_pct': 50,
             'hold_days': 5,
@@ -309,7 +309,7 @@ def _get_strategy_params(state):
         },
         'trend_down': {
             'stop_loss_pct': -7,
-            'take_profit_pct': 999,
+            'take_profit_pct': 8,
             'max_positions': 2,     # 趋势下跌减仓
             'position_pct': 50,
             'hold_days': 5,
@@ -317,7 +317,7 @@ def _get_strategy_params(state):
         },
         'range': {
             'stop_loss_pct': -7,
-            'take_profit_pct': 999,
+            'take_profit_pct': 8,
             'max_positions': 3,     # 震荡适中
             'position_pct': 50,
             'hold_days': 5,
@@ -333,7 +333,7 @@ def _get_strategy_params(state):
         },
         'overheated': {
             'stop_loss_pct': -7,
-            'take_profit_pct': 999,
+            'take_profit_pct': 8,
             'max_positions': 2,     # 过热减仓止盈
             'position_pct': 50,
             'hold_days': 5,

@@ -82,7 +82,7 @@ def build_features_v11_inference(conn, ts_codes, as_of_date):
         if c not in feat.columns:
             feat[c] = 0.0
 
-    # Step 3: sector_moneyflow (通过 industry 映射)
+    # Step 3: sector_moneyflow (通过 industry 映射) — 1d + 5d
     try:
         si = pd.read_sql(f"SELECT ts_code, industry FROM stock_info WHERE ts_code IN ({placeholders})",
                          conn, params=tuple(ts_codes))
@@ -95,10 +95,19 @@ def build_features_v11_inference(conn, ts_codes, as_of_date):
             smf['trade_date'] = pd.to_datetime(smf['trade_date'])
             smf['elg_net'] = smf['buy_elg_amount'] - smf['sell_elg_amount']
             latest_smf = smf.sort_values('trade_date').groupby('sector_name').last().reset_index()
-            si_smf = si.merge(latest_smf, left_on='industry', right_on='sector_name', how='left')
-            feat = feat.merge(si_smf[['ts_code', 'net_amount', 'elg_net', 'pct_change']].rename(
+            five_day_smf = (smf.sort_values('trade_date')
+                              .groupby('sector_name').tail(5)
+                              .groupby('sector_name').agg(
+                                  net_amount_5d=('net_amount', 'sum'),
+                                  pct_change_5d=('pct_change', 'sum')).reset_index())
+            si_smf = si.merge(latest_smf[['sector_name', 'net_amount', 'elg_net', 'pct_change']],
+                              left_on='industry', right_on='sector_name', how='left')
+            si_smf = si_smf.merge(five_day_smf, on='sector_name', how='left')
+            feat = feat.merge(si_smf[['ts_code', 'net_amount', 'elg_net', 'pct_change',
+                                        'net_amount_5d', 'pct_change_5d']].rename(
                 columns={'net_amount': 'sector_netflow_1d', 'elg_net': 'sector_elg_net',
-                         'pct_change': 'sector_pct_1d'}),
+                         'pct_change': 'sector_pct_1d',
+                         'net_amount_5d': 'sector_netflow_5d', 'pct_change_5d': 'sector_pct_5d'}),
                 on='ts_code', how='left')
     except Exception as e:
         logger.warning(f"V11.0 sector_moneyflow 特征失败: {e}")
@@ -118,8 +127,9 @@ def build_features_v11_inference(conn, ts_codes, as_of_date):
     except Exception:
         feat['north_flow_1d'] = 0.0
 
-    # Step 5: ml_predictions 历史预测
+    # Step 5: ml_predictions 历史预测 — ml_pred_prev + ml_pred_chg_5d
     try:
+        # ml_pred_prev: 最近一次预测
         mlp = pd.read_sql("""
             SELECT ts_code, trade_date, _ml_pred FROM ml_predictions
             WHERE trade_date < %s AND trade_date >= DATE_SUB(%s, INTERVAL 20 DAY)
@@ -129,10 +139,26 @@ def build_features_v11_inference(conn, ts_codes, as_of_date):
             mlp = mlp.drop_duplicates(subset='ts_code', keep='first')
             feat = feat.merge(mlp[['ts_code', '_ml_pred']].rename(columns={'_ml_pred': 'ml_pred_prev'}),
                               on='ts_code', how='left')
-    except Exception:
-        pass
+        # ml_pred_chg_5d: 5 天前的预测, 跟 ml_pred_prev 算差值
+        mlp_5d = pd.read_sql("""
+            SELECT ts_code, _ml_pred FROM ml_predictions
+            WHERE trade_date < DATE_SUB(%s, INTERVAL 4 DAY)
+              AND trade_date >= DATE_SUB(%s, INTERVAL 8 DAY)
+            ORDER BY ts_code, trade_date DESC
+        """, conn, params=(trade_date_str, trade_date_str))
+        if not mlp_5d.empty:
+            mlp_5d = mlp_5d.drop_duplicates(subset='ts_code', keep='first')
+            feat = feat.merge(mlp_5d[['ts_code', '_ml_pred']].rename(columns={'_ml_pred': '_ml_pred_5d'}),
+                              on='ts_code', how='left')
+            if 'ml_pred_prev' in feat.columns:
+                feat['ml_pred_chg_5d'] = feat['ml_pred_prev'] - feat['_ml_pred_5d']
+                feat = feat.drop(columns=['_ml_pred_5d'])
+    except Exception as e:
+        logger.warning(f"V11.0 ml_predictions 特征失败: {e}")
     if 'ml_pred_prev' not in feat.columns:
         feat['ml_pred_prev'] = 0.5
+    if 'ml_pred_chg_5d' not in feat.columns:
+        feat['ml_pred_chg_5d'] = 0.0
 
     # Step 6: 新增价格衍生特征
     if 'ret_autocorr_5d' not in feat.columns:
@@ -224,6 +250,27 @@ def build_features_v11_inference(conn, ts_codes, as_of_date):
         except Exception as e:
             logger.warning(f"V11.1 新衍生特征失败: {e}")
 
+    # ====== V11.2 pos_52w: 52 周高低位 (daily_price.high_52w/low_52w 全 0, 实时重算) ======
+    try:
+        ph_52w = ','.join(['%s'] * len(ts_codes))
+        h52_df = pd.read_sql(f"""
+            SELECT ts_code, MAX(high) as h52, MIN(low) as l52
+            FROM daily_price
+            WHERE ts_code IN ({ph_52w}) AND trade_date <= %s
+              AND trade_date >= DATE_SUB(%s, INTERVAL 250 DAY)
+            GROUP BY ts_code
+        """, conn, params=(*ts_codes, trade_date_str, trade_date_str))
+        if not h52_df.empty and 'close' in feat.columns:
+            feat = feat.merge(h52_df, on='ts_code', how='left')
+            feat['pos_52w'] = ((feat['close'] - feat['l52']) /
+                                (feat['h52'] - feat['l52']).replace(0, np.nan))
+            feat = feat.drop(columns=['h52', 'l52'])
+            feat['pos_52w'] = feat['pos_52w'].fillna(0.5)
+    except Exception as e:
+        logger.warning(f"V11.2 pos_52w 特征失败: {e}")
+    if 'pos_52w' not in feat.columns:
+        feat['pos_52w'] = 0.5
+
     # ====== V11.1 补充全局市场状态特征 ======
     if 'mkt_breadth' not in feat.columns or feat['mkt_breadth'].sum() == 0:
         try:
@@ -251,6 +298,40 @@ def build_features_v11_inference(conn, ts_codes, as_of_date):
                 feat['mkt_breadth'] = mkt_breadth_val
         except Exception:
             pass
+
+    # ====== V11.2 周线板RPS特征 (board_rps_max/board_rps_mean/in_top5_board) ======
+    try:
+        from quant_app.services.board_rps_scanner import get_board_rps
+        board_rps_df = get_board_rps(as_of_date=trade_date_str, use_weekly=True)
+        if not board_rps_df.empty:
+            top5_boards = set(board_rps_df.head(5)['board_code'].tolist())
+            board_rps_map = dict(zip(board_rps_df['board_code'], board_rps_df['rps']))
+            ph_br = ','.join(['%s'] * len(ts_codes))
+            _sb_df = pd.read_sql(f"""
+                SELECT ts_code, board_code FROM board_concept_cons
+                WHERE ts_code IN ({ph_br}) AND (is_latest = 1 OR is_latest IS NULL)
+            """, conn, params=tuple(ts_codes))
+            stock_boards = {}
+            if not _sb_df.empty:
+                for _tc, _bc in _sb_df[['ts_code','board_code']].itertuples(index=False):
+                    stock_boards.setdefault(_tc, []).append(_bc)
+            for _tc in ts_codes:
+                _boards = stock_boards.get(_tc, [])
+                _matching = [board_rps_map[b] for b in _boards if b in board_rps_map]
+                if _matching:
+                    _mask = feat['ts_code'] == _tc
+                    feat.loc[_mask, 'board_rps_max'] = float(max(_matching))
+                    feat.loc[_mask, 'board_rps_mean'] = float(np.mean(_matching))
+                    feat.loc[_mask, 'in_top5_board'] = 1.0 if any(b in top5_boards for b in _boards) else 0.0
+    except Exception as e:
+        logger.warning(f"V11.2 板RPS 特征失败: {e}")
+
+    # 兜底: 没算出来的用 50.0/50.0/0.0 (与训练集 global_medians 一致)
+    for _c, _default in [('board_rps_max', 50.0), ('board_rps_mean', 50.0), ('in_top5_board', 0.0)]:
+        if _c not in feat.columns:
+            feat[_c] = _default
+        else:
+            feat[_c] = feat[_c].fillna(_default)
 
     for c in ['price_range_pos_10d', 'oversold_boost', 'ma_dispersion',
               'volume_contraction', 'price_ma50_ratio', 'ret_vol_ratio_5d',

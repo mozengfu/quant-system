@@ -161,8 +161,8 @@ def handlebar(ContextInfo):
                     else:
                         trade_dt = "NOW()"
                     _q("""INSERT INTO qmt_trades
-                          (ts_code, stock_name, action, price, quantity, amount, order_id, trade_time, reason, status)
-                          VALUES (%s,%s,%s,%s,%s,%s,%s,""" + trade_dt + """,'QMT策略','filled')""",
+                          (ts_code, stock_name, action, price, quantity, amount, order_id, trade_time, reason, status, mode)
+                          VALUES (%s,%s,%s,%s,%s,%s,%s,""" + trade_dt + """,'QMT策略','filled','live')""",
                        (code, stock_name, action, price, volume, amount, order_id))
                     _imported_trade_ids.add(trade_id)
             with open(TRD, "w") as f:

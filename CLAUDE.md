@@ -31,6 +31,7 @@ pytest -m "not slow"              # 跳过慢测试（不加载模型/连DB）
 pytest tests/test_inference.py -v
 pytest tests/test_inference.py::TestModelAvailability -v
 pytest -k "v11" -v                # 按关键字筛选
+bash verify.sh                    # 自检脚本（环境检查+连接测试）
 
 # 运行 Web 服务
 python3 app.py                    # FastAPI 主服务 (端口 5001)
@@ -40,9 +41,9 @@ bash scripts/start_monitor.sh
 python3 scripts/market_monitor.py
 cat data/market_state.json
 
-# 交易调度
+# 交易调度（当前管线: 每周板RPS → Top5板块 → ML排序 → 买入候选）
 python3 scripts/live_trading_scheduler.py scan       # 盘后选股 (17:30)
-python3 scripts/live_trading_scheduler.py monitor    # 盘中监控+实时扫描选股
+python3 scripts/live_trading_scheduler.py monitor    # 盘中监控+实时扫描选股 (9:35择时执行)
 python3 scripts/live_trading_scheduler.py morning    # 早盘择时买入 (9:35)
 python3 scripts/live_trading_scheduler.py status     # 持仓状态
 python3 scripts/live_trading_scheduler.py init       # 初始化表结构
@@ -73,6 +74,9 @@ python3 scripts/backtest_param_scan.py            # 参数扫描优化
 # 训练脚本已修复两个数据泄露源：
 #   1. NaN填充: walk-forward 中每折独立计算中位数，不用全量数据
 #   2. 标签3-sigma截断: walk-forward 中每折独立截断，不用全量数据
+# ⚠️ 月训练提醒：每月1号执行重训练，防止IC衰减
+#   一键重训（需Windows开机）：python3 scripts/retrain_monthly.py
+#   或Mac快速重训（Top500）：python3 scripts/retrain_v11_fast.py
 # Windows 训练机 (192.168.10.39): 全量训练
 ssh quant@192.168.10.39
 cd C:\Users\quant\quant-system
@@ -98,6 +102,14 @@ python3 alpha_signal_integration.py  # 将 Alpha 信号注入 ML 预测
 python3 ai_sim_trading.py daily      # 每日记录 TOP5 推荐
 python3 ai_sim_trading.py track      # 追踪后续收益表现
 python3 ai_sim_trading.py stats      # 统计胜率/平均收益
+
+# 其他分析
+python3 ml_daily_top5.py             # 每日 Top5 预测输出
+python3 ml_regime_detector.py        # 市场状态分类检测
+python3 sector_rotation.py           # 板块轮动分析
+python3 run_factor5_backtest.py      # 5因子回测
+python3 run_factor7_backtest.py      # 7因子回测
+python3 run_three_strategies.py      # 三策略综合回测
 
 # 日常预测 & 数据同步
 python3 scripts/daily_ml_predict.py
@@ -216,7 +228,8 @@ Windows训练机 (192.168.10.39, 32GB RAM + 16GB VRAM)
 | `data/` | 运行时数据（模型 .pkl、状态 .json、预测 .parquet、股票池 .csv） |
 | `tests/` | 测试（`test_inference.py` ML 推理管线测试） |
 | `archive/` | 历史脚本归档（仅参考，不删除） |
-| `MEMORY.md` | 历史决策记录 + 版本演进日志（排查过往变更时参考） |
+| `MEMORY.md` | 历史决策记录 + 版本演进日志 — **排查不明行为或回顾架构变更时优先查阅此文件** |
+| `ml_regime_detector.py` | 市场状态分类检测器（独立运行） |
 
 ### quant_app 子包补充
 
@@ -227,9 +240,13 @@ Windows训练机 (192.168.10.39, 32GB RAM + 16GB VRAM)
 | `quant_app/features/` | 特征构建统一入口 `build_features_for()`，含 v11/pattern/sector_relay/LHB/HSGT/research 等模块 |
 | `quant_app/risk/` | 风控过滤: `hot_money.py`(游资过滤)、`position_manager.py`(仓位管理)、`sector.py`(行业分散)、`filters.py`(过滤管线) |
 | `quant_app/backtest/` | 回测引擎: `engine.py`(简单信号回测)、`strategy_engine.py`(完整策略回测，含T+1/滑点/手续费/止损止盈) |
-| `quant_app/services/` | 业务服务: `realtime_scanner.py`(盘中实时扫描)、`scanner_strategy.py`(策略参数读取)、`strategy_service.py`(V4+ML过滤策略)、`market_service.py`、`technical_service.py`(技术指标)、`qmt_adapter.py`(QMT协议适配) |
+| `quant_app/services/` | 业务服务: `board_rps_scanner.py`(每周板RPS筛选+ML排序)、`realtime_scanner.py`(盘中实时扫描)、`scanner_strategy.py`(策略参数读取)、`scanner_backtest.py`(扫描策略回测)、`factor_scorer.py`(5因子等权打分)、`strategy_service.py`(V4+ML过滤策略)、`market_service.py`、`technical_service.py`(技术指标)、`qmt_adapter.py`(QMT协议适配)、`backtest_service.py`(回测数据/指标)、`notification_service.py`(飞书/企微/邮件/短信)、`market_state.py`(服务层市场状态封装) |
+| `quant_app/data/database.py` | SQLAlchemy 引擎创建 + `with_session()` 上下文管理器 |
 | `quant_app/data/models/` | SQLAlchemy ORM 模型: `daily_price`、`stock_info`、`fina_indicator`、`moneyflow`、`margin`、`board`、`market_index`、`sector_moneyflow` |
-| `quant_app/data/track/` | 数据追踪（预留） |
+| `quant_app/data/track/` | 持仓追踪 `sim_positions`/`sim_signals` 表读写 |
+| `quant_app/trading/config.py` | 交易配置单例(TRADE_MODE/券商/安全控制) |
+| `quant_app/trading/orders.py` | 数据模型: `Order`/`Position`/`Balance` dataclass |
+| `quant_app/trading/trade_recorder.py` | QMT 成交记录写入 `qmt_trades` 表 |
 | `quant_app/trading/modes/` | 执行器具体实现: `remote_executor.py` (生产)、`sim_executor.py` (模拟) |
 | `quant_app/trading/risk/` | 风控: `pre_trade_check.py` |
 | `quant_app/services/market_state.py` | 服务层市场状态封装，与根目录 `market_state.py` 独立脚本配合使用 |
@@ -348,6 +365,56 @@ quant_app/trading/executor.py
 
 通道开关由 `.env` 中相应 webhook/token 是否为空控制。
 
+### 生产管线（盘后扫描 + 盘中双管线）
+
+#### 盘后扫描 (cmd_scan, 17:30)
+```
+板RPS周线(836板块) → 过滤噪音板块 → 周累积收益排序 → Top5板块
+  → board_concept_cons 取成分股 → 排除ST/688/8xx → 成分股池
+  → ML(V11.2)排序 → 候选股入库 → 次日 V11择时监控
+```
+**关键文件**: `quant_app/services/board_rps_scanner.py`, `scripts/live_trading_scheduler.py:374`
+
+#### 盘中监控 (cmd_monitor, 每分钟 9:15-15:00)
+三条线并行：
+
+```
+① 持仓监控
+  遍历 QMT 实盘持仓:
+    止损: min( max(ATR动态, 固定-7%), -5%硬兜底 )
+    移动止盈: 峰值>5% 回撤2×ATR(保底3%) → 市价卖
+    超时: ≥5天且盈利<3% → 卖
+    强制: >8天 → 卖
+
+② V11择时入场
+  盘后候选股 → 监控量价条件(回踩开盘价/量比/涨跌幅)
+  → 满足则买入(资金上限: 总资产×50%÷3)
+
+③ 板RPS实时扫描
+  实时重算板RPS→Top5板块→成分股
+  → 过滤仅 QMT 快照 (110只) 有的股票
+  → 实时因子评分(量能/动量/趋势/流动/RSI/布林/盘口/日内/资金/指数)
+  → ML排序 → 综合分 = ML概率×50 + 实时分×0.5
+  → 实时分≥60 且 ML概率>0 → 按综合分遍历 → 预算够就买
+```
+
+**资金分配**: 总资产 × 50% = V11预算(70%) + 实时扫描预算(30%)
+
+#### 风控参数（按市场状态）
+
+| 状态 | 触发条件 | 止损 | 止盈 | max_pos | 仓位上限 |
+|---|---|---|---|---|---|
+| 趋势上涨 | 指数趋势向上 | -7% | 移动止盈 | 4 | 50% |
+| 震荡(常态) | 横盘 | -7% | 移动止盈 | 3 | 50% |
+| 趋势下跌 | 指数向下 | -7% | 移动止盈 | 2 | 50% |
+| 恐慌 | 跌>2.5%+涨跌比<0.3 | -2% | 3% | 1 | 5% |
+| 过热 | 持续放量上涨 | -7% | 移动止盈 | 2 | 50% |
+
+**补充规则**:
+- 硬性兜底: 所有持仓成本×0.95 (-5%) 为最后防线
+- 恐慌清仓: 跌>3.5% 全仓市价清仓+飞书告警
+- 逆市: 跌1~2% 时仓位减半, 实时扫描min_score提高到75
+
 ### 回测引擎架构
 
 `quant_app/backtest/` 提供两套回测引擎，不同场景选不同引擎：
@@ -433,94 +500,94 @@ MySQL: daily_price + 因子表（80天历史）
   │
   ▼
 ml_predict.py
-  ├── _build_features_for_stocks_v8_0() → 117维特征（价格/成交量/动量/资金流/技术）
-  ├── _load_model(version) → 从 data/*.pkl 加载（通过 model_loader.py 注册表）
-  ├── predict_batch(ts_codes) → 批量预测（全 A 股）
+  ├── build_features_v11_inference() → 131维特征（价格/成交量/动量/资金流/技术/板RPS）
+  ├── _load_model(version) → 通过 model_loader.py 注册表
+  ├── predict_batch(ts_codes) → 批量预测
   └── predict_single(code) → 个股预测（依赖缓存批量结果）
-  │
-  ├── 输出排序 → 推荐列表
-  └── 存入 data/ml_preds_*.parquet
+      │
+      └── 输出: {ml_score, ml_prob, rank_pct}
 ```
 
-**特征列来源**: `quant_app/features/v11_features.py` — 117 个特征（V11.0），含价格/成交量/动量/资金流/技术指标。
+**特征**: `quant_app/features/v11_features.py` — 131特征（原117维+板RPS指标等）
 
-**模型降级链**: `_load_best_model()` → V11.0 → V8.1 → V11.2（thin）。
+**模型**: V11.2(板RPS) 18子模型 LGB LambdaRank 集成, IC=0.139
+
+**模型降级链**: V11.2 → V11.0 (mac_retrain) → V11.2原始
 
 ### 交易执行管线
 
 ```
-live_trading_scheduler.py (Mac)
-  │ 读 market_state.json → 判定市场状态（风控阻断/仓位控制）
-  │ 调用 ML 预测 → 选股+评分
+live_trading_scheduler.py (Mac, crontab * 9-15 * * 1-5)
+  │ 每分钟:
+  │   → 持仓监控(止损/移动止盈/超时) → 触发则市价卖出
+  │   → V11择时入场
+  │   → 板RPS实时扫描 → 实时因子评分 → ML排序 → 买入
   │
-  └── create_executor(mode) 工厂 → 具体执行器
-      ├── RemoteExecutor: HTTP POST → iquant_http_service.py → qmt_cmd.json
-      │                       → qmt_strategy_v5.py (iQuant内轮询) → passorder()
-      ├── SimExecutor: 写入 MySQL sim_signals
-      └── EasytraderExecutor: 本地 easytrader 直连（备用）
+  └── RemoteTraderExecutor (create_executor("live"))
+      └── HTTP POST → iquant_http_service.py :1430 (QMT桥)
+          └── qmt_strategy_v5.py (iQuant策略) → passorder()
 ```
+
+**数据源**:
+- QMT 快照 `/market/snapshot` (110只) → 实时扫描候选池
+- QMT `/position`, `/balance` → 持仓/资金
+- QMT `/orders`, `/trades` → 委托/成交
+- 腾讯行情接口(降级) → 持仓价格监控
 
 ### 市场状态风控
 
 ```
-market_monitor.py（守护进程，30s 拉上证实时行情）
-  → data/market_state.json（写入 JSON）
-  → WebSocket 推送 market_update 事件
+market_monitor.py（守护进程，30s 拉上证 → data/market_state.json）
 
-├── 恐慌(跌>2.5%):           阻断建仓, max_pos=1
-├── 阻断(is_bear+跌>2%+涨跌比<0.3): 阻断+飞书告警
-├── 逆市(跌1~2%):            阈值 2.5 + 仓位减半, max_pos=2
-├── 偏弱(跌0.3~1%):          正常交易
-├── 常态(涨/微跌):           正常交易, max_pos=3(range)/4(trend_up)
-└── 恐慌清仓(跌>3.5%):       全部卖出+飞书告警
+├── 恐慌(跌>2.5%+涨跌比<0.3):  阻断建仓, max_pos=1, 止损-2%
+├── 恐慌清仓(跌>3.5%):         全部市价卖出+飞书告警
+├── 逆市(跌1~2%):              threshold=2.5, 仓位减半
+├── 常态/趋势上涨:              max_pos=3~4
+└── 硬性兜底:                  所有持仓成本×0.95必触发
 ```
 
-### 仓位管控（按策略独立）
+**WebSocket**: `/api/ws` — market_state 变更时推送至前端
 
-- ML V11 和 实时扫描 各占独立仓位上限 = `round(max_pos × 0.5)`
-- 持仓自动归类：查询 `sim_positions.strategy` → `sim_signals.signal_type`
-- 未知持仓按策略比例分摊，避免双重扣减
-- 盘中监控每轮买入前查询今日已用资金(`sim_signals` SUM)，超预算则跳过
+### 仓位与资金管控
 
-### 资金分配（动态50:50）
-
-- `get_scanner_capital()` / `get_v11_capital()` 实时查询 QMT `/balance` 总资产 × 50%
-- 盈利时资金池自动放大，亏损时自动收缩
-- 30秒缓存，QMT不可达时降级到 `config/scanner_config.yaml` 的 initial_capital
+- V11(70%) + 实时扫描(30%) 各占独立仓位，互不阻塞
+- `总资产 × 50%` 为总投资资金，按比例分给 V11 和 扫描
+- 每轮买入前查询今日已用资金，超预算跳过
+- 持仓自动归类: `sim_positions.strategy` 含 qmt_sync/ML/扫描等标签
+- 单票最高 30%（硬性上限，减仓执行触达）
 
 ## API 端点一览
 
-| 端点 | 方法 | 说明 |
+完整路由注册在 `app_api.py` 的 `app.include_router()` 链中，按 APIRouter 模块分组：
+
+| 路由模块 | prefix/tags | 主要端点 |
 |---|---|---|
-| `/api/pipeline/status` | GET | 管线四阶段聚合（市场/ML/交易/绩效） |
-| `/api/pnl/summary` | GET | 实盘盈亏汇总 |
-| `/api/trading/orders` | GET | QMT 委托列表 |
-| `/api/trading/cancel` | POST | 撤单 |
-| `/api/trading/cancel-all` | POST | 批量撤单 |
-| `/api/trading/market-order` | POST | 市价单 |
-| `/api/trading/batch-order` | POST | 批量下单 |
-| `/api/trading/trades` | GET | QMT 成交记录 |
-| `/api/trading/balance` | GET | 账户余额 |
-| `/api/trading/positions` | GET | 持仓列表 |
-| `/api/trading/status` | GET | 远程交易服务状态 |
-| `/api/trading/connect` | POST | 连接远程 QMT |
-| `/api/scanner/signals` | GET | 实时选股扫描信号 |
-| `/api/ws` | WS | WebSocket 事件推送 |
+| `trading` | `/api/trading` | `/orders`, `/cancel`, `/cancel-all`, `/market-order`, `/batch-order`, `/trades`, `/balance`, `/positions`, `/status`, `/connect` |
+| `auth` | `/api/auth` | `/register`, `/login`, `/forgot-password`, `/reset-password`, `/change-password`, `/me` |
+| `scanning` | scanning | `/api/scan`, `/api/scan_pool`, `/api/scan/strong`, `/api/scan/aimodel`, `/api/scan/top5`, `/api/scan/v5`, `/api/scan/ml`, `/api/scan/rule`, `/api/scan/bottom-awakening`, `/api/combo_scan`, `/api/market_state`, `/api/pool`, `/api/ml_top15`, `/api/ai_sim/performance`, `/api/ai_sim/run` |
+| `backtest` | `/api/backtest` | `/ml`, `/scanner` |
+| `admin` | `admin` | `/access_log`, `/log_stats`, `/log_import`, `/users`, `/pending`, `/approve`, `/reject` |
+| `strategy` | strategy | `/api/analysis/{market}/{code}`, `/api/sentiment`, `/api/blocks`, `/api/strategy/compare` |
+| `pipeline` | — | `/api/pipeline/status` |
+| `pnl` | — | `/api/pnl/summary` |
+| `market` | — | 行情/指数相关 |
+| `dashboard` | — | 仪表盘聚合 |
+| `recommend` | — | ML 推荐 |
+| `signals` | — | QMT 委托信号 |
+| `pages` | — | Jinja2 页面路由 |
+| (app_api.py 直挂) | — | `/api/scanner/signals`, `/api/scanner/buy`, `/api/ws` |
+
+**WebSocket**: `/api/ws` — PipelineEventBus 广播，type 分发给 market/portfolio/trading store。5s 心跳保活。**无自动重连逻辑在前端（ws.js 实现了 5s 重连）**。
 
 ## ML 模型
 
-| 模型 | 文件 | RankIC | 状态 |
+| 模型 | 文件 | 指标 | 状态 |
 |---|---|---|---|
-| V11.0 (5日) | `data/ml_stock_model_v11_0.pkl` (159MB) | WF 0.024 / 集成 0.133 | **生产** |
-| V11.0 11子模型 | `data/ml_stock_model_v11_0_11models.pkl` | — | 实验 |
-| V11.0 7子模型(LGBM) | `data/ml_stock_model_v11_0_7lgb.pkl` (23MB) | — | 实验(轻量) |
-| V11.0 OOS-v2 | `data/ml_stock_model_v11_0_oos_v2.pkl` | IC=0.0859 | **选股池注入** |
-| V11.0 OOS-v3 | `data/ml_stock_model_v11_0_oos_v3.pkl` | — | 实验 |
-| V11.2 (thin) | `data/ml_stock_model_v11_2.pkl` (19KB) | -0.044 | 备用 |
-| V8.1 | `data/ml_stock_model_v8_1.pkl` (55MB) | WF ~0.05 / 集成 ~0.06 | 归档 |
-| V11.3 (10日) | `data/ml_stock_model_v11_0.pkl` (Windows) | WF 0.010 / 集成 0.254 | 实验(过拟合) |
+| **V11.2(板RPS)** | `data/ml_stock_model_v11_0.pkl` (159MB) | 集成 IC=0.139, 18子模型, 131特征 | **生产 (2026-06-13)** |
+| V11.0 Mac重训练 | `data/ml_stock_model_v11_0_mac_retrain.pkl` (98MB) | WF IC=0.043 | 备用 |
+| V11.2 原始 | `data/ml_stock_model_v11_2.pkl` (19KB) | — | 备用(thin) |
 
-所有模型通过 `quant_app/utils/model_loader.py` 注册表管理。
+所有模型通过 `quant_app/utils/model_loader.py` 注册表管理。生产模型降级链: v11.0 → v11.2。
 
 ## 数据库
 
@@ -541,19 +608,68 @@ market_monitor.py（守护进程，30s 拉上证实时行情）
 - `.env` 被 gitignore 排除，参照 `.env.example`
 
 ### 配置文件
-- `.env` 定义所有敏感参数
-- `quant_app/utils/config.py` 中 Config 单例读取
+- `.env` 定义所有敏感参数（参照 `.env.example`），分组：
+  - 数据源: `TUSHARE_TOKEN`（tushare pro token）
+  - MySQL: `MYSQL_HOST/PORT/USER/PASSWORD/DATABASE`
+  - 通知: `FEISHU_WEBHOOK` / `WECOM_WEBHOOK` / SMTP / 阿里云 SMS
+  - 交易: `TRADE_MODE` (sim/live) / `ENABLE_REAL_TRADING`（安全开关）/ `REMOTE_TRADER_HOST:PORT`
+  - 风控: `MAX_DAILY_LOSS_PCT` / `MAX_SINGLE_ORDER_AMOUNT` / `MAX_POSITION_PCT`
+- `quant_app/utils/config.py` 中 Config 单例按命名空间读取
 - 扫描策略参数在 `config/scanner_config.yaml`
+
+## MEMORY.md 查阅指引
+
+`MEMORY.md` 记录了本项目的关键决策、版本演进历史（v1→v2）、重要 Bug 修复。以下情况**必须先查阅 MEMORY.md**：
+
+- 排查历史行为变更原因（"这个功能以前是可以用的"）
+- 理解版本号对应关系（V11.0/V11.2/V11.3 等）
+- 回顾模块重构过程（`app.py`→`app_api.py`→`quant_app/`）
+- 了解已修复的已知问题（数据泄露、配置兼容性等）
+
+**不要**在已知问题列表中有对应 MEMORY 条目时重复造轮子。
+
+## 其他参考文档
+
+| 文档 | 内容 |
+|---|---|
+| `MEMORY.md` | 历史决策记录 + 版本演进日志 — **排查不明行为时优先查阅** |
+| `CODE_REVIEW_REPORT.md` | 代码审查报告（2026-05-30） |
+| `REFACTOR_PLAN.md` | 模块化重构计划（v1→v2） |
+| `TRADING_DEPLOY.md` | 实盘部署指南（Windows QMT + Mac 端配置） |
+| `ML_MODEL_README.md` | ML 模型技术说明 |
+| `config/scanner_config.yaml` | 实时扫描策略参数配置 |
 
 ## 已知问题
 
 1. **模型 RankIC 低**: A 股 5 日收益难预测，0.02~0.05 属行业正常水平
-2. **全量训练 Mac 内存不足**: 必须用 Windows 训练机（32GB），训练完手动传回 .pkl
+2. **全量训练 Mac 内存不足**: 必须用 Windows 训练机（32GB），手动传回 .pkl
 3. **QMT 因子不可用**: `get_factor_data()` 在 iQuant 策略中无法调用
-4. **Windows pandas 需 2.2.2**: 3.x 版本 merge_asof 严格 dtype 检查不兼容
-5. **`board_concept_hist` 数据仅 2026-01 起**: 概念板块动量特征可用，但早期数据缺失，早期训练的特征值降级为 0
-6. **`alpha_filter.py` 依赖新浪财经**: 新浪改版或网络不通时 α 信号中断，不影响主线 ML
-7. **OOS 模型文件膨胀**: `data/` 下 10+ 个 .pkl 版本共 ~2GB，清理需确认生产模型不受影响
+4. **QMT 股票池仅 110 只**: 板RPS实时扫描候选池受限于 QMT 快照范围，不在池中的票无法评分买入
+5. **QMT 持仓无 buy_date**: 时间风控依赖 sim_positions 表补查，需保持 sim_positions 同步
+6. **国信iQuant免费行情无Level2盘口**: `ask1/bid1` 恒为0，`factor_orderbook` 等盘口因子无数据。不影响核心交易，需付费订阅Level 2才可解决
+
+## 定时任务（crontab）
+
+项目根 `crontab` 文件定义了 macOS 的自动执行计划，周一至周五运行：
+
+| 时间 | 任务 | 说明 |
+|---|---|---|
+| `0 9 * * 1-5` | `feishu_alerts.py morning` | 飞书开盘预警 |
+| `0 9 * * 1-5` | `auto_refresh_data.sh` | 开盘前数据刷新 |
+| `*/30 9-14 * * 1-5` | `auto_refresh_data.sh` | 盘中数据刷新（每 30 分钟） |
+| `35 9 * * 1-5` | `live_trading_scheduler.py morning` | 早盘择时买入 |
+| `36 9 * * 1-5` | `daily_health_check.py` | 每日开盘健康检查 |
+| `* 9-15 * * 1-5` | `live_trading_scheduler.py monitor` | 实时扫描+持仓监控（每分钟） |
+| `*/5 9-15 * * 1-5` | `position_monitor.py` | 风控扫描（备用） |
+| `*/30 9-14 * * 1-5` | `auto_refresh_data.sh` | 盘中数据刷新（每 30 分钟） |
+| `35 9 * * 1-5` | `live_trading_scheduler.py morning` | 早盘择时买入 |
+| `5 15 * * 1-5` | `feishu_alerts.py daily` | 飞书盘后汇总 |
+| `0 17 * * 1-5` | `update_daily_price_cron.py` | 盘后数据导入 |
+| `15 17 * * 1-5` | `scan_daily_pool()` | 股票池生成（含 OOS Top10 注入） |
+| `30 17 * * 1-5` | `live_trading_scheduler.py scan` | 盘后选股 |
+| `45 17 * * 1-5` | `run_three_strategies.py` | V4 辅助策略 |
+| `55 17 * * 1-5` | `scan_bottom_awakening.py` | 底部觉醒扫描 |
+| `0 3 * * 6` | `rolling_train.sh` | 周末模型重训 |
 
 ## 环境
 

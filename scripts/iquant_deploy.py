@@ -141,7 +141,7 @@ def check_iquant_strategy():
         import pymysql
         conn = pymysql.connect(
             host=MYSQL_HOST, port=MYSQL_PORT,
-            user="root", password="root123",
+            user=os.environ.get("MYSQL_USER", "root"), password=os.environ.get("MYSQL_PASSWORD", ""),
             database="quant_db", charset="utf8mb4", connect_timeout=5
         )
         cur = conn.cursor()

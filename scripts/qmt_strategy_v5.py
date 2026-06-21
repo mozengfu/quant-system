@@ -26,9 +26,14 @@ _imported_trade_ids = set()
 def _q(sql, p=None):
     try:
         import pymysql
-        c = pymysql.connect(host="192.168.10.30", port=3306, user="root",
-                             password="root123", database="quant_db",
-                             charset="utf8mb4", connect_timeout=5)
+        c = pymysql.connect(
+            host=os.environ.get("MYSQL_HOST", "192.168.10.30"),
+            port=int(os.environ.get("MYSQL_PORT", "3306")),
+            user=os.environ.get("MYSQL_USER", "root"),
+            password=os.environ.get("MYSQL_PASSWORD", ""),
+            database=os.environ.get("MYSQL_DATABASE", "quant_db"),
+            charset="utf8mb4", connect_timeout=5,
+        )
         cur = c.cursor()
         cur.execute(sql, p or ())
         c.commit()

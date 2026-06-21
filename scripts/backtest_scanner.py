@@ -6,7 +6,7 @@ import pymysql
 
 warnings.filterwarnings("ignore")
 
-DB = {"host":"127.0.0.1","port":3306,"user":"root","password":"root123","database":"quant_db","charset":"utf8mb4"}
+DB = {"host":"127.0.0.1","port":3306,"user":"root","password": os.environ.get("MYSQL_PASSWORD", ""),"database":"quant_db","charset":"utf8mb4"}
 
 # 回测参数
 TOP_N = 5

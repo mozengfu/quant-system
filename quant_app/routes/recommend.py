@@ -98,40 +98,19 @@ def get_recommend(force_refresh: bool = False, top_n: int = 3, token: str = Cook
         cur.execute("SELECT MAX(trade_date) FROM daily_price WHERE trade_date < %s", (latest,))
         prev = str(cur.fetchone()[0])
 
-        # OOS-v2 模型优先（IC=0.0859, 30特征）
+        # 每周板RPS + V11.2 ML 排序（主管线）
         ranked = []
-        model_ver = "OOS-v2"
-        oos_path = os.path.join(DATA_DIR, "ml_stock_model_v11_0_oos_v2.pkl")
-        if os.path.exists(oos_path):
-            try:
-                from scripts.predict_v11_oos import build_features as oos_build
-                from scripts.predict_v11_oos import ensemble_predict as oos_predict
-                from scripts.predict_v11_oos import load_model as oos_load
-                oos_load(oos_path)
-                cur.execute("""SELECT ts_code FROM daily_price WHERE trade_date=%s
-                    AND LEFT(ts_code,1) NOT IN ('8','4','9') AND close<=200
-                    ORDER BY amount DESC LIMIT 500""", (prev,))
-                pool_codes = [r[0] for r in cur.fetchall()]
-                if pool_codes:
-                    feat = oos_build(conn, pool_codes, as_of_date=latest)
-                    if feat is not None and not feat.empty:
-                        preds = oos_predict(feat)
-                        ca = feat['ts_code'].tolist()
-                        top_codes = [tc for _, tc in sorted(zip(preds, ca), reverse=True)[:top_n]]
-                        cur.execute("""SELECT s.ts_code, s.name, d.close, NULL, s.industry
-                            FROM stock_info s LEFT JOIN daily_price d ON s.ts_code=d.ts_code AND d.trade_date=%s
-                            WHERE s.ts_code IN (%s)""" % ("%s", ",".join(["%s"]*len(top_codes))),
-                            tuple([latest] + top_codes))
-                        ranked = [{'ts_code': r[0], 'stock_name': r[1] or '', 'price': float(r[2]) if r[2] else 0,
-                                    'ml_score': 0, 'industry': r[4] or ''} for r in cur.fetchall()]
-                        # Map scores back
-                        score_map = dict(zip(ca, preds))
-                        for entry in ranked:
-                            entry['ml_score'] = float(score_map.get(entry['ts_code'], 0))
-                        ranked.sort(key=lambda x: -x['ml_score'])
-                        logger.info("OOS-v2 实时推理 %d 只候选", len(ranked))
-            except Exception as e:
-                logger.warning("OOS-v2 推理失败，回退 ml_predictions: %s", e)
+        model_ver = "V11.2(板RPS周线)"
+        try:
+            from quant_app.services.board_rps_scanner import board_scan_recommend
+            scan_result = board_scan_recommend(top_n=top_n, as_of_date=latest)
+            if scan_result:
+                ranked = [{'ts_code': r['ts_code'], 'stock_name': r['name'],
+                           'price': r.get('price', 0), 'ml_score': r.get('ml_score', 0),
+                           'industry': ''} for r in scan_result]
+                logger.info("板RPS周线推荐 %d 只", len(ranked))
+        except Exception as e:
+            logger.warning("板RPS周线推荐失败: %s", e)
 
         # Fallback: 从 ml_predictions 表读取
         if not ranked:
@@ -233,7 +212,7 @@ def get_recommend(force_refresh: bool = False, top_n: int = 3, token: str = Cook
         today_str = latest
         result = {
             "扫描时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "策略": f"OOS-v2 纯ML Top{top_n}",
+            "策略": f"V11.2板RPS周线 Top{top_n}",
             "推荐股票": recommendations,
             "cache_date": today_str,
         }
@@ -543,8 +522,8 @@ def get_v5_recommend(token: str = Cookie(None)):
 @router.get("/api/recommend/v11")
 def get_recommend_v11(force_refresh: bool = False, top_n: int = 3):
     """
-    建仓推荐 - OOS-v2 纯ML推理（直接推理，不走策略服务管线）
-    成交额前500只 → OOS-v2 30特征 → 集成预测 → Top3
+    建仓推荐 - 周线板RPS + V11.2 ML
+    board_concept_hist → 周线RPS → Top5板块成分股 → ML排序 → Top3
     """
     cache_file = os.path.join(DATA_DIR, "recommend_v11_cache.json")
 
@@ -560,7 +539,6 @@ def get_recommend_v11(force_refresh: bool = False, top_n: int = 3):
                 )
                 if cache_valid:
                     data = cached.get("data")
-                    # 清理缓存中的 NaN
                     def _fix_cache(v):
                         if isinstance(v, dict): return {k: _fix_cache(vk) for k, vk in v.items()}
                         if isinstance(v, (list, tuple)): return [_fix_cache(x) for x in v]
@@ -572,11 +550,8 @@ def get_recommend_v11(force_refresh: bool = False, top_n: int = 3):
 
     try:
         import pymysql
-
         from quant_app.utils.config import get_db_config
-        from scripts.predict_v11_oos import build_features as oos_build
-        from scripts.predict_v11_oos import ensemble_predict as oos_predict
-        from scripts.predict_v11_oos import load_model as oos_load
+        from quant_app.services.board_rps_scanner import board_scan_recommend
 
         db_config = get_db_config()
         conn = pymysql.connect(**db_config)
@@ -584,33 +559,21 @@ def get_recommend_v11(force_refresh: bool = False, top_n: int = 3):
 
         cur.execute("SELECT MAX(trade_date) FROM daily_price")
         latest = str(cur.fetchone()[0])
-        cur.execute("SELECT MAX(trade_date) FROM daily_price WHERE trade_date < %s", (latest,))
-        prev = str(cur.fetchone()[0])
 
-        cur.execute("SELECT ts_code FROM daily_price WHERE trade_date=%s AND LEFT(ts_code,1) NOT IN ('8','4','9') AND close<=200 ORDER BY amount DESC LIMIT 500", (prev,))
-        codes = [r[0] for r in cur.fetchall()]
-
-        oos_path = os.path.join(DATA_DIR, "ml_stock_model_v11_0_oos_v2.pkl")
-        if not os.path.exists(oos_path):
-            return {"error": "OOS模型不存在", "stocks": [], "cache_date": latest}
-        oos_load(oos_path)
-        feat = oos_build(conn, codes, as_of_date=latest)
-        if feat is None or feat.empty:
-            return {"error": "特征构建失败", "stocks": [], "cache_date": latest}
-        preds = oos_predict(feat)
-        ca = feat['ts_code'].tolist()
-        ranked = sorted(zip(ca, preds), key=lambda x: -x[1])
+        scan_result = board_scan_recommend(top_n=top_n, as_of_date=latest)
+        if not scan_result:
+            return {"error": "板RPS无候选", "stocks": [], "cache_date": latest}
 
         recommendations = []
-        for i, (tc, sc) in enumerate(ranked[:top_n], 1):
+        for entry in scan_result:
+            tc = entry['ts_code']
             cur.execute("SELECT name, industry FROM stock_info WHERE ts_code=%s", (tc,))
             r = cur.fetchone()
             name = r[0] if r and r[0] else tc.split('.')[0]
             industry = r[1] if r and r[1] else ''
-            cur.execute("SELECT close, pct_chg FROM daily_price WHERE ts_code=%s AND trade_date=%s", (tc, latest))
-            dr = cur.fetchone()
-            price = float(dr[0]) if dr else 0
-            pct = float(dr[1] or 0) if dr else 0
+            price = entry.get('price', 0)
+            pct = entry.get('pct_chg', 0)
+            ml_score = entry.get('ml_prob', entry.get('ml_score', 0))
 
             recommendations.append({
                 "代码": tc.split('.')[0],
@@ -618,8 +581,8 @@ def get_recommend_v11(force_refresh: bool = False, top_n: int = 3):
                 "行业": industry,
                 "现价": price,
                 "涨跌幅": f"{pct:+.2f}%",
-                "ML得分": round(sc, 4),
-                "策略来源": "OOS-v2 纯ML Top3",
+                "ML得分": round(float(ml_score), 4),
+                "策略来源": "V11.2(板RPS周线) 纯ML Top3",
                 "止损价": round(price * 0.93, 2),
             })
 
@@ -628,7 +591,7 @@ def get_recommend_v11(force_refresh: bool = False, top_n: int = 3):
 
         result = {
             "扫描时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "策略": "OOS-v2 纯ML直接推理 Top3",
+            "策略": "V11.2板RPS周线 Top3",
             "推荐股票": recommendations,
             "cache_date": latest,
         }
@@ -638,5 +601,5 @@ def get_recommend_v11(force_refresh: bool = False, top_n: int = 3):
 
         return result
     except Exception as e:
-        logger.error(f"OOS-v2推荐失败: {e}")
+        logger.error(f"板RPS推荐失败: {e}")
         return {"error": str(e)}

@@ -1,10 +1,10 @@
 <script setup>
-import { onMounted, onUnmounted, reactive } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import MarketStateCard from '../components/pipeline/MarketStateCard.vue'
 import MlPipelineCard from '../components/pipeline/MlPipelineCard.vue'
 import SignalExecutionCard from '../components/pipeline/SignalExecutionCard.vue'
 import PerformanceCard from '../components/pipeline/PerformanceCard.vue'
-import { getPipelineStatus } from '../api/market'
+import { getPipelineStatus, getStrategyCompare } from '../api/market'
 import { useWebSocket } from '../utils/ws'
 import { useMarketStore } from '../stores/market'
 
@@ -14,6 +14,9 @@ const pipelineState = reactive({
   ml: { model: 'V11.0', rank_ic: null },
   performance: null,
 })
+
+const strategyCompare = ref(null)
+const loadingCompare = ref(false)
 
 let refreshTimer = null
 
@@ -26,6 +29,16 @@ async function fetchPipelineStatus() {
   } catch (e) {
     console.error('[Pipeline] 管线状态获取失败:', e.message || e)
   }
+}
+
+async function fetchStrategyCompare() {
+  loadingCompare.value = true
+  try {
+    strategyCompare.value = await getStrategyCompare()
+  } catch (e) {
+    console.error('[策略对比] 获取失败:', e)
+  }
+  loadingCompare.value = false
 }
 
 // WebSocket 实时更新
@@ -44,8 +57,12 @@ const ws = useWebSocket(
 
 onMounted(() => {
   fetchPipelineStatus()
+  fetchStrategyCompare()
   ws.connect()
-  refreshTimer = setInterval(fetchPipelineStatus, 60000)
+  refreshTimer = setInterval(() => {
+    fetchPipelineStatus()
+    fetchStrategyCompare()
+  }, 60000)
 })
 
 onUnmounted(() => {
@@ -74,6 +91,45 @@ onUnmounted(() => {
       <SignalExecutionCard />
       <PerformanceCard :state="pipelineState.performance" />
     </div>
+
+    <!-- 策略对比 -->
+    <el-card class="pipeline-card" style="margin-top: 12px;">
+      <template #header>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span>📊 策略对比</span>
+          <el-button size="small" @click="fetchStrategyCompare">刷新</el-button>
+        </div>
+      </template>
+      <div v-if="loadingCompare" style="text-align:center;padding:20px;color:#999;">加载中...</div>
+      <div v-else-if="!strategyCompare || strategyCompare.error" style="text-align:center;padding:20px;color:#999;">
+        {{ strategyCompare?.error || '暂无数据' }}
+      </div>
+      <template v-else>
+        <el-row :gutter="12">
+          <el-col :span="12" v-for="s in strategyCompare.strategies" :key="s.strategy">
+            <el-card :shadow="s.strategy === strategyCompare.best_strategy ? 'always' : 'hover'"
+                     :style="s.strategy === strategyCompare.best_strategy ? 'border:2px solid #67C23A;' : ''">
+              <div style="font-size:16px;font-weight:600;margin-bottom:8px;">
+                {{ s.strategy }}
+                <el-tag v-if="s.strategy === strategyCompare.best_strategy" type="success" size="small" style="margin-left:6px;">最佳</el-tag>
+              </div>
+              <el-descriptions :column="2" size="small" border>
+                <el-descriptions-item label="交易次数">{{ s.total_trades }}</el-descriptions-item>
+                <el-descriptions-item label="持仓中">{{ s.holding }}</el-descriptions-item>
+                <el-descriptions-item label="胜率">{{ s.win_rate }}%</el-descriptions-item>
+                <el-descriptions-item label="平均收益">{{ s.avg_return_pct }}%</el-descriptions-item>
+                <el-descriptions-item label="累计盈亏">
+                  <span :style="{color:s.total_pnl>=0?'#f56c6c':'#67c23a'}">{{ s.total_pnl>=0?'+':'' }}{{ s.total_pnl }}</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="平均持有">{{ s.avg_hold_days }}天</el-descriptions-item>
+                <el-descriptions-item label="最佳">{{ s.best_trade_pct }}%</el-descriptions-item>
+                <el-descriptions-item label="最差">{{ s.worst_trade_pct }}%</el-descriptions-item>
+              </el-descriptions>
+            </el-card>
+          </el-col>
+        </el-row>
+      </template>
+    </el-card>
   </div>
 </template>
 

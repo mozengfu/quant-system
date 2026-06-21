@@ -26,12 +26,26 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 _LOGIN_ATTEMPTS: dict[str, list] = {}
 _LOGIN_LOCK = threading.Lock()
 
+_LOGIN_ATTEMPTS_MAX_KEYS = 10000  # 防止字典无限增长的硬上限
+
+
 def _check_login_rate(ip: str) -> bool:
-    """检查IP是否超过登录频率限制，返回True表示允许"""
+    """检查IP是否超过登录频率限制，返回True表示允许。
+    防御性：定期清理长时间无活动的IP，避免字典无限增长。"""
     now = time.time()
     window = 60
     max_attempts = 5
     with _LOGIN_LOCK:
+        # 清理过期 IP（窗口外无任何尝试的记录），字典超上限时强制清理
+        if len(_LOGIN_ATTEMPTS) > _LOGIN_ATTEMPTS_MAX_KEYS:
+            stale = [k for k, v in _LOGIN_ATTEMPTS.items() if not v or now - v[-1] >= window]
+            for k in stale:
+                _LOGIN_ATTEMPTS.pop(k, None)
+            # 仍超限时，按最旧时间淘汰 20%
+            if len(_LOGIN_ATTEMPTS) > _LOGIN_ATTEMPTS_MAX_KEYS:
+                sorted_keys = sorted(_LOGIN_ATTEMPTS, key=lambda k: _LOGIN_ATTEMPTS[k][-1] if _LOGIN_ATTEMPTS[k] else 0)
+                for k in sorted_keys[: len(sorted_keys) // 5]:
+                    _LOGIN_ATTEMPTS.pop(k, None)
         attempts = [t for t in _LOGIN_ATTEMPTS.get(ip, []) if now - t < window]
         _LOGIN_ATTEMPTS[ip] = attempts
         if len(attempts) >= max_attempts:
@@ -318,15 +332,15 @@ def do_login(request: FastAPIRequest, data: LoginRequest):
         return {"error": "用户名或密码错误"}
     if new_hash:
         _update_user_password(username, new_hash)
-    if not is_admin(username):
-        expire_date = user_data.get("expire_date", "")
-        if expire_date:
-            try:
-                expire = datetime.strptime(expire_date, "%Y-%m-%d")
-                if datetime.now() > expire:
-                    return {"error": f"您的账户已于 {expire_date} 过期，请联系管理员续费：259563977@qq.com"}
-            except Exception as _e:
-                logger.warning("expire_date parse error: %s", _e)
+    # 所有人（含管理员）都要检查账户过期 — 防止离职/泄露凭据
+    expire_date = user_data.get("expire_date", "")
+    if expire_date:
+        try:
+            expire = datetime.strptime(expire_date, "%Y-%m-%d")
+            if datetime.now() > expire:
+                return {"error": f"您的账户已于 {expire_date} 过期，请联系管理员续费：259563977@qq.com"}
+        except Exception as _e:
+            logger.warning("expire_date parse error: %s", _e)
 
     token = make_token(username)
     expires = time.time() + 86400 * 7

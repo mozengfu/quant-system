@@ -17,7 +17,7 @@ logger = logging.getLogger("backtest")
 
 DB_CONFIG = {
     "host": "127.0.0.1", "port": 3306, "user": "root",
-    "password": "root123", "database": "quant_db", "charset": "utf8mb4",
+    "password": os.environ.get("MYSQL_PASSWORD", ""), "database": "quant_db", "charset": "utf8mb4",
 }
 
 def get_db():

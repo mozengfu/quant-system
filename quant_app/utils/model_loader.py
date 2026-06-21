@@ -9,23 +9,8 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).parent.parent.parent
 MODELS_DIR = BASE_DIR / "data"
 
-# 注册所有已知模型路径
+# 注册所有已知模型路径（仅保留文件存在的有效版本）
 _MODEL_REGISTRY = {
-    "v6": MODELS_DIR / "ml_stock_model_v6.pkl",
-    "v6.2": MODELS_DIR / "ml_stock_model_v6_2.pkl",
-    "v6.3": MODELS_DIR / "ml_stock_model_v6_3.pkl",
-    "v6.4": MODELS_DIR / "ml_stock_model_v6_4.pkl",
-    "v6.5": MODELS_DIR / "ml_stock_model_v6_5.pkl",
-    "v6.6": MODELS_DIR / "ml_stock_model_v6_6.pkl",
-    "v6.7": MODELS_DIR / "ml_stock_model_v6_7.pkl",
-    "v8.0": MODELS_DIR / "ml_stock_model_v8_0.pkl",
-    "v8.1": MODELS_DIR / "ml_stock_model_v8_1.pkl",
-    "v8.2": MODELS_DIR / "ml_stock_model_v8_2.pkl",
-    "v8.3": MODELS_DIR / "ml_stock_model_v8_3.pkl",
-    "v8.4": MODELS_DIR / "ml_stock_model_v8_4.pkl",
-    "v8.6": MODELS_DIR / "ml_stock_model_v8_6.pkl",
-    "v9.0": MODELS_DIR / "ml_stock_model_v9_0.pkl",
-    "v10.0": MODELS_DIR / "ml_stock_model_v10_0.pkl",
     "v11.0": MODELS_DIR / "ml_stock_model_v11_0.pkl",
     "v11.2": MODELS_DIR / "ml_stock_model_v11_2.pkl",
     "v11.0-oos": MODELS_DIR / "ml_stock_model_v11_0_oos_v2.pkl",
@@ -60,6 +45,11 @@ def load_model(version="v6"):
         import joblib
 
         bundle = joblib.load(path)
+        # 兼容 v11.x 的 bundle 结构（feature_cols 替代 feature_names）
+        if bundle is not None and "feature_cols" in bundle and "feature_names" not in bundle:
+            bundle["feature_names"] = bundle["feature_cols"]
+        if bundle is not None and "rank_ic" not in bundle and "final_rank_ic" in bundle:
+            bundle["rank_ic"] = bundle["final_rank_ic"]
         logger.info(f"模型已加载: {path.name} (version={bundle.get('version', 'N/A')})")
         return bundle
     except Exception as e:

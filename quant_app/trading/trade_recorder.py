@@ -16,11 +16,14 @@ def record_trade(
     order_id: str = "",
     signal_id: str = "",
     reason: str = "",
+    mode: str = "live",
     trade_date: date = None,
+    trade_time: datetime = None,
 ):
     """记录一笔 QMT 实盘成交到 qmt_trades 表
 
     在每次 buy/sell 成功返回后调用。
+    trade_time 可选, 传 None 则用当前时间(默认)。
     """
     try:
         import pymysql
@@ -32,13 +35,14 @@ def record_trade(
 
         amount = round(price * quantity, 2)
         trade_date = trade_date or date.today()
-        now = datetime.now()
+        now = trade_time or datetime.now()
+        _mode = mode if mode in ("live", "simulation") else "live"
 
         cur.execute(
             """INSERT INTO qmt_trades
                (ts_code, stock_name, action, price, quantity, amount,
-                order_id, signal_id, trade_date, trade_time, reason, status, created_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'filled', %s)""",
+                order_id, signal_id, trade_date, trade_time, reason, status, created_at, mode)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'filled', %s, %s)""",
             (
                 ts_code,
                 stock_name or "",
@@ -51,7 +55,7 @@ def record_trade(
                 trade_date,
                 now,
                 reason or "",
-                now,
+                now, _mode,
             ),
         )
         conn.commit()
@@ -66,6 +70,10 @@ def record_trade(
 
 def get_trades(limit: int = 50, offset: int = 0, ts_code: str = ""):
     """查询 qmt_trades 记录"""
+    return _get_trades(limit=limit, offset=offset, ts_code=ts_code)
+
+
+def _get_trades(limit: int = 50, offset: int = 0, ts_code: str = "", mode: str = ""):
     try:
         import pymysql
 
@@ -74,11 +82,15 @@ def get_trades(limit: int = 50, offset: int = 0, ts_code: str = ""):
         conn = pymysql.connect(**get_db_config())
         cur = conn.cursor()
 
-        where = ""
+        where_parts = []
         params = []
         if ts_code:
-            where = "WHERE ts_code = %s"
+            where_parts.append("ts_code = %s")
             params.append(ts_code)
+        if mode:
+            where_parts.append("mode = %s")
+            params.append(mode)
+        where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
         cur.execute(
             f"SELECT COUNT(*) FROM qmt_trades {where}", params
@@ -137,10 +149,10 @@ def backfill_from_signals():
         # 获取还未导入的已执行信号
         cur.execute("""
             SELECT s.ts_code, s.stock_name, s.signal_type, s.price, COALESCE(s.shares, s.qty, 0),
-                   s.reason, s.signal_date, s.id, s.status
+                   s.reason, s.signal_date, s.id, s.status, s.signal_time
             FROM sim_signals s
             LEFT JOIN qmt_trades t ON t.signal_id = CAST(s.id AS CHAR)
-            WHERE s.status IN ('已提交', '已执行')
+            WHERE s.status IN ('已提交', '已执行', '已平仓')
               AND t.id IS NULL
         """)
         rows = cur.fetchall()
@@ -149,8 +161,10 @@ def backfill_from_signals():
 
         imported = 0
         for r in rows:
-            ts_code, name, stype, price, shares, reason, sig_date, sid, status = r
+            ts_code, name, stype, price, shares, reason, sig_date, sid, status, sig_time = r
             action = "BUY" if stype in ("买入候选", "买入", "BUY") else "SELL"
+            # 修复 2026-06-22: backfill 保留原始 signal_time, 避免所有记录 trade_time=17:30
+            rec_time = sig_time if sig_time else None
             record_trade(
                 ts_code=ts_code or "",
                 stock_name=name or "",
@@ -160,6 +174,7 @@ def backfill_from_signals():
                 signal_id=str(sid),
                 reason=reason or f"回填-{status}",
                 trade_date=sig_date,
+                trade_time=rec_time,
             )
             imported += 1
 

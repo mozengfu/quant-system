@@ -5,11 +5,24 @@ import json
 import logging
 from datetime import date
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Cookie, HTTPException
+from quant_app.routes.auth import get_current_user
 
 from quant_app.services.scanner_strategy import generate_signals, get_current_signals
 from quant_app.utils.config import config
 from quant_app.utils.model_loader import load_model
+
+UNAUTHORIZED = HTTPException(status_code=401, detail="未登录或会话已过期")
+
+
+def _auth_guard(token: str) -> str:
+    user = get_current_user(token)
+    if not user:
+        raise UNAUTHORIZED
+    return user
+
+
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
@@ -184,19 +197,22 @@ def _get_performance_info():
 
 
 @router.get("/scanner/refresh")
-async def refresh_scanner():
+async def refresh_scanner(token: str = Cookie(None)):
+    user = _auth_guard(token)
     """手动刷新扫描策略信号"""
     result = generate_signals()
     return {"ok": True, "signals": len(result.get("signals", []))}
 
 @router.get("/scanner/signals")
-async def scanner_signals():
+async def scanner_signals(token: str = Cookie(None)):
+    user = _auth_guard(token)
     """获取扫描策略当前信号"""
     return get_current_signals()
 
 
 @router.get("/status")
-async def pipeline_status():
+async def pipeline_status(token: str = Cookie(None)):
+    user = _auth_guard(token)
     """聚合管线各阶段状态"""
     return {
         "market": _get_market_info(),

@@ -1,5 +1,72 @@
 
-## 最新状态 (2026-06-09) — 仓位管控重构 + 动态资金池 + 重复买入修复
+## 最新状态 (2026-06-15) — 板RPS实时扫描修复 + crontab修复 + 风控规则对齐
+
+### 板RPS实时扫描 buys[:avail_slots] 修复
+- `scripts/live_trading_scheduler.py:806`: `for sig in buys[:avail_slots]` → `for sig in buys`
+  - bug: 取前N只候选(按综合分排序)，第一只买不起就直接空手返回，不继续试更便宜的候选
+  - 修复后: 遍历所有合格候选，从高分到低分，买得起的就买
+  - 修复效果: 隆扬电子(100股@100.01) 成功买入，之前因德福科技(156元)买不起就空手
+
+### QMT 持仓 buy_date 补查 sim_positions
+- 时间风控(超时卖出/强制平仓/移动止盈历史峰值)依赖 buy_date，但 QMT 持仓不返回此字段
+- 修复: `live_trading_scheduler.py:964-980` 当 pos.get("buy_date") 为空时从 sim_positions 表补查
+- 修复后: 楚江新材 days_held 从始终 0 → 正确显示 2天
+
+### crontab 环境变量修复(影响所有定时任务)
+- 根因: macOS cron 在重定向(>>)中不展开 $QUANT_DIR，且环境变量定义在文件末尾(在所有任务之后)
+- 修复: crontab 文件所有日志路径改为绝对路径，去掉 $QUANT_DIR 依赖
+- 影响: 之前所有定时任务(盘中监控/数据刷新/盘后扫描/飞书推送)全部静默失败了一整天
+- crontab 频率从 */10 → \* (每分钟)，盘中实时监控1分钟一次
+
+### 楚江新材减仓
+- QMT 实盘减仓 3800→2000 股，仓位 55.3%→29.1%，释放约 25,000 现金
+- 减仓后 V11 预算充足，生益科技 166.41 下单(涨停未成交，手机撤单)
+
+### 止盈止损规则确认
+- 当前规则为回测最优: 固定止损-7% / ATR动态止损(2×ATR) / -5%硬兜底 → 三者取最紧
+- 移动止盈: 峰值>5%后回撤2×ATR(保底3%) → 锁利卖出
+- 超时: ≥5天且<3%盈利 → 卖 / >8天强制平仓
+- 无固定+8%止盈(已确认不回测最优)
+
+### V11 入场
+- 生益科技(600183.SH) 下单 100股@166.41，涨停未成交，手机撤单
+
+### 板RPS实时扫描 2026-06-15 成交记录
+- 10:02 隆扬电子(301389.SZ) 100股@100.01 板RPS实时扫描(原第4候选)
+- (约10:00-10:10间) 烽火通信(600498.SH) 100股@66+ 板RPS实时扫描
+
+## 最新状态 (2026-06-13) — 板RPS周线选股管线 + V11.2适配ML模型 + 清理旧模型
+
+### 新选股管线：每周板RPS90 → Top5板块 → ML排序
+- `quant_app/services/board_rps_scanner.py`: 新增板RPS周线计算模块
+  - `get_board_rps(use_weekly=True)`: board_concept_hist日频→ISO周聚合→836板块RPS排序
+  - `get_top_board_stocks()`: 取Top5板块成分股(排除ST/688/8xx)，DISTINCT去重
+  - `board_scan_recommend()`: 板RPS+ML排序，失败降级到纯ML
+  - `compute_weekly_board_rps_history()`: 全历史周线预计算(用于训练特征)
+- `scripts/live_trading_scheduler.py`: cmd_scan()改调用`_board_rps_scan_recommend()`
+  - 替换原来的`_factor_scan_recommend()`(5因子等权模型)
+  - 满仓crash修复：`ml_candidates`未初始化bug
+
+### V11.2(板RPS) 新模型训练
+- Windows(192.168.10.39): 修改`ml_train_v11_2.py`→加入`board_rps_max`/`board_rps_mean`/`in_top5_board`特征
+- 18子模型/131特征(原97特征+3板RPS特征+其他新增)/集成IC=0.139
+- 训练耗时~15分钟，模型167MB→159MB
+- 模型注册为`v11.0`，替换原Mac重训练模型
+- Mac重训练(V11.0 Top500)保留为备用: `ml_stock_model_v11_0_mac_retrain.pkl`
+
+### 模型清理
+- 删除14个旧模型文件(.pkl)，释放约1.2GB:
+  - 实验模型: 7lgb/11models/7model/bad/oos_true → 已删除
+  - 旧备份: oos_backup/old/retrain_backup/board_rps_repeat → 已删除
+  - V8归档: v8_0/v8_1_oos → 已删除
+- 保留6个核心模型(~520MB):
+  - 生产: ml_stock_model_v11_0.pkl (V11.2+板RPS)
+  - 备用: mac_retrain/full/pre_board_rps/oos_v2/v11_2
+
+### 系统时间线总结
+- 2026-06-05: 旧V11.0模型在最新数据WF IC转负(-0.0243)
+- 2026-06-13: 诊断→重训练(Mac Top500 WF IC=0.043)→Windows全量训练(IC=0.139)→板RPS周线特征加入→新模型部署
+- 选股管线: 5因子等权 → 板RPS周线+ML排序
 
 ### 按策略独立仓位管控
 - `live_trading_scheduler.py`: 新增 `_classify_holds_by_strategy()`，从 sim_positions/sim_signals 自动归类持仓为 ML/Scanner

@@ -64,6 +64,7 @@ def main():
      block_trade, stock_forecast,
      fina_ind, sector_mf, north_mf, ml_prev,
      limit_list, top_inst_data, regime_data,
+     weekly_board_rps, board_cons,  # V11.2 板 RPS (跟 ml_train_v11_0.load_data 对齐)
      min_date, max_date) = data
 
     logger.info(f"数据加载完成: {len(daily):,} 行, "

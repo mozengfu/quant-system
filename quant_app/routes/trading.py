@@ -3,11 +3,24 @@
 """
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Cookie, HTTPException
+from fastapi import Request as FastAPIRequest
 from pydantic import BaseModel
+from quant_app.routes.auth import get_current_user
 
 from quant_app.trading.modes.remote_executor import RemoteTraderExecutor
 from quant_app.trading.trade_recorder import get_trades, record_trade
+
+UNAUTHORIZED = HTTPException(status_code=401, detail="未登录或会话已过期")
+
+
+def _auth_guard(token: str) -> str:
+    """返回当前登录用户名；未登录抛 401"""
+    user = get_current_user(token)
+    if not user:
+        raise UNAUTHORIZED
+    return user
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/trading", tags=["trading"])
@@ -51,7 +64,8 @@ class BatchOrderRequest(BaseModel):
 
 
 @router.post("/connect")
-async def api_connect():
+async def api_connect(token: str = Cookie(None)):
+    user = _auth_guard(token)
     """连接到远程QMT交易服务"""
     try:
         e = get_executor()
@@ -63,7 +77,8 @@ async def api_connect():
 
 
 @router.get("/balance")
-async def api_balance():
+async def api_balance(token: str = Cookie(None)):
+    user = _auth_guard(token)
     """获取账户余额"""
     try:
         e = get_executor()
@@ -84,7 +99,8 @@ async def api_balance():
 
 
 @router.get("/positions")
-async def api_positions():
+async def api_positions(token: str = Cookie(None)):
+    user = _auth_guard(token)
     """获取持仓列表"""
     try:
         e = get_executor()
@@ -114,7 +130,8 @@ async def api_positions():
 
 
 @router.get("/orders")
-async def api_orders():
+async def api_orders(token: str = Cookie(None)):
+    user = _auth_guard(token)
     """获取委托列表"""
     try:
         e = get_executor()
@@ -146,7 +163,8 @@ async def api_orders():
 
 
 @router.post("/buy")
-async def api_buy(req: OrderRequest):
+async def api_buy(req: OrderRequest, token: str = Cookie(None)):
+    user = _auth_guard(token)
     """执行买入"""
     try:
         e = get_executor()
@@ -177,7 +195,8 @@ async def api_buy(req: OrderRequest):
 
 
 @router.post("/sell")
-async def api_sell(req: OrderRequest):
+async def api_sell(req: OrderRequest, token: str = Cookie(None)):
+    user = _auth_guard(token)
     """执行卖出"""
     try:
         e = get_executor()
@@ -207,7 +226,8 @@ async def api_sell(req: OrderRequest):
 
 
 @router.post("/cancel/{order_id}")
-async def api_cancel(order_id: str):
+async def api_cancel(order_id: str, token: str = Cookie(None)):
+    user = _auth_guard(token)
     """撤单"""
     try:
         e = get_executor()
@@ -221,7 +241,8 @@ async def api_cancel(order_id: str):
 
 
 @router.post("/cancel-all")
-async def api_cancel_all():
+async def api_cancel_all(token: str = Cookie(None)):
+    user = _auth_guard(token)
     """批量撤单"""
     try:
         e = get_executor()
@@ -240,7 +261,8 @@ async def api_cancel_all():
 
 
 @router.post("/market-order")
-async def api_market_order(req: MarketOrderRequest):
+async def api_market_order(req: MarketOrderRequest, token: str = Cookie(None)):
+    user = _auth_guard(token)
     """市价单 — 卖出用 sell_market 确保立即成交，买入用 buy_target_value"""
     try:
         e = get_executor()
@@ -275,7 +297,8 @@ async def api_market_order(req: MarketOrderRequest):
 
 
 @router.post("/batch-order")
-async def api_batch_order(req: BatchOrderRequest):
+async def api_batch_order(req: BatchOrderRequest, token: str = Cookie(None)):
+    user = _auth_guard(token)
     """批量下单"""
     try:
         e = get_executor()
@@ -304,7 +327,8 @@ async def api_batch_order(req: BatchOrderRequest):
 
 
 @router.get("/status")
-async def api_status():
+async def api_status(token: str = Cookie(None)):
+    user = _auth_guard(token)
     """查询远程交易服务状态"""
     try:
         e = get_executor()
@@ -316,43 +340,61 @@ async def api_status():
 
 
 @router.get("/trades")
-async def api_trades(limit: int = 50, offset: int = 0, ts_code: str = ""):
-    """查询 QMT 实盘成交记录
+async def api_trades(limit: int = 50, offset: int = 0, ts_code: str = "", token: str = Cookie(None)):
+    user = _auth_guard(token)
+    """查询实盘成交记录
 
-    数据来源优先级:
-    1. QMT 实时成交数据（从 get_trade_detail_data TRADE 读取）
-    2. MySQL qmt_trades 表（本地持久化，降级方案）
+    数据来源: MySQL qmt_trades 表 (source of truth)
+    QMT daemon 运行时实时写入 MySQL, 收盘后 backfill_from_signals 补全。
     """
     try:
-        e = get_executor()
-        if e._connected:
-            qmt_trades = e.get_qmt_trades()
-            if qmt_trades:
-                # 对数据做归一化
-                trades = []
-                for t in qmt_trades:
-                    code = t.get("code", "")
-                    if "." not in code:
-                        code = f"{code}.SH" if code.startswith("6") else f"{code}.SZ"
-                    bs = t.get("bs_flag", 0)
-                    action = "SELL" if bs == 1 else "BUY"
-                    trade_time = t.get("time", "")
-                    if trade_time and len(trade_time) == 6:
-                        trade_time = f"{trade_time[:2]}:{trade_time[2:4]}:{trade_time[4:]}"
-                    trades.append({
-                        "ts_code": code,
-                        "stock_name": t.get("name", ""),
-                        "action": action,
-                        "price": float(t.get("price", 0)),
-                        "quantity": int(t.get("volume", 0)),
-                        "amount": float(t.get("amount", 0)),
-                        "order_id": t.get("order_id", ""),
-                        "trade_time": trade_time,
-                        "source": "qmt_live",
-                    })
-                return {"trades": trades, "total": len(trades), "source": "qmt_live"}
-    except Exception:
-        logger.warning("QMT 实时成交数据不可用，降级到 MySQL")
+        import pymysql
+        from quant_app.utils.config import get_db_config
+        conn = pymysql.connect(**get_db_config())
+        cur = conn.cursor()
 
-    # 降级到本地 qmt_trades 表
+        where_parts = ["mode = 'live'", "status = 'filled'"]
+        params = []
+        if ts_code:
+            where_parts.append("ts_code = %s")
+            params.append(ts_code)
+        where = " AND ".join(where_parts)
+
+        cur.execute(f"SELECT COUNT(*) FROM qmt_trades WHERE {where}", params)
+        total = cur.fetchone()[0] or 0
+
+        cur.execute(
+            f"""SELECT ts_code, stock_name, action, price, quantity, amount,
+                       order_id, trade_time, reason, trade_date
+                FROM qmt_trades WHERE {where}
+                ORDER BY trade_date DESC, trade_time DESC
+                LIMIT %s OFFSET %s""",
+            params + [limit, offset]
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        trades = []
+        for r in rows:
+            action = "卖出" if r[2] == "SELL" else "买入"
+            trades.append({
+                "ts_code": r[0],
+                "stock_name": r[1] or "",
+                "action": action,
+                "price": float(r[3]) if r[3] else 0,
+                "quantity": int(r[4]) if r[4] else 0,
+                "amount": float(r[5]) if r[5] else float(r[3] or 0) * int(r[4] or 0),
+                "order_id": r[6] or "",
+                "trade_time": str(r[7]) if r[7] else "",
+                "reason": r[8] or "",
+                "trade_date": str(r[9]) if r[9] else "",
+                "source": "qmt_live",
+            })
+        return {"trades": trades, "total": total, "source": "qmt_trades"}
+    except Exception as e:
+        logger.warning("查询 qmt_trades 失败: %s", e)
+
+    # 最后一层兜底：qmt_trades 表
     return get_trades(limit=limit, offset=offset, ts_code=ts_code)
+

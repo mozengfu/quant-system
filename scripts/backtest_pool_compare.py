@@ -25,7 +25,7 @@ HOLD_DAYS = 5
 
 DB_CONFIG = {
     "host": "192.168.10.30", "port": 3306,
-    "user": "root", "password": "root123",
+    "user": "root", "password": os.environ.get("MYSQL_PASSWORD", ""),
     "database": "quant_db", "charset": "utf8mb4",
 }
 

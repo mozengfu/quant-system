@@ -8,6 +8,21 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+def _get_db_conn():
+    """从环境变量读取的数据库连接，替代硬编码 root123"""
+    import os
+    import pymysql
+    return pymysql.connect(
+        host=os.environ.get("MYSQL_HOST", "127.0.0.1"),
+        port=int(os.environ.get("MYSQL_PORT", "3306")),
+        user=os.environ.get("MYSQL_USER", "root"),
+        password=os.environ.get("MYSQL_PASSWORD", ""),
+        database=os.environ.get("MYSQL_DATABASE", "quant_db"),
+        charset="utf8mb4",
+        connect_timeout=5,
+    )
+
+
 QMT_HOST = "http://192.168.10.25:1430"
 
 
@@ -23,11 +38,7 @@ def _get(endpoint, timeout=5):
 def get_index_daily(ts_code, limit=5):
     """获取指数日线数据（替代 tushare pro.index_daily）"""
     try:
-        import pymysql
-        conn = pymysql.connect(
-            host="127.0.0.1", port=3306, user="root",
-            password="root123", database="quant_db", charset="utf8mb4"
-        )
+        conn = _get_db_conn()
         cur = conn.cursor()
         cur.execute(
             "SELECT trade_date, open, high, low, close, vol, amount, pct_chg "
@@ -66,11 +77,7 @@ def get_realtime_snapshot(codes=None):
 def get_recent_trade_dates(n=5):
     """获取最近n个交易日（替代 tushare trade_cal）"""
     try:
-        import pymysql
-        conn = pymysql.connect(
-            host="127.0.0.1", port=3306, user="root",
-            password="root123", database="quant_db", charset="utf8mb4"
-        )
+        conn = _get_db_conn()
         cur = conn.cursor()
         cur.execute(
             "SELECT DISTINCT trade_date FROM daily_price "
@@ -90,11 +97,7 @@ def get_recent_trade_dates(n=5):
 def get_daily_data(ts_code, start_date=None, end_date=None, limit=100):
     """获取个股日线数据"""
     try:
-        import pymysql
-        conn = pymysql.connect(
-            host="127.0.0.1", port=3306, user="root",
-            password="root123", database="quant_db", charset="utf8mb4"
-        )
+        conn = _get_db_conn()
         cur = conn.cursor()
         sql = "SELECT trade_date, open, high, low, close, vol, amount, pct_chg FROM daily_price WHERE ts_code=%s"
         params = [ts_code]

@@ -1,40 +1,91 @@
-# 量化系统定时任务
-# 安装：crontab /tmp/quant_crontab
 
-SHELL=/bin/zsh
+# 17:00 Tushare数据导入（必须先完成）
+# 17:30 模拟交易扫描（依赖17:00的最新数据，含：止损/止盈/超时自动执行 → 持仓刷新 → JSON同步）
+# 17:45 V4策略扫描（可选，不影响模拟交易）
+# ========== ML 模型月度重训练（每月1号凌晨3点） ==========
+# ========== V4 组合策略扫描 ==========
+# ========== 底部苏醒策略扫描 ==========
+# ========== 数据自动刷新 ==========
+# ========== 模拟交易 ==========
+# ========== 每日PE/PB/市值同步（5分钟后，等daily_price完成） ==========
+# ========== 每日数据导入（Tushare → MySQL） ==========
+# ========== 每日盘后流水线（依赖链）==========
+# ========== 盘中持仓监控 (V2.0 — 替代旧 position_monitor，含自动止盈止损) ==========
+# ========== 盘中监控（含自动止盈止损执行）==========
+# ========== 资金流向 / 大宗 / 融资 续同步 (5/28 后缺口, 每天跑 6 周内已无积压) ==========
+# ========== 飞书预警 ==========
+# stock_pool/recommend/premarket 每30分钟刷新一次
+# 上午提醒
+# 下午提醒
+# 中午提醒
+# 主人：莫增富 | 健康目标：降血脂、降尿酸、控制体重
+# 优先用 Windows 全量训练，不在线则 Mac 快速重训
+# 健康管理定时提醒 - 基于 2024 体检报告定制
+# 傍晚提醒
+# 安装方式：crontab /Users/mozengfu/workspace/quant-system/scripts/quant_crontab
+# 实盘调度器：每 10 分钟扫描持仓，触发 ATR 动态止损 / 硬性兜底 -5% / 移动止盈 / V11 盘中择时
+# 持仓扫描：工作日 9:30-15:00 每 5 分钟
+# 收盘推送：工作日 15:05
+# 早晨提醒
+# 晚间提醒
+# 查看：crontab -l
+# 止盈止损检查：工作日 9:30-14:55 每 5 分钟（含自动执行）
+# 注意：飞书预警仅通知，不执行交易；盘中自动执行在 position_monitor 中
+# 环境变量
+# 盘中每30分钟刷新（9:30-14:30）
+# 盘前刷新（9:00）
+# 盘前推送：工作日 9:00
+# 触发止损(-3%)/止盈(+6%/+10%/+18%)时自动执行卖出，不依赖日志告警
+# 训练结果自动发飞书通知
+#!/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin
 PYTHON3=/Library/Frameworks/Python.framework/Versions/3.12/bin/python3
 QUANT_DIR=/Users/mozengfu/workspace/quant-system
+SHELL=/bin/bash
 
-# ========== 飞书预警 ==========
-0 9 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/feishu_alerts.py morning >> $QUANT_DIR/logs/feishu_alerts.log 2>&1
-5 15 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/feishu_alerts.py daily >> $QUANT_DIR/logs/feishu_alerts.log 2>&1
+# 量化系统定时任务配置
+# ⚠️ 注意：重定向 >> 后的路径必须用绝对路径，$QUANT_DIR 在 cron 重定向中不展开
+* 9-15 * * 1-5 cd /Users/mozengfu/workspace/quant-system && $PYTHON3 scripts/live_trading_scheduler.py monitor >> /Users/mozengfu/workspace/quant-system/logs/live_trading_monitor.log 2>&1
+*/30 9-14 * * 1-5 cd /Users/mozengfu/workspace/quant-system && bash scripts/auto_refresh_data.sh >> /Users/mozengfu/workspace/quant-system/logs/auto_refresh.log 2>&1
+*/5 9-15 * * 1-5 cd /Users/mozengfu/workspace/quant-system && $PYTHON3 scripts/feishu_alerts.py alert >> /Users/mozengfu/workspace/quant-system/logs/feishu_alerts.log 2>&1
+*/5 9-15 * * 1-5 cd /Users/mozengfu/workspace/quant-system && $PYTHON3 scripts/position_monitor.py >> /Users/mozengfu/workspace/quant-system/logs/position_monitor.log 2>&1
+0 10 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "💺 久坐 1 小时了，起身活动 5 分钟，倒杯水"
+0 11 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "👀 眼保健操 + 伸展运动 2 分钟"
+0 12 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "🍜 午餐时间到了，按时吃饭（少油少盐，多蔬菜）"
+0 13 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "💧 喝水提醒（累计 1000ml）"
+0 14 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "💧 下午多喝水（目标 1500ml）"
+0 15 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "💺 起身活动 5 分钟，做做伸展"
+0 16 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "💺 又坐了 2 小时，起身活动活动，喝水"
+0 17 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "💧 喝水提醒（累计 2000ml）"
+0 17 * * 1-5 cd /Users/mozengfu/workspace/quant-system && $PYTHON3 scripts/update_daily_price_cron.py >> /Users/mozengfu/workspace/quant-system/logs/daily_import.log 2>&1
+0 18 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "🍽️ 晚餐时间，七分饱，清淡为主"
+0 19 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "🚶 饭后运动时间：先散步 10 分钟助消化，然后快走/慢跑 30 分钟（共 40-60 分钟）"
+0 20 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "🏃 运动时间到了（快走/慢跑 30 分钟）"
+0 21 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "💧 睡前少喝水，避免夜尿"
+0 22 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "📖 准备休息，看看书或听音乐放松"
+0 23 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "🌙 该睡觉了，争取 23:00 前入睡"
+0 3 1 * * cd /Users/mozengfu/workspace/quant-system && FEISHU_BOT_WEBHOOK=$($PYTHON3 -c "from dotenv import load_dotenv; load_dotenv(); import os; print(os.getenv('FEISHU_BOT_WEBHOOK',''))") $PYTHON3 scripts/cron_retrain.py >> /Users/mozengfu/workspace/quant-system/logs/retrain.log 2>&1
+0 8 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "💊 如需服用维生素 B 族，现在服用"
+0 9 * * 1-5 cd /Users/mozengfu/workspace/quant-system && $PYTHON3 scripts/feishu_alerts.py morning >> /Users/mozengfu/workspace/quant-system/logs/feishu_alerts.log 2>&1
+0 9 * * 1-5 cd /Users/mozengfu/workspace/quant-system && bash scripts/auto_refresh_data.sh >> /Users/mozengfu/workspace/quant-system/logs/auto_refresh.log 2>&1
+10 17 * * 1-5 cd /Users/mozengfu/workspace/quant-system && $PYTHON3 scripts/backfill_block_trade.py >> /Users/mozengfu/workspace/quant-system/logs/backfill_block.log 2>&1
+15 17 * * 1-5 cd /Users/mozengfu/workspace/quant-system && $PYTHON3 scripts/backfill_margin.py >> /Users/mozengfu/workspace/quant-system/logs/backfill_margin.log 2>&1
+30 10 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "💧 喝水提醒（累计 500ml）"
+30 12 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "💤 午休建议休息 30 分钟，下午更有精神"
+30 17 * * 1-5 cd /Users/mozengfu/workspace/quant-system && $PYTHON3 scripts/sim_trading.py scan >> /Users/mozengfu/workspace/quant-system/logs/sim_trading.log 2>&1
+30 7 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "🌅 起床了！喝一杯温水（250ml）开启新的一天"
+45 17 * * 1-5 cd /Users/mozengfu/workspace/quant-system && $PYTHON3 run_three_strategies.py >> /Users/mozengfu/workspace/quant-system/logs/v4_scan.log 2>&1
+45 7 * * * ~/.openclaw/workspace-health-assistant/scripts/health_remind_simple.sh "🍳 早餐时间到了，记得吃早餐（燕麦/杂粮 + 鸡蛋 + 蔬菜）"
+5 15 * * 1-5 cd /Users/mozengfu/workspace/quant-system && $PYTHON3 scripts/feishu_alerts.py daily >> /Users/mozengfu/workspace/quant-system/logs/feishu_alerts.log 2>&1
+5 17 * * 1-5 cd /Users/mozengfu/workspace/quant-system && $PYTHON3 scripts/backfill_moneyflow.py >> /Users/mozengfu/workspace/quant-system/logs/backfill_moneyflow.log 2>&1
+5 17 * * 1-5 cd /Users/mozengfu/workspace/quant-system && $PYTHON3 scripts/sync_daily_basic.py >> /Users/mozengfu/workspace/quant-system/logs/sync_daily_basic.log 2>&1
+55 17 * * 1-5 cd /Users/mozengfu/workspace/quant-system && $PYTHON3 scripts/scan_bottom_awakening.py >> /Users/mozengfu/workspace/quant-system/logs/bottom_awakening.log 2>&1
 
-# ========== 数据刷新 ==========
-0 9 * * 1-5 cd $QUANT_DIR && bash scripts/auto_refresh_data.sh >> $QUANT_DIR/logs/auto_refresh.log 2>&1
-*/30 9-14 * * 1-5 cd $QUANT_DIR && bash scripts/auto_refresh_data.sh >> $QUANT_DIR/logs/auto_refresh.log 2>&1
-
-# ========== 盘后数据导入 ==========
-0 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/update_daily_price_cron.py >> $QUANT_DIR/logs/daily_import.log 2>&1
-
-# ========== 实盘交易调度 ==========
-# 保活（每5分钟）
-*/5 9-14 * * 1-5 cd $QUANT_DIR && $PYTHON3 -c "from quant_app.trading.executor import create_executor; e=create_executor(); e.keepalive()" >> $QUANT_DIR/logs/keepalive.log 2>&1
-# 盘后选股 (17:30) — ML选股，记录候选不入单
-30 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/live_trading_scheduler.py scan >> $QUANT_DIR/logs/live_trading.log 2>&1
-# 早盘择时 (9:35) — 读取候选择时买入
-35 9 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/live_trading_scheduler.py morning >> $QUANT_DIR/logs/live_trading_morning.log 2>&1
-# 9:36 每日开盘健康检查 — 验证 P1 dedup / QMT-sim 对齐 / 资产健康
-36 9 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/daily_health_check.py >> $QUANT_DIR/logs/daily_health.log 2>&1
-# 盘中持仓监控 (每5分钟) — 止盈止损自动执行
-*/5 9-14 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/live_trading_scheduler.py monitor >> $QUANT_DIR/logs/live_trading_monitor.log 2>&1
-
-# ========== 辅助策略（不影响实盘）==========
-45 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 run_three_strategies.py >> $QUANT_DIR/logs/v4_scan.log 2>&1
-55 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/scan_bottom_awakening.py >> $QUANT_DIR/logs/bottom_awakening.log 2>&1
-
-# ========== 周末重训 ==========
-0 3 * * 6 cd $QUANT_DIR && bash scripts/rolling_train.sh >> $QUANT_DIR/logs/rolling_train.log 2>&1
-
-# ========== 股票池生成（每天盘后，数据导入之后）==========
-15 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 -c "from quant_app.services.strategy_service import scan_daily_pool; scan_daily_pool()" >> $QUANT_DIR/logs/stockpool.log 2>&1
+# ====== 日内做T策略 ======
+# 盘中每1分钟检查 (9:35-11:30, 13:00-14:50)
+*/1 9-11 * * 1-5 cd /Users/mozengfu/workspace/quant-system && T_MONITOR_MODE=dryrun python3 scripts/intraday_t_monitor.py --mode dryrun --once >> /Users/mozengfu/workspace/quant-system/logs/intraday_t.log 2>&1
+*/1 13-14 * * 1-5 cd /Users/mozengfu/workspace/quant-system && T_MONITOR_MODE=dryrun python3 scripts/intraday_t_monitor.py --mode dryrun --once >> /Users/mozengfu/workspace/quant-system/logs/intraday_t.log 2>&1
+# 14:40-14:50 强制还原 T 仓位
+*/1 14 * * 1-5 cd /Users/mozengfu/workspace/quant-system && T_MONITOR_MODE=dryrun python3 scripts/intraday_t_monitor.py --mode dryrun --once >> /Users/mozengfu/workspace/quant-system/logs/intraday_t.log 2>&1
+# 日内做T报告 (17:10 盘后分析, 近1周+调优建议)
+10 17 * * 1-5 cd /Users/mozengfu/workspace/quant-system && python3 scripts/intraday_t_analysis.py --days 7 --tune --send >> /Users/mozengfu/workspace/quant-system/logs/intraday_t.log 2>&1

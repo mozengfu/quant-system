@@ -51,9 +51,10 @@ QUANT_DIR=/Users/mozengfu/workspace/quant-system
 # ========== 底部苏醒策略扫描 ==========
 55 17 * * 1-5 cd $QUANT_DIR && $PYTHON3 scripts/scan_bottom_awakening.py >> $QUANT_DIR/logs/bottom_awakening.log 2>&1
 
-# ========== V11.0 滚动训练（每周末） ==========
-# 每周六凌晨3点重训模型，用最新数据。训练约40分钟，完成后自动部署
-0 3 * * 6 cd $QUANT_DIR && bash scripts/rolling_train.sh
+# ========== ML 模型月度重训练（每月1号凌晨3点） ==========
+# 优先用 Windows 全量训练，不在线则 Mac 快速重训
+# 训练结果自动发飞书通知
+0 3 1 * * cd $QUANT_DIR && FEISHU_BOT_WEBHOOK=$($PYTHON3 -c "from dotenv import load_dotenv; load_dotenv(); import os; print(os.getenv('FEISHU_BOT_WEBHOOK',''))") $PYTHON3 scripts/cron_retrain.py >> $QUANT_DIR/logs/retrain.log 2>&1
 
 # ========== 盘中持仓监控 (V2.0 — 替代旧 position_monitor，含自动止盈止损) ==========
 # 实盘调度器：每 10 分钟扫描持仓，触发 ATR 动态止损 / 硬性兜底 -5% / 移动止盈 / V11 盘中择时

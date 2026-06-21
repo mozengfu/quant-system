@@ -4,7 +4,20 @@ import logging
 import os
 
 import numpy as np
-from fastapi import APIRouter
+from fastapi import APIRouter, Cookie, HTTPException
+from quant_app.routes.auth import get_current_user
+
+UNAUTHORIZED = HTTPException(status_code=401, detail="未登录或会话已过期")
+
+
+def _auth_guard(token: str) -> str:
+    user = get_current_user(token)
+    if not user:
+        raise UNAUTHORIZED
+    return user
+
+
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/backtest", tags=["backtest"])
@@ -41,7 +54,8 @@ def _calc_metrics(records):
 
 
 @router.get("/ml")
-async def ml_backtest():
+async def ml_backtest(token: str = Cookie(None)):
+    user = _auth_guard(token)
     """ML 模型回测 — 严格OOS + 污染模型对比"""
 
     # --- OOS 回测（主结果） ---
@@ -85,7 +99,8 @@ async def ml_backtest():
 
 
 @router.get("/scanner")
-async def scanner_backtest():
+async def scanner_backtest(token: str = Cookie(None)):
+    user = _auth_guard(token)
     """实时扫描策略回测"""
     from quant_app.services.scanner_backtest import run_backtest
     try:

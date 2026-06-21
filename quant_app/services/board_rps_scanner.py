@@ -45,6 +45,48 @@ def _is_noise_board(name, code):
 WEEKLY_RPS_WINDOW = 26  # 周线RPS滚动窗口（26周≈6个月，兼顾稳定性和灵敏度）
 BOARD_OVERLAP_THRESHOLD = 0.50  # 板块去重阈值：成分股重叠超过此比例则视为同一主题
 
+# P0 筛选参数（板块RPS主线识别 v1）
+RANK_SLOPE_LOOKBACK = 4       # 看最近 N 周的 rank 序列
+RANK_SLOPE_MIN_DELTA = -1     # rank 差值 >= -1 视为"爬升或持平"（允许 1 名小波动）
+BREADTH_LOOKBACK_DAYS = 3     # 成分股上涨占比回看天数
+BREADTH_MIN_UPSHARE = 0.70    # 上涨家数占比阈值
+
+# 自挂持久化的限频控制（防止 monitor 每分钟重复写库）
+_PERSIST_MIN_INTERVAL = 3600  # 至少 1 小时才重写一次
+_persist_last_run = {'ts': 0.0, 'key': None}
+_persist_in_progress = False  # 防止 save_board_rps_history 内回触发死循环
+
+
+def _auto_persist_rps_history(board_df, as_of_date):
+    """get_board_rps 周线模式末尾自动持久化 hook。
+
+    设计：仅当 (as_of_date, year-week) 变化 或 距上次写入 > 1h 时才写。
+    monitor 每分钟调用一次，不会产生重复写入。
+    save_board_rps_history 内部也会调 get_board_rps → 用 _persist_in_progress 防递归。
+    """
+    global _persist_in_progress
+    if _persist_in_progress:
+        return
+    import time as _time
+    try:
+        key = str(as_of_date)
+        now = _time.time()
+        # 同一天同一周，1 小时内不重写
+        if (_persist_last_run['key'] == key
+                and (now - _persist_last_run['ts']) < _PERSIST_MIN_INTERVAL):
+            return
+        _persist_in_progress = True
+        try:
+            n = save_board_rps_history(as_of_date=as_of_date)
+        finally:
+            _persist_in_progress = False
+        if n:
+            _persist_last_run.update({'ts': now, 'key': key})
+            logger.debug(f"_auto_persist_rps_history: 写入 {n} 条 (key={key})")
+    except Exception as e:
+        # hook 失败不能影响主流程
+        logger.debug(f"_auto_persist_rps_history 跳过: {e}")
+
 
 def _dedup_boards(board_df, top_n, max_candidates=30):
     """
@@ -201,6 +243,8 @@ def get_board_rps(as_of_date=None, period=60, min_days=20, use_weekly=True):
         board_df['rank'] = range(1, total + 1)
         board_df['rps'] = ((total - board_df['rank'] + 1) / total * 100).round(1)
         logger.info(f"Board RPS周线: {total}个板块评分完成")
+        # P0 自挂钩子：把当周全量 rank 写入 board_rps_history（限频 1 次/小时）
+        _auto_persist_rps_history(board_df, as_of_date=max_date)
         return board_df
 
     else:
@@ -404,13 +448,84 @@ def get_top_board_stocks(top_n_boards=5, as_of_date=None, use_weekly=True):
     logger.info(f"Top{top_n_boards}板块: {board_names}")
     logger.info(f"  成分股: {len(ts_codes)}只")
 
+    # ============== P0 主线过滤（2026-06-20 补充） ==============
+    # 过滤 1: rank 4 周斜率（连续爬升 / 持平）—— 不允许断崖式下滑
+    # 过滤 2: 成分股近 3 日上涨家数占比 ≥ 70% —— 排除权重独拉指数
+    slope_series = get_rank_slope_map(as_of_date=as_of_date)
+    breadth_map = get_board_breadth(board_codes, as_of_date=as_of_date)
+
+    kept_codes, kept_names, kept_rps = [], [], []
+    dropped = []
+    for bc, bn, br in zip(board_codes, board_names, board_rps):
+        ok_slope, slope_info = is_rank_climbing(bc, slope_series)
+        upshare = breadth_map.get(bc)
+        ok_breadth = (upshare is None) or (upshare >= BREADTH_MIN_UPSHARE)
+
+        if ok_slope and ok_breadth:
+            kept_codes.append(bc)
+            kept_names.append(bn)
+            kept_rps.append(br)
+            logger.info(
+                "  [P0 保留] %s(%s) rank序列=%s delta=%s upshare=%s",
+                bn, bc, slope_info.get('ranks'), slope_info.get('delta'),
+                f"{upshare:.1%}" if upshare is not None else 'N/A',
+            )
+        else:
+            reasons = []
+            if not ok_slope:
+                reasons.append(f"rank下滑序列={slope_info.get('ranks')}")
+            if not ok_breadth:
+                reasons.append(f"upshare={upshare:.1%}<{BREADTH_MIN_UPSHARE:.0%}")
+            logger.info("  [P0 剔除] %s(%s) %s", bn, bc, '; '.join(reasons))
+            dropped.append({'board_code': bc, 'board_name': bn,
+                           'rps': br, 'reasons': reasons,
+                           'slope': slope_info, 'upshare': upshare})
+
+    # 如果过滤后不足，从原始 TopN 候选里按 rps 补回（确保成分股池不空）
+    if not kept_codes and len(board_codes) >= top_n_boards:
+        kept_codes = board_codes[:top_n_boards]
+        kept_names = board_names[:top_n_boards]
+        kept_rps = board_rps[:top_n_boards]
+        logger.warning("P0 过滤后无板块，回退到原始 Top%d（可能所有候选都不过滤）", top_n_boards)
+    else:
+        board_codes, board_names, board_rps = kept_codes, kept_names, kept_rps
+
+    # 成分股也只保留通过 P0 过滤后的板块
+    if dropped:
+        kept_set = set(kept_codes)
+        before = len(ts_codes)
+        ts_codes = _filter_stocks_by_kept_boards(ts_codes, kept_set)
+        logger.info(f"P0 过滤: 成分股 {before} → {len(ts_codes)}")
+
     return {
         'board_codes': board_codes,
         'board_names': board_names,
         'board_rps': board_rps,
         'ts_codes': ts_codes,
         'stock_map': stock_map,
+        'p0_dropped': dropped,  # 调试/审计用，外部不依赖
     }
+
+
+def _filter_stocks_by_kept_boards(ts_codes, kept_board_codes):
+    """成分股只在"通过 P0 过滤后的板块"内才保留。"""
+    if not ts_codes or not kept_board_codes:
+        return ts_codes
+    conn = pymysql.connect(**get_db_config())
+    try:
+        ph = ','.join(['%s'] * len(ts_codes))
+        pb = ','.join(['%s'] * len(kept_board_codes))
+        cur = conn.cursor()
+        cur.execute(f"""
+            SELECT DISTINCT ts_code FROM board_concept_cons
+            WHERE ts_code IN ({ph}) AND board_code IN ({pb})
+              AND (is_latest=1 OR is_latest IS NULL)
+        """, list(ts_codes) + list(kept_board_codes))
+        kept = {r[0] for r in cur.fetchall()}
+        cur.close()
+        return [c for c in ts_codes if c in kept]
+    finally:
+        conn.close()
 
 
 def board_scan_recommend(top_n=3, as_of_date=None, use_weekly=True):
@@ -588,3 +703,299 @@ def board_rps_realtime_signals(top_n_boards=5, as_of_date=None, use_weekly=True)
     results.sort(key=lambda x: x['combined_score'], reverse=True)
     logger.info("实时扫描: %d只通过, 最高综合分=%.1f", len(results), results[0]['combined_score'] if results else 0)
     return results
+
+
+# ============================================================================
+# P0 板块RPS主线识别（2026-06-20 补充）
+# 来源: 头条文章《靠板块RPS强弱榜单锁定市场主线》4 条筛选标准
+# 目的: 不只看静态 rank，看"名次变动趋势 + 板块内部涨跌结构"
+# 不动 get_board_rps / board_scan_recommend 既有逻辑，仅在 get_top_board_stocks 末尾追加两道过滤
+# ============================================================================
+
+def save_board_rps_history(as_of_date=None):
+    """把"截止 as_of_date 当周"的 RPS 全量结果写入 board_rps_history 表。
+
+    写入策略：先 DELETE 当周已存在记录，再 INSERT 最新结果，保证幂等。
+    供 cron 每天/周跑一次即可（rank 历史序列由表自然累积）。
+    """
+    board_df = get_board_rps(as_of_date=as_of_date, use_weekly=True)
+    if board_df.empty:
+        logger.warning("save_board_rps_history: 无 RPS 数据")
+        return 0
+
+    # 找到对应周（用 max_date 反推 ISO year/week）
+    conn = pymysql.connect(**get_db_config())
+    try:
+        cur = conn.cursor()
+        max_date = as_of_date or _get_max_date(conn)
+        cur.execute("""
+            SELECT YEAR(%s), WEEK(%s, 3)
+        """, (max_date, max_date))
+        y, w = cur.fetchone()
+        # 取当周任意一个交易日作为 trade_date
+        cur.execute("""
+            SELECT MAX(trade_date) FROM board_concept_hist
+            WHERE YEARWEEK(trade_date, 3) = YEARWEEK(%s, 3)
+        """, (max_date,))
+        week_trade_date = cur.fetchone()[0]
+
+        # 幂等：先删
+        cur.execute("DELETE FROM board_rps_history WHERE year=%s AND week=%s", (y, w))
+
+        rows = [
+            (int(y), int(w), week_trade_date, r['board_code'], r['board_name'],
+             float(r['cum_return']), float(r['rps']), int(r['rank']))
+            for _, r in board_df.iterrows()
+        ]
+        cur.executemany("""
+            INSERT INTO board_rps_history
+                (year, week, trade_date, board_code, board_name, cum_return, rps, rank_num)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, rows)
+        conn.commit()
+        cur.close()
+        logger.info("save_board_rps_history: year=%s week=%s 写入 %d 条", y, w, len(rows))
+        return len(rows)
+    finally:
+        conn.close()
+
+
+def get_rank_slope_map(as_of_date=None, lookback_weeks=None):
+    """取最近 N 周每个板块的 rank 序列。
+
+    Returns:
+        dict: {board_code: [rank_t, rank_t-1, ..., rank_t-N+1]}
+              序列按时间从早到晚排列（最右是最新一周的 rank）
+    """
+    if lookback_weeks is None:
+        lookback_weeks = RANK_SLOPE_LOOKBACK
+
+    conn = pymysql.connect(**get_db_config())
+    try:
+        cur = conn.cursor()
+        max_date = as_of_date or _get_max_date(conn)
+        cur.execute("SELECT YEAR(%s), WEEK(%s, 3)", (max_date, max_date))
+        y, w = cur.fetchone()
+        # 找最近 N 周 (year, week) 对
+        cur.execute("""
+            SELECT DISTINCT year, week
+            FROM board_rps_history
+            WHERE (year < %s) OR (year = %s AND week <= %s)
+            ORDER BY year DESC, week DESC
+            LIMIT %s
+        """, (y, y, w, lookback_weeks))
+        weeks = list(reversed(cur.fetchall()))  # 早→晚
+        if not weeks:
+            return {}
+
+        # 用 tuple 列表展开成 ((y1,w1), (y2,w2), ...)
+        ph = ','.join(['(%s,%s)'] * len(weeks))
+        flat = [v for pair in weeks for v in pair]
+        cur.execute(f"""
+            SELECT year, week, board_code, rank_num
+            FROM board_rps_history
+            WHERE (year, week) IN ({ph})
+            ORDER BY year ASC, week ASC
+        """, flat)
+        rows = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
+
+    # 按板块聚合 rank 序列
+    series = {}
+    for yr, wk, bcode, rk in rows:
+        series.setdefault(bcode, []).append(int(rk))
+    return series
+
+
+def is_rank_climbing(board_code, series, lookback=None):
+    """判断板块 rank 序列是否"爬升或持平"。
+
+    规则（最近 N 周）：
+      rank 序列 [r_{t-N+1}, ..., r_{t-1}, r_t]
+      delta = r_{t-N+1} - r_t  (早→晚，rank 数字变小 = 爬升)
+      delta >= RANK_SLOPE_MIN_DELTA（即 ≥ -1）→ 通过
+      即允许 1 名小波动，但不可断崖式下滑
+
+    Returns:
+        bool, dict（含 slope 详情，便于日志）
+    """
+    if lookback is None:
+        lookback = RANK_SLOPE_LOOKBACK
+    ranks = series.get(board_code, [])
+    if len(ranks) < 2:
+        # 数据不足时保守放行（避免新板块被错杀）
+        return True, {"reason": "数据不足(<2周),放行", "ranks": ranks}
+    use = ranks[-lookback:] if len(ranks) >= lookback else ranks
+    delta = use[0] - use[-1]  # 正=爬升
+    passed = delta >= RANK_SLOPE_MIN_DELTA
+    return passed, {"delta": delta, "ranks": use, "passed": passed}
+
+
+def get_board_breadth(board_codes, as_of_date=None, lookback_days=None):
+    """对每个板块计算"成分股近 N 日上涨家数占比"。
+
+    上涨定义: daily_price.pct_chg > 0 的成分股数 / 总成分股数
+    阈值: BREADTH_MIN_UPSHARE (默认 70%)
+
+    Returns:
+        dict: {board_code: upshare (float)}  缺失或无成分股则返回 None
+    """
+    if lookback_days is None:
+        lookback_days = BREADTH_LOOKBACK_DAYS
+    if not board_codes:
+        return {}
+
+    conn = pymysql.connect(**get_db_config())
+    try:
+        cur = conn.cursor()
+        max_date = as_of_date or _get_max_date(conn)
+        # 取最近 N 个交易日
+        cur.execute("""
+            SELECT DISTINCT trade_date FROM daily_price
+            WHERE trade_date <= %s
+            ORDER BY trade_date DESC LIMIT %s
+        """, (max_date, lookback_days))
+        days = [r[0] for r in cur.fetchall()]
+        if not days:
+            return {bc: None for bc in board_codes}
+
+        ph_d = ','.join(['%s'] * len(days))
+        ph_b = ','.join(['%s'] * len(board_codes))
+        # 一次 SQL: 对每个 (board, day) 算成分股上涨占比，再按 board 平均
+        cur.execute(f"""
+            SELECT bcc.board_code,
+                   AVG(CASE WHEN dp.pct_chg > 0 THEN 1 ELSE 0 END) AS upshare
+            FROM board_concept_cons bcc
+            JOIN daily_price dp
+              ON dp.ts_code = bcc.ts_code
+             AND dp.trade_date IN ({ph_d})
+            WHERE bcc.board_code IN ({ph_b})
+              AND (bcc.is_latest = 1 OR bcc.is_latest IS NULL)
+              AND dp.pct_chg IS NOT NULL
+            GROUP BY bcc.board_code
+        """, days + list(board_codes))
+        rows = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
+
+    return {bc: float(upshare) if upshare is not None else None for bc, upshare in rows}
+
+
+# ============================================================================
+# 个股 RPS 止损（2026-06-20 补充）
+# 规则: 当前 20 日累计收益在历史 250 日里 RPS < 20 → 资金退潮, 立即止损
+# 优於纯价格止损: 价格跌往往是结果, RPS 跌是因 → 更早撤退
+# ============================================================================
+
+RPS_STOP_LOOKBACK = 20          # 当下累计收益窗口
+RPS_STOP_HISTORY = 250          # 历史回看天数
+RPS_STOP_THRESHOLD = 20.0       # RPS < 20 视为止损触发 (2026-06-13: 从 15 上调到 20，过滤楚江 5/21 假信号)
+RPS_STOP_MIN_HOLD_DAYS = 2      # 持仓 < 2 天不触发 RPS 止损（避免买入次日波动）
+
+
+def compute_stock_rps(ts_code, as_of_date=None, lookback=None, history=None):
+    """计算个股在 as_of_date 当日的 RPS（百分位排名）。
+
+    RPS = (过去 250 日所有 20 日累计收益 ≤ 当前 20 日累计收益) / 总窗口数 × 100
+
+    Args:
+        ts_code: 股票代码
+        as_of_date: 截止日期 (str 或 date)，None=最新
+        lookback: 当下累计窗口天数 (默认 20)
+        history:  历史回看天数 (默认 250)
+
+    Returns:
+        (cum_return, rps, lower_band)  其中 lower_band 是历史 lookback 窗口的下沿 (25 分位)
+        数据不足返回 (None, None, None)
+    """
+    if lookback is None:
+        lookback = RPS_STOP_LOOKBACK
+    if history is None:
+        history = RPS_STOP_HISTORY
+
+    conn = pymysql.connect(**get_db_config())
+    try:
+        cur = conn.cursor()
+        max_date = as_of_date or cur.execute("SELECT MAX(trade_date) FROM daily_price") \
+                   or _get_max_date(conn)
+        if isinstance(max_date, int):
+            cur.execute("SELECT MAX(trade_date) FROM daily_price")
+            max_date = cur.fetchone()[0]
+
+        # 取历史 N 日 pct_chg
+        cur.execute("""
+            SELECT pct_chg FROM daily_price
+            WHERE ts_code=%s AND trade_date<=%s
+            ORDER BY trade_date DESC LIMIT %s
+        """, (ts_code, max_date, history))
+        rows = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
+
+    rets = [float(r[0]) for r in rows if r[0] is not None]
+    if len(rets) < lookback + 5:  # 至少 lookback+5 天数据
+        return None, None, None
+
+    # 当前 lookback 日累计收益
+    cum_now = sum(rets[:lookback])
+
+    # 历史滚动 lookback 窗口的累计收益分布
+    rolling = []
+    for i in range(len(rets) - lookback + 1):
+        rolling.append(sum(rets[i:i + lookback]))
+
+    # RPS: 当前 cum_now 在历史 rolling 里的百分位
+    rank = sum(1 for x in rolling if x <= cum_now)
+    rps = rank / len(rolling) * 100
+
+    # 下沿: rolling 的 25 分位 (历史偏弱区间的上限)
+    rolling_sorted = sorted(rolling)
+    lower_band = rolling_sorted[len(rolling_sorted) // 4]
+
+    return cum_now, rps, lower_band
+
+
+def check_rps_stop(ts_code, as_of_date=None, days_held=0):
+    """判断个股是否触发 RPS 止损。
+
+    触发条件（任一满足）:
+      1. RPS < RPS_STOP_THRESHOLD (默认 15)
+      2. cum_now < lower_band (20 日累计收益跌破历史下沿)
+
+    Args:
+        ts_code: 股票代码
+        as_of_date: 截止日期
+        days_held: 已持仓天数 (< RPS_STOP_MIN_HOLD_DAYS 直接放行，避免买入次日波动误杀)
+
+    Returns:
+        (should_stop: bool, detail: dict)
+    """
+    if days_held < RPS_STOP_MIN_HOLD_DAYS:
+        return False, {
+            "reason": f"持仓仅{days_held}天(<{RPS_STOP_MIN_HOLD_DAYS}天), 跳过 RPS 止损",
+            "should_stop": False,
+        }
+
+    cum, rps, lb = compute_stock_rps(ts_code, as_of_date=as_of_date)
+    if cum is None:
+        return False, {"reason": "数据不足, 跳过 RPS 止损"}
+
+    reasons = []
+    if rps < RPS_STOP_THRESHOLD:
+        reasons.append(f"RPS={rps:.1f}<{RPS_STOP_THRESHOLD:.0f}")
+    if cum < lb:
+        reasons.append(f"20日累计{cum:+.2f}%<下沿{lb:+.2f}%")
+
+    should = bool(reasons)
+    return should, {
+        "should_stop": should,
+        "cum_20d": cum,
+        "rps": rps,
+        "lower_band": lb,
+        "reasons": reasons,
+        "reason_text": "RPS止损: " + "; ".join(reasons) if reasons else "未触发",
+    }

@@ -103,3 +103,69 @@ def get_blocks(token: str = Cookie(None)):
     if not get_current_user(token):
         raise HTTPException(status_code=401, detail="未登录")
     return {"blocks": ALL_BLOCKS}
+
+
+@router.get("/api/strategy/compare")
+def strategy_compare(token: str = Cookie(None)):
+    """策略对比：V11 vs 板RPS实时 交易表现"""
+    if not get_current_user(token):
+        raise HTTPException(status_code=401, detail="未登录")
+
+    import pymysql
+    from quant_app.utils.config import get_db_config
+
+    conn = pymysql.connect(**get_db_config())
+    cur = conn.cursor()
+    try:
+        # 按策略汇总
+        cur.execute("""
+            SELECT
+                strategy,
+                COUNT(*) AS total_trades,
+                SUM(CASE WHEN status='已平仓' THEN 1 ELSE 0 END) AS closed,
+                SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) AS wins,
+                ROUND(AVG(pnl_pct)*100, 2) AS avg_return_pct,
+                ROUND(SUM(pnl), 2) AS total_pnl,
+                ROUND(MAX(pnl_pct)*100, 2) AS best_trade_pct,
+                ROUND(MIN(pnl_pct)*100, 2) AS worst_trade_pct,
+                ROUND(AVG(hold_days), 1) AS avg_hold_days
+            FROM strategy_trade_log
+            GROUP BY strategy
+            ORDER BY total_pnl DESC
+        """)
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description]
+
+        # 持仓中（未平仓）
+        cur.execute("""
+            SELECT strategy, COUNT(*) AS holding
+            FROM strategy_trade_log
+            WHERE status='持有'
+            GROUP BY strategy
+        """)
+        holding = {r[0]: r[1] for r in cur.fetchall()}
+
+        strategies = []
+        for row in rows:
+            s = dict(zip(cols, row))
+            s['holding'] = holding.get(s['strategy'], 0)
+            # 胜率
+            s['win_rate'] = round(s['wins'] / s['closed'] * 100, 1) if s['closed'] > 0 else 0
+            # 胜者全拿建议
+            strategies.append(s)
+
+        # 最佳策略
+        best = max(strategies, key=lambda x: x['total_pnl']) if strategies else None
+
+        cur.close()
+        conn.close()
+
+        return {
+            'strategies': strategies,
+            'best_strategy': best['strategy'] if best else None,
+            'best_total_pnl': best['total_pnl'] if best else 0,
+        }
+    except Exception as e:
+        cur.close()
+        conn.close()
+        return {'error': str(e)}

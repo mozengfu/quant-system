@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 
 import pymysql
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# sys.path.insert(REMOVED)  # noqa)))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1480,17 +1480,36 @@ def sync_positions_to_json():
         p = dict(zip(cols, row))
         code = str(p["ts_code"]).split(".")[0] if "." in str(p["ts_code"]) else str(p["ts_code"])
         profit_pct_val = float(p["profit_pct"]) * 100 if p["profit_pct"] else 0
+        # 防御：DB 中 stop_loss/take_profit 可能为 0（QMT 实盘同步路径未带止损价）。
+        # 此时用市场状态参数或默认 -3% 兜底，避免下游 position_monitor/feishu_alerts
+        # 因 stop_loss <= 0 永远不触发。
+        cost = float(p["cost_price"])
+        raw_sl = float(p["stop_loss"])
+        raw_tp = float(p["take_profit"])
+        if raw_sl <= 0:
+            try:
+                fallback_sl_pct = get_market_params().get("stop_loss_pct", -0.03)
+            except Exception:
+                fallback_sl_pct = -0.03
+            raw_sl = round(cost * (1 + fallback_sl_pct), 3)
+        if raw_tp <= 0:
+            try:
+                fallback_tp_pct = get_market_params().get("take_profit_pct", 0.06)
+            except Exception:
+                fallback_tp_pct = 0.06
+            raw_tp = round(cost * (1 + fallback_tp_pct), 3)
+
         positions.append({
             "position_id": int(p["id"]),
             "code": code,
             "market": p["market"],
             "name": p["stock_name"],
-            "cost": float(p["cost_price"]),
+            "cost": cost,
             "shares": int(p["shares"]),
-            "stop_loss": float(p["stop_loss"]),
-            "take_profit": float(p["take_profit"]),
+            "stop_loss": raw_sl,
+            "take_profit": raw_tp,
             "buy_date": str(p["buy_date"]) if p["buy_date"] else "",
-            "current_price": float(p["current_price"]) if p["current_price"] else float(p["cost_price"]),
+            "current_price": float(p["current_price"]) if p["current_price"] else cost,
             "float_pnl": float(p["profit_loss"]) if p["profit_loss"] else 0,
             "float_pnl_pct": round(profit_pct_val, 2),
         })
