@@ -31,7 +31,9 @@ ML_CANDIDATES_COUNT = 3
 import pymysql
 
 from quant_app.services.notification_service import send_feishu
+from quant_app.services.board_rps_scanner import check_rps_stop
 from quant_app.trading.config import trading_config
+from quant_app.trading.trade_recorder import record_trade
 from quant_app.trading.executor import create_executor
 from quant_app.utils.config import get_db_config
 
@@ -89,10 +91,12 @@ def _is_trading_day(for_intraday=False):
             return False
         cur.execute("SELECT COUNT(*) FROM daily_price WHERE trade_date=%s", (today.strftime("%Y%m%d"),))
         return cur.fetchone()[0] > 100
-    except: return today.weekday() < 5
+    except Exception as e:
+        logger.warning("交易日判断异常（降级为按周几判断）: %s", e)
+        return today.weekday() < 5
     finally:
         try: cur.close(); conn.close()
-        except: pass
+        except Exception: pass
 
 def _notify_trade(action, name, code, price, qty, reason=""):
     if not trading_config.is_real_trading_enabled: return
@@ -162,6 +166,9 @@ def _executor_sell_and_record(executor, pos, price, shares, label, reason):
         record_signal(label, pos["ts_code"], pos["stock_name"], price, shares,
                      "持仓管理", 0, 0, pos.get("market_state",""), reason, "已平仓")
         _log_trade_sell(pos["ts_code"], price, shares)
+        if trading_config.is_live:
+            record_trade(pos["ts_code"], pos["stock_name"], "SELL",
+                        price, shares, reason=reason, mode="live")
     except Exception as e:
         logger.error("卖出失败: %s", e)
 
@@ -176,6 +183,9 @@ def _executor_market_sell_and_record(executor, pos, price, shares, label, reason
                 record_signal(label, pos["ts_code"], pos["stock_name"], price, shares,
                              "持仓管理", 0, 0, pos.get("market_state",""), reason, "已平仓")
                 _log_trade_sell(pos["ts_code"], price, shares)
+                if trading_config.is_live:
+                    record_trade(pos["ts_code"], pos["stock_name"], "SELL",
+                                price, shares, reason=reason + "(市价)", mode="live")
                 logger.info("市价卖出成功: %s %d股", pos["stock_name"], shares)
             else:
                 logger.warning("市价卖出失败，降级为限价卖出: %s", pos["stock_name"])
@@ -254,6 +264,9 @@ def _sync_position_after_buy(ts_code, stock_name, market, shares, price, strateg
                       ml_prob, strategy))
                 logger.info("仓位同步: %s %s %d股@%.2f", stock_name, ts_code, shares, price)
             conn.commit()
+            if trading_config.is_live:
+                record_trade(ts_code, stock_name, "BUY", price, shares,
+                            reason=f"策略买入({strategy or 'unknown'})", mode="live")
         finally:
             cur.close()
             conn.close()
@@ -1069,12 +1082,61 @@ def cmd_monitor():
                 pass
         days_held = _count_trading_days_since(buy_date) if buy_date else 0
 
+        # === 读取分批止盈标志（避免重复分批）===
+        partial_taken = False
+        try:
+            conn_pt = pymysql.connect(**DB_CONFIG)
+            cur_pt = conn_pt.cursor()
+            cur_pt.execute(
+                "SELECT partial_taken FROM sim_positions WHERE ts_code=%s AND status='HOLD' LIMIT 1",
+                (pos["ts_code"],))
+            row_pt = cur_pt.fetchone()
+            cur_pt.close()
+            conn_pt.close()
+            if row_pt and row_pt[0]:
+                partial_taken = True
+        except Exception as e:
+            logger.debug("读取 partial_taken 失败 %s: %s", pos["ts_code"], e)
+
         # === A股 T+1 检查: 今日买入当日不可卖出, 跳过止盈止损 ===
         # 即便 QMT 拒单也是浪费一次下单, 直接 skip 干净
         # 注意: buy_date 未知(QMT 有但 sim 没有的孤儿持仓)不 skip, 让止损和峰值止盈照常跑
         if days_held == 0 and buy_date:
             logger.info("⏸ %s 今日买入 (T+1), 跳过卖出检查", pos["stock_name"])
             continue
+
+        # === RPS 止损（2026-06-20 补充）===
+        # 资金退潮先于价格下跌: RPS < 15 或 20日累计跌破历史下沿 → 立即止损
+        # 优先级: 早于价格硬止损（因 → 果），晚于 T+1 检查（避免新买入误杀）
+        # 持仓 < 2 天直接放行（防止买入次日波动误杀）
+        try:
+            rps_stop, rps_detail = check_rps_stop(pos["ts_code"], days_held=days_held)
+            if rps_stop:
+                loss_pct = (price - cost_price) / cost_price * 100
+                rps_reason = rps_detail.get("reason_text", "RPS止损")
+                _executor_market_sell_and_record(executor, pos, price, shares, "RPS止损", rps_reason)
+                _notify_trade("卖出", pos["stock_name"], pos["ts_code"], price, shares, rps_reason)
+                send_feishu(
+                    f"🚨 RPS 止损触发\n"
+                    f"股票: {pos['stock_name']}({pos['ts_code']})\n"
+                    f"成本: {cost_price:.2f}  现价: {price:.2f}\n"
+                    f"浮亏: {loss_pct:+.1f}%\n"
+                    f"RPS: {rps_detail.get('rps', 0):.1f}  "
+                    f"20日累计: {rps_detail.get('cum_20d', 0):+.2f}%  "
+                    f"下沿: {rps_detail.get('lower_band', 0):+.2f}%\n"
+                    f"原因: {'; '.join(rps_detail.get('reasons', []))}\n"
+                    f"已下市价卖单"
+                )
+                logger.warning(
+                    "🚨 RPS止损(%s): %s 成本%.2f 现价%.2f RPS=%.1f cum=%.2f%% lb=%.2f%%",
+                    mode_label, pos["stock_name"], cost_price, price,
+                    rps_detail.get('rps', 0), rps_detail.get('cum_20d', 0),
+                    rps_detail.get('lower_band', 0),
+                )
+                continue
+        except Exception as e:
+            # RPS 止损判断失败不能影响主流程
+            logger.warning("RPS 止损判断失败 %s: %s", pos["ts_code"], e)
 
         if price <= final_stop:
             # 实盘止损：必须市价单确保成交，不能用限价单挂单
@@ -1097,21 +1159,33 @@ def cmd_monitor():
             continue
 
         # === 动态退出策略 ===
-        # 用今日盘中最高价 + 历史最高价 综合计算峰值
+        # 修复 2026-06-22: today_high 改查 daily_price 中今天的 high.
+        # 旧版只读 QMT 实时 quote 的"最高"字段, 09:30~10:00 早盘可能是
+        # 昨日缓存或 0, 导致 600183 在 06-18 09:50 误触发兜底止盈:
+        #   peak 5.4% 来自昨日 daily_price.high, 价从 -2.2% 反弹到 +0.4%
+        #   就被卖到只剩 0.4%。
+        # 改为以 daily_price 中今天(CURDATE)high 为准, 与 QMT 实时取大值,
+        # 同时一次查询带出历史最高用于 peak_price 计算。
         today_high = quote.get("最高", 0) or 0
         peak_price = max(cost_price, price, today_high)
         try:
             conn_pk = pymysql.connect(**DB_CONFIG)
             cur_pk = conn_pk.cursor()
             cur_pk.execute(
-                "SELECT MAX(high) FROM daily_price WHERE ts_code=%s AND trade_date>=%s",
+                "SELECT "
+                "  MAX(CASE WHEN trade_date=CURDATE() THEN high ELSE NULL END) AS today_db_high, "
+                "  MAX(high) AS hist_high "
+                "FROM daily_price WHERE ts_code=%s AND trade_date>=%s",
                 (pos["ts_code"], buy_date),
             )
             row_pk = cur_pk.fetchone()
             cur_pk.close()
             conn_pk.close()
-            if row_pk and row_pk[0]:
-                peak_price = max(float(row_pk[0]), price)
+            if row_pk:
+                if row_pk[0]:
+                    today_high = max(today_high, float(row_pk[0]))
+                if row_pk[1]:
+                    peak_price = max(float(row_pk[1]), price)
         except Exception:
             pass
 
@@ -1120,6 +1194,26 @@ def cmd_monitor():
         should_sell = False
         sell_reason = ""
         sell_label = ""
+        partial_shares = 0  # P0: 分批止盈的卖出股数（>0 表示走分批流程）
+
+        # a-1) 硬性分批止盈 +5%（2026-06-20 补充，P0）
+        #     浮盈一旦到过 5%, 立即卖一半锁利, 剩余一半继续走峰值止盈/trailing
+        #     依据: 文章《止盈止损》要求短线 3-5% 果断止盈 + 不抱侥幸
+        #     保护:
+        #       - 已分批过的持仓不再触发 (partial_taken=1)
+        #       - 必须持仓 ≥ 1 天 (避免买入次日波动)
+        #       - 当前价仍在 +5% 之上 (避免回落到 +5% 之下误触发)
+        #       - 至少 200 股才分批 (否则 100 股卖了没意义)
+        if (not partial_taken and peak_profit >= 5.0 and days_held >= 1
+                and shares >= 200 and cost_price > 0
+                and price >= cost_price * 1.05):
+            half = (shares // 200) * 100  # 向下取整到 100 股
+            if half > 0 and half < shares:  # 至少保留 100 股继续持有
+                partial_shares = half
+                should_sell = True
+                sell_reason = (f"硬性分批止盈(+5%): 峰值{peak_profit:.1f}% 当前浮盈{pct_chg:+.1f}% "
+                              f"卖{half}股({half/shares:.0%})锁利, 剩余{shares-half}股继续")
+                sell_label = "分批止盈"
 
         # a) 峰值止盈(分级): 峰值盈利>8%后才进锁利区
         #    第一档(峰值<20%): 回落到"剩8%利润"就锁利,稳赚不贪
@@ -1188,8 +1282,35 @@ def cmd_monitor():
             sell_label = "强制平仓"
 
         if should_sell:
-            _executor_sell_and_record(executor, pos, price, shares, sell_label, sell_reason)
-            _notify_trade("卖出", pos["stock_name"], pos["ts_code"], price, shares, sell_label)
+            sell_qty = partial_shares if partial_shares > 0 else shares
+            _executor_sell_and_record(executor, pos, price, sell_qty, sell_label, sell_reason)
+            _notify_trade("卖出", pos["stock_name"], pos["ts_code"], price, sell_qty, sell_label)
+
+            # P0: 分批止盈后标记 partial_taken=1, 剩余部分继续原有峰值止盈/trailing
+            if partial_shares > 0:
+                try:
+                    conn_ptw = pymysql.connect(**DB_CONFIG)
+                    cur_ptw = conn_ptw.cursor()
+                    cur_ptw.execute(
+                        "UPDATE sim_positions SET partial_taken=1 WHERE ts_code=%s AND status='HOLD'",
+                        (pos["ts_code"],))
+                    conn_ptw.commit()
+                    cur_ptw.close()
+                    conn_ptw.close()
+                    logger.info("📌 %s 分批止盈标记 partial_taken=1 (剩余 %d 股继续持仓)",
+                                pos["stock_name"], shares - partial_shares)
+                except Exception as e:
+                    logger.warning("分批标志写入失败 %s: %s", pos["ts_code"], e)
+                # 分批后立刻给个飞书通知（区别于全仓卖出）
+                send_feishu(
+                    f"💰 硬性分批止盈触发\n"
+                    f"股票: {pos['stock_name']}({pos['ts_code']})\n"
+                    f"成本: {cost_price:.2f}  现价: {price:.2f}\n"
+                    f"浮盈: {pct_chg:+.1f}%  峰值: {peak_profit:.1f}%\n"
+                    f"本次卖出: {sell_qty}股  剩余: {shares - sell_qty}股\n"
+                    f"剩余继续按峰值止盈/trailing 管理"
+                )
+
             logger.info(" %s(%s): %s 买入%.2f->现价%.2f (%.1f%%) 持有%d天 峰值%.1f%%",
                         sell_label, mode_label, pos["stock_name"], cost_price, price, pct_chg,
                         days_held, peak_profit)
