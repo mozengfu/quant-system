@@ -20,6 +20,41 @@ def _get_db_conn():
     return pymysql.connect(**DB_CONFIG)
 
 
+class _DbSession:
+    """数据库会话上下文管理器 — 自动 begin/rollback/close
+
+    用法:
+        with _DbSession() as cur:
+            cur.execute(...)
+            cur.execute(...)
+    异常时自动 rollback, 正常时 commit.
+    修复 P0: 替代裸 conn/cursor, 避免异常路径连接泄漏和半写入.
+    """
+
+    def __enter__(self):
+        self.conn = pymysql.connect(**DB_CONFIG)
+        self.cursor = self.conn.cursor()
+        self.conn.begin()
+        return self.cursor
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if exc_type is None:
+                self.conn.commit()
+            else:
+                self.conn.rollback()
+        finally:
+            try:
+                self.cursor.close()
+            except Exception:
+                pass
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+        return False  # 不吞异常
+
+
 def _count_trading_days_since(buy_date):
     """统计买入后经过了多少个交易日"""
     try:
@@ -143,71 +178,67 @@ class SimExecutor(AbstractTradeExecutor):
         market_state: str = None,
         reason: str = None,
     ) -> Order | None:
-        """执行模拟买入"""
+        """执行模拟买入 — 修复 P0: 用 _DbSession 事务 + 异常安全关闭"""
         trade_date = datetime.now().strftime("%Y-%m-%d")
         amount = round(price * quantity, 2)
         commission = max(5.0, amount * 0.00025)
 
-        conn = _get_db_conn()
-        cursor = conn.cursor()
+        try:
+            with _DbSession() as cursor:
+                # 获取账户
+                cursor.execute("SELECT * FROM sim_account ORDER BY id DESC LIMIT 1")
+                row = cursor.fetchone()
+                if not row:
+                    logger.error("模拟账户不存在，请先运行 init")
+                    return None
+                cols = [d[0] for d in cursor.description]
+                account = dict(zip(cols, row))
 
-        # 获取账户
-        cursor.execute("SELECT * FROM sim_account ORDER BY id DESC LIMIT 1")
-        row = cursor.fetchone()
-        if not row:
-            logger.error("模拟账户不存在，请先运行 init")
-            cursor.close()
-            conn.close()
+                if float(account["cash"]) < amount + commission:
+                    logger.warning("资金不足: 需要 %.2f, 可用 %.2f", amount + commission, float(account["cash"]))
+                    return None
+
+                # 扣减资金
+                new_cash = float(account["cash"]) - amount - commission
+                cursor.execute("UPDATE sim_account SET cash = %s, updated_at = %s WHERE id = %s",
+                               (new_cash, datetime.now(), account["id"]))
+
+                # 记录交易
+                cursor.execute(
+                    """INSERT INTO sim_trades
+                       (ts_code, stock_name, market, action, price, shares, amount, commission, stamp_tax,
+                        trade_date, trade_time, reason, created_at)
+                       VALUES (%s, %s, %s, 'BUY', %s, %s, %s, %s, 0, %s, %s, %s, %s)""",
+                    (ts_code, name, market, price, quantity, amount, commission,
+                     trade_date, datetime.now(), reason or "ML策略买入", datetime.now()),
+                )
+
+                # 计算止盈止损（动态市场状态参数）
+                mp = _get_market_params()
+                stop_loss = round(price * (1 + mp["stop_loss_pct"]), 3)
+                take_profit = round(price * (1 + mp["take_profit_pct"]), 3)
+                total_cost = amount + commission
+
+                cursor.execute(
+                    """INSERT INTO sim_positions
+                       (ts_code, stock_name, market, shares, cost_price, total_cost,
+                        stop_loss, take_profit, buy_date, buy_time, status, updated_at,
+                        ml_prob, strategy, market_state)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'HOLD', %s, %s, %s, %s)""",
+                    (ts_code, name, market, quantity, price, total_cost,
+                     stop_loss, take_profit, trade_date, datetime.now(), datetime.now(),
+                     ml_prob, strategy, market_state),
+                )
+
+                # 更新交易计数
+                cursor.execute("UPDATE sim_account SET trade_count = trade_count + 1, updated_at = %s WHERE id = %s",
+                               (datetime.now(), account["id"]))
+                # 事务自动 commit (__exit__ 看到 exc_type=None)
+        except Exception as e:
+            logger.error("模拟买入失败: %s", e)
             return None
-        cols = [d[0] for d in cursor.description]
-        account = dict(zip(cols, row))
 
-        if float(account["cash"]) < amount + commission:
-            logger.warning("资金不足: 需要 %.2f, 可用 %.2f", amount + commission, float(account["cash"]))
-            cursor.close()
-            conn.close()
-            return None
-
-        # 扣减资金
-        new_cash = float(account["cash"]) - amount - commission
-        cursor.execute("UPDATE sim_account SET cash = %s, updated_at = %s WHERE id = %s",
-                       (new_cash, datetime.now(), account["id"]))
-
-        # 记录交易
-        cursor.execute(
-            """INSERT INTO sim_trades
-               (ts_code, stock_name, market, action, price, shares, amount, commission, stamp_tax,
-                trade_date, trade_time, reason, created_at)
-               VALUES (%s, %s, %s, 'BUY', %s, %s, %s, %s, 0, %s, %s, %s, %s)""",
-            (ts_code, name, market, price, quantity, amount, commission,
-             trade_date, datetime.now(), reason or "ML策略买入", datetime.now()),
-        )
-
-        # 计算止盈止损（动态市场状态参数）
-        mp = _get_market_params()
-        stop_loss = round(price * (1 + mp["stop_loss_pct"]), 3)
-        take_profit = round(price * (1 + mp["take_profit_pct"]), 3)
-        total_cost = amount + commission
-
-        cursor.execute(
-            """INSERT INTO sim_positions
-               (ts_code, stock_name, market, shares, cost_price, total_cost,
-                stop_loss, take_profit, buy_date, buy_time, status, updated_at,
-                ml_prob, strategy, market_state)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'HOLD', %s, %s, %s, %s)""",
-            (ts_code, name, market, quantity, price, total_cost,
-             stop_loss, take_profit, trade_date, datetime.now(), datetime.now(),
-             ml_prob, strategy, market_state),
-        )
-
-        # 更新交易计数
-        cursor.execute("UPDATE sim_account SET trade_count = trade_count + 1, updated_at = %s WHERE id = %s",
-                       (datetime.now(), account["id"]))
-        conn.commit()
-        cursor.close()
-        conn.close()
-
-        # 记录信号
+        # 事务外: 记录信号 (写 sim_signals 表, 与主事务解耦)
         _record_signal(
             "买入", ts_code, name, price, quantity, strategy or "ML策略",
             ml_prob, enhanced_score, market_state, reason or "ML策略买入", "持仓中",
@@ -231,6 +262,65 @@ class SimExecutor(AbstractTradeExecutor):
                     name, quantity, price, amount, ml_prob or 0, strategy or "ML")
         return order
 
+    def buy_target_value(
+        self,
+        ts_code: str,
+        target_amount: float,
+        reason: str = None,
+    ) -> Order | None:
+        """按目标金额买入 — 修复 P0: SimExecutor 之前缺这个方法, 与 RemoteExecutor 行为不一致
+
+        按 target_amount 计算可买股数 (向下取整到 100 股), 然后走标准 buy() 路径.
+        """
+        # 拿当前价格: 优先用 QMT 实时价, 降级 MySQL daily_price 最新收盘
+        code_only = ts_code.split(".")[0]
+        market = "sh" if ts_code.startswith(("6", "5")) else "sz"
+        price = 0.0
+        name = ""
+        try:
+            quote = _get_stock_realtime(code_only, market)
+            if quote:
+                price = float(quote.get("现价", 0) or quote.get("price", 0))
+                name = quote.get("名称", quote.get("name", "")) or ""
+        except Exception:
+            pass
+        if price <= 0:
+            # 降级: 拿最近收盘
+            try:
+                conn_p = pymysql.connect(**DB_CONFIG)
+                cur_p = conn_p.cursor()
+                cur_p.execute(
+                    "SELECT close, name FROM stock_info si "
+                    "LEFT JOIN daily_price dp ON dp.ts_code = si.ts_code "
+                    "WHERE si.ts_code=%s ORDER BY dp.trade_date DESC LIMIT 1",
+                    (ts_code,),
+                )
+                row_p = cur_p.fetchone()
+                cur_p.close()
+                conn_p.close()
+                if row_p:
+                    price = float(row_p[0] or 0)
+                    name = name or (row_p[1] or "")
+            except Exception:
+                pass
+        if price <= 0 or target_amount <= 0:
+            logger.warning("buy_target_value 缺少价格或金额: %s price=%.2f amount=%.0f",
+                          ts_code, price, target_amount)
+            return None
+        # 佣金预估
+        est_commission = max(5.0, target_amount * 0.00025)
+        # 股数 = (目标金额 - 佣金) / 价格, 向下取整到 100 股
+        effective = max(0, target_amount - est_commission)
+        quantity = int(effective / price / 100) * 100
+        if quantity <= 0:
+            logger.warning("buy_target_value 可买股数为 0: %s amount=%.0f price=%.2f",
+                          ts_code, target_amount, price)
+            return None
+        return self.buy(
+            ts_code=ts_code, name=name, market=market, price=price,
+            quantity=quantity, reason=reason or f"目标金额买入({target_amount:.0f}元)",
+        )
+
     def sell(
         self,
         position_id: int,
@@ -239,86 +329,85 @@ class SimExecutor(AbstractTradeExecutor):
         quantity: int,
         reason: str = None,
     ) -> Order | None:
-        """执行模拟卖出（清仓）"""
+        """执行模拟卖出（清仓）— 修复 P0: 用 _DbSession 事务 + 异常安全关闭"""
         trade_date = datetime.now().strftime("%Y-%m-%d")
-        conn = _get_db_conn()
-        cursor = conn.cursor()
+        pnl = pnl_pct = sell_amount = shares = amount = 0.0
+        pos = None
+        try:
+            with _DbSession() as cursor:
+                cursor.execute(
+                    """SELECT p.*, a.id as account_id, a.cash
+                       FROM sim_positions p
+                       JOIN sim_account a ON a.id = (SELECT MAX(id) FROM sim_account)
+                       WHERE p.id = %s AND p.status = 'HOLD'""",
+                    (position_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    logger.warning("持仓 %d 不存在或已卖出", position_id)
+                    return None
 
-        cursor.execute(
-            """SELECT p.*, a.id as account_id, a.cash
-               FROM sim_positions p
-               JOIN sim_account a ON a.id = (SELECT MAX(id) FROM sim_account)
-               WHERE p.id = %s AND p.status = 'HOLD'""",
-            (position_id,),
-        )
-        row = cursor.fetchone()
-        if not row:
-            cursor.close()
-            conn.close()
-            logger.warning("持仓 %d 不存在或已卖出", position_id)
+                cols = [d[0] for d in cursor.description]
+                pos = dict(zip(cols, row))
+
+                shares = int(pos["shares"])
+                amount = round(price * shares, 2)
+                commission = max(5.0, amount * 0.00025)
+                stamp_tax = amount * 0.001
+                total_fees = commission + stamp_tax
+
+                sell_amount = amount - total_fees
+                pnl = sell_amount - float(pos["total_cost"])
+                pnl_pct = pnl / float(pos["total_cost"]) if float(pos["total_cost"]) > 0 else 0
+
+                # 更新账户资金
+                new_cash = float(pos["cash"]) + sell_amount
+                cursor.execute("UPDATE sim_account SET cash = %s, updated_at = %s WHERE id = %s",
+                               (new_cash, datetime.now(), pos["account_id"]))
+
+                # 记录交易
+                cursor.execute(
+                    """INSERT INTO sim_trades
+                       (ts_code, stock_name, market, action, price, shares, amount, commission, stamp_tax,
+                        trade_date, trade_time, profit_loss, profit_pct, reason, created_at)
+                       VALUES (%s, %s, %s, 'SELL', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (pos["ts_code"], pos["stock_name"], pos["market"], price, shares, amount,
+                     commission, stamp_tax, trade_date, datetime.now(), pnl, pnl_pct,
+                     reason or "止盈/止损", datetime.now()),
+                )
+
+                # 更新持仓状态
+                cursor.execute(
+                    """UPDATE sim_positions
+                       SET status = 'SOLD', sell_date = %s, sell_price = %s,
+                           final_pnl = %s, final_pnl_pct = %s, updated_at = %s
+                       WHERE id = %s""",
+                    (trade_date, price, pnl, pnl_pct, datetime.now(), position_id),
+                )
+
+                # 更新账户统计
+                cursor.execute(
+                    """UPDATE sim_account
+                       SET trade_count = trade_count + 1,
+                           win_count = win_count + CASE WHEN %s > 0 THEN 1 ELSE 0 END,
+                           win_rate = CASE WHEN trade_count + 1 > 0
+                               THEN (win_count + CASE WHEN %s > 0 THEN 1 ELSE 0 END) / (trade_count + 1)
+                               ELSE 0 END,
+                           updated_at = %s
+                       WHERE id = %s""",
+                    (pnl, pnl, datetime.now(), pos["account_id"]),
+                )
+
+                # 更新信号记录 (同事务内)
+                cursor.execute(
+                    """UPDATE sim_signals SET status='已平仓', close_price=%s, close_date=%s, pnl=%s, pnl_pct=%s
+                       WHERE ts_code=%s AND status='持仓中' ORDER BY id DESC LIMIT 1""",
+                    (price, trade_date, pnl, pnl_pct, pos["ts_code"]),
+                )
+                # 事务自动 commit
+        except Exception as e:
+            logger.error("模拟卖出失败: %s", e)
             return None
-
-        cols = [d[0] for d in cursor.description]
-        pos = dict(zip(cols, row))
-
-        shares = int(pos["shares"])
-        amount = round(price * shares, 2)
-        commission = max(5.0, amount * 0.00025)
-        stamp_tax = amount * 0.001
-        total_fees = commission + stamp_tax
-
-        sell_amount = amount - total_fees
-        pnl = sell_amount - float(pos["total_cost"])
-        pnl_pct = pnl / float(pos["total_cost"]) if float(pos["total_cost"]) > 0 else 0
-
-        # 更新账户资金
-        new_cash = float(pos["cash"]) + sell_amount
-        cursor.execute("UPDATE sim_account SET cash = %s, updated_at = %s WHERE id = %s",
-                       (new_cash, datetime.now(), pos["account_id"]))
-
-        # 记录交易
-        cursor.execute(
-            """INSERT INTO sim_trades
-               (ts_code, stock_name, market, action, price, shares, amount, commission, stamp_tax,
-                trade_date, trade_time, profit_loss, profit_pct, reason, created_at)
-               VALUES (%s, %s, %s, 'SELL', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (pos["ts_code"], pos["stock_name"], pos["market"], price, shares, amount,
-             commission, stamp_tax, trade_date, datetime.now(), pnl, pnl_pct,
-             reason or "止盈/止损", datetime.now()),
-        )
-
-        # 更新持仓状态
-        cursor.execute(
-            """UPDATE sim_positions
-               SET status = 'SOLD', sell_date = %s, sell_price = %s,
-                   final_pnl = %s, final_pnl_pct = %s, updated_at = %s
-               WHERE id = %s""",
-            (trade_date, price, pnl, pnl_pct, datetime.now(), position_id),
-        )
-
-        # 更新账户统计
-        cursor.execute(
-            """UPDATE sim_account
-               SET trade_count = trade_count + 1,
-                   win_count = win_count + CASE WHEN %s > 0 THEN 1 ELSE 0 END,
-                   win_rate = CASE WHEN trade_count + 1 > 0
-                       THEN (win_count + CASE WHEN %s > 0 THEN 1 ELSE 0 END) / (trade_count + 1)
-                       ELSE 0 END,
-                   updated_at = %s
-               WHERE id = %s""",
-            (pnl, pnl, datetime.now(), pos["account_id"]),
-        )
-        conn.commit()
-
-        # 更新信号记录
-        cursor.execute(
-            """UPDATE sim_signals SET status='已平仓', close_price=%s, close_date=%s, pnl=%s, pnl_pct=%s
-               WHERE ts_code=%s AND status='持仓中' ORDER BY id DESC LIMIT 1""",
-            (price, trade_date, pnl, pnl_pct, pos["ts_code"]),
-        )
-        conn.commit()
-        cursor.close()
-        conn.close()
 
         order = Order(
             order_id=_generate_order_id(),
@@ -345,70 +434,69 @@ class SimExecutor(AbstractTradeExecutor):
         quantity: int,
         reason: str = None,
     ) -> Order | None:
-        """执行模拟部分卖出"""
+        """执行模拟部分卖出 — 修复 P0: 用 _DbSession 事务 + 异常安全关闭"""
         trade_date = datetime.now().strftime("%Y-%m-%d")
-        conn = _get_db_conn()
-        cursor = conn.cursor()
+        pos = None
+        shares_to_sell = total_shares = shares_remaining = amount = 0
+        try:
+            with _DbSession() as cursor:
+                cursor.execute(
+                    """SELECT p.*, a.id as account_id, a.cash
+                       FROM sim_positions p
+                       JOIN sim_account a ON a.id = (SELECT MAX(id) FROM sim_account)
+                       WHERE p.id = %s AND p.status = 'HOLD'""",
+                    (position_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    logger.warning("持仓 %d 不存在或已卖出", position_id)
+                    return None
 
-        cursor.execute(
-            """SELECT p.*, a.id as account_id, a.cash
-               FROM sim_positions p
-               JOIN sim_account a ON a.id = (SELECT MAX(id) FROM sim_account)
-               WHERE p.id = %s AND p.status = 'HOLD'""",
-            (position_id,),
-        )
-        row = cursor.fetchone()
-        if not row:
-            cursor.close()
-            conn.close()
-            logger.warning("持仓 %d 不存在或已卖出", position_id)
+                cols = [d[0] for d in cursor.description]
+                pos = dict(zip(cols, row))
+
+                total_shares = int(pos["shares"])
+                shares_to_sell = min(quantity, total_shares)
+                shares_remaining = total_shares - shares_to_sell
+
+                if shares_remaining <= 0:
+                    # 全部卖出: 走 sell() (独立事务)
+                    return self.sell(position_id, ts_code, price, total_shares, reason)
+
+                amount = round(price * shares_to_sell, 2)
+                commission = max(5.0, amount * 0.00025)
+                stamp_tax = amount * 0.001
+                total_fees = commission + stamp_tax
+
+                sell_amount = amount - total_fees
+                cost_of_sold = float(pos["total_cost"]) * (shares_to_sell / total_shares)
+                pnl = sell_amount - cost_of_sold
+
+                # 更新账户资金
+                new_cash = float(pos["cash"]) + sell_amount
+                cursor.execute("UPDATE sim_account SET cash = %s, updated_at = %s WHERE id = %s",
+                               (new_cash, datetime.now(), pos["account_id"]))
+
+                # 更新持仓
+                new_total_cost = float(pos["total_cost"]) * (shares_remaining / total_shares)
+                cursor.execute("UPDATE sim_positions SET shares = %s, total_cost = %s, updated_at = %s WHERE id = %s",
+                               (shares_remaining, new_total_cost, datetime.now(), position_id))
+
+                # 记录交易
+                cursor.execute(
+                    """INSERT INTO sim_trades
+                       (ts_code, stock_name, market, action, price, shares, amount, commission, stamp_tax,
+                        trade_date, trade_time, profit_loss, profit_pct, reason, created_at)
+                       VALUES (%s, %s, %s, 'SELL', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (pos["ts_code"], pos["stock_name"], pos["market"], price, shares_to_sell, amount,
+                     commission, stamp_tax, trade_date, datetime.now(),
+                     pnl, pnl / cost_of_sold if cost_of_sold > 0 else 0,
+                     reason or "止盈减仓", datetime.now()),
+                )
+                # 事务自动 commit
+        except Exception as e:
+            logger.error("模拟减仓失败: %s", e)
             return None
-
-        cols = [d[0] for d in cursor.description]
-        pos = dict(zip(cols, row))
-
-        total_shares = int(pos["shares"])
-        shares_to_sell = min(quantity, total_shares)
-        shares_remaining = total_shares - shares_to_sell
-
-        if shares_remaining <= 0:
-            cursor.close()
-            conn.close()
-            return self.sell(position_id, ts_code, price, total_shares, reason)
-
-        amount = round(price * shares_to_sell, 2)
-        commission = max(5.0, amount * 0.00025)
-        stamp_tax = amount * 0.001
-        total_fees = commission + stamp_tax
-
-        sell_amount = amount - total_fees
-        cost_of_sold = float(pos["total_cost"]) * (shares_to_sell / total_shares)
-        pnl = sell_amount - cost_of_sold
-
-        # 更新账户资金
-        new_cash = float(pos["cash"]) + sell_amount
-        cursor.execute("UPDATE sim_account SET cash = %s, updated_at = %s WHERE id = %s",
-                       (new_cash, datetime.now(), pos["account_id"]))
-
-        # 更新持仓
-        new_total_cost = float(pos["total_cost"]) * (shares_remaining / total_shares)
-        cursor.execute("UPDATE sim_positions SET shares = %s, total_cost = %s, updated_at = %s WHERE id = %s",
-                       (shares_remaining, new_total_cost, datetime.now(), position_id))
-
-        # 记录交易
-        cursor.execute(
-            """INSERT INTO sim_trades
-               (ts_code, stock_name, market, action, price, shares, amount, commission, stamp_tax,
-                trade_date, trade_time, profit_loss, profit_pct, reason, created_at)
-               VALUES (%s, %s, %s, 'SELL', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (pos["ts_code"], pos["stock_name"], pos["market"], price, shares_to_sell, amount,
-             commission, stamp_tax, trade_date, datetime.now(),
-             pnl, pnl / cost_of_sold if cost_of_sold > 0 else 0,
-             reason or "止盈减仓", datetime.now()),
-        )
-        conn.commit()
-        cursor.close()
-        conn.close()
 
         order = Order(
             order_id=_generate_order_id(),
