@@ -17,7 +17,7 @@ import pymysql
 # 添加父目录到路径
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _script_dir)
-sys.path.insert(0, os.path.dirname(_script_dir))
+# sys.path.insert(0, os.path.dirname(_script_dir))  # 清理: 项目根已通过 pip install 暴露 quant_app, 不再需要
 from alicloud_api import get_stock_realtime
 
 from quant_app.utils.config import get_db_config

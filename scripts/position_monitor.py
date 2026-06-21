@@ -7,7 +7,7 @@ import urllib.request
 from datetime import datetime
 
 # Add project root to path
-sys.path.insert(0, '.')
+# sys.path.insert(REMOVED)  # noqa
 
 from quant_app.utils.config import FEISHU_WEBHOOK, get_db_config
 

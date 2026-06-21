@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# sys.path.insert(REMOVED)  # noqa)))
 from quant_app.utils.config import get_db_config
 
 TUSHARE_TOKEN = os.environ.get('TUSHARE_TOKEN', '')
