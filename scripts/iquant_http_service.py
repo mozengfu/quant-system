@@ -154,8 +154,14 @@ def buy():
         shares = int(d.get("amount", d.get("shares", 0)))
         if not code or price <= 0 or shares <= 0: return jsonify({"error": "required"}), 400
         if "." not in code: code = ("%s.SH" % code) if code.startswith("6") else ("%s.SZ" % code)
-        _q("INSERT INTO sim_signals(ts_code,price,shares,status,signal_type,reason,created_at,signal_date) VALUES(%s,%s,%s,'待执行','买入候选','HTTP',NOW(),CURDATE())", (code,price,shares))
-        return jsonify({"order_id": "sig_%d" % int(time.time()), "code": code, "price": price, "amount": shares}), 201
+        # 修复 P0: 之前忽略 action 字段，全部当 "买入候选" 处理
+        # 现在尊重调用方传入的 action: BUY / BUY_TARGET
+        # 兜底：缺省为"买入候选"
+        action = (d.get("action") or "买入候选").strip() or "买入候选"
+        if action not in ("买入候选", "买入", "BUY", "BUY_TARGET"):
+            action = "买入候选"
+        _q("INSERT INTO sim_signals(ts_code,price,shares,status,signal_type,reason,created_at,signal_date) VALUES(%s,%s,%s,'待执行',%s,'HTTP',NOW(),CURDATE())", (code,price,shares,action))
+        return jsonify({"order_id": "sig_%d" % int(time.time()), "code": code, "price": price, "amount": shares, "action": action}), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
@@ -168,8 +174,23 @@ def sell():
         shares = int(d.get("amount", d.get("shares", 0)))
         if not code or price <= 0 or shares <= 0: return jsonify({"error": "required"}), 400
         if "." not in code: code = ("%s.SH" % code) if code.startswith("6") else ("%s.SZ" % code)
-        _q("INSERT INTO sim_signals(ts_code,price,shares,status,signal_type,reason,created_at,signal_date) VALUES(%s,%s,%s,'待执行','卖出','HTTP',NOW(),CURDATE())", (code,price,shares))
-        return jsonify({"order_id": "sig_%d" % int(time.time()), "code": code, "price": price, "amount": shares}), 201
+        # 修复 P0: 之前忽略 action 字段，全部当 "卖出" 处理 → IPC poller 不走市价单
+        # 现在尊重调用方传入的 action: 卖出/止损/止盈/恐慌清仓/超时/RPS止损/SELL
+        # priceType=-1 → 市价单 (v23 策略会用)
+        action = (d.get("action") or "卖出").strip() or "卖出"
+        valid_actions = ("卖出", "止损", "止盈", "恐慌清仓", "超时", "RPS止损", "SELL", "分批止盈", "兜底止盈")
+        if action not in valid_actions:
+            action = "卖出"
+        price_type = d.get("priceType", 0)
+        # 市价单时把 action 改成"止损"或"恐慌清仓"以触发 IPC poller 走 priceType=-1
+        # 防止: 调用方传 "SELL" + priceType=-1 时被 IPC 当成普通限价
+        if str(price_type) == "-1" and action in ("卖出", "SELL"):
+            action = "止损"
+        reason = "HTTP"
+        if str(price_type) == "-1":
+            reason = "HTTP(市价)"
+        _q("INSERT INTO sim_signals(ts_code,price,shares,status,signal_type,reason,created_at,signal_date) VALUES(%s,%s,%s,'待执行',%s,%s,NOW(),CURDATE())", (code,price,shares,action,reason))
+        return jsonify({"order_id": "sig_%d" % int(time.time()), "code": code, "price": price, "amount": shares, "action": action}), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
