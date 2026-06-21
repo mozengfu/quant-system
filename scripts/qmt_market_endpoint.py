@@ -65,7 +65,7 @@ def snapshot(code=None):
     for c in code_list:
         if c in ticks:
             t = ticks[c]
-            results[c] = {
+            r = {
                 "last": _safe_num(t.get("lastPrice")),
                 "open": _safe_num(t.get("open")),
                 "high": _safe_num(t.get("high")),
@@ -74,12 +74,14 @@ def snapshot(code=None):
                 "pctChg": _safe_num(t.get("pctChg")),
                 "volume": _safe_num(t.get("volume")),
                 "amount": _safe_num(t.get("amount")),
-                "bid1": _safe_num(t.get("bidPrice1")),
-                "bidVol1": _safe_num(t.get("bidVol1")),
-                "ask1": _safe_num(t.get("askPrice1")),
-                "askVol1": _safe_num(t.get("askVol1")),
                 "time": str(t.get("time", "")),
             }
+            for i in range(1, 11):
+                r[f"bid{i}"] = _safe_num(t.get(f"bidPrice{i}"))
+                r[f"bidVol{i}"] = _safe_num(t.get(f"bidVol{i}"))
+                r[f"ask{i}"] = _safe_num(t.get(f"askPrice{i}"))
+                r[f"askVol{i}"] = _safe_num(t.get(f"askVol{i}"))
+            results[c] = r
     return jsonify(results)
 
 @app.route("/kline")

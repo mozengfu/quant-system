@@ -51,19 +51,32 @@ def handlebar(ContextInfo):
         ticks = ContextInfo.get_full_tick(codes)
         data = {"ts": now, "stocks": []}
         for code in codes:
-            last = vol = pct = bid1 = ask1 = amt = 0.0
+            last = vol = pct = amt = 0.0
+            bid_prices = [0.0] * 10
+            ask_prices = [0.0] * 10
+            bid_vols = [0.0] * 10
+            ask_vols = [0.0] * 10
             if ticks and code in ticks:
                 t = ticks[code]
                 last = float(t.get("lastPrice", 0) or 0)
                 vol = float(t.get("volume", 0) or 0)
                 pct = float(t.get("pctChg", 0) or 0)
-                bid1 = float(t.get("bidPrice1", 0) or 0)
-                ask1 = float(t.get("askPrice1", 0) or 0)
+                for i in range(1, 11):
+                    bid_prices[i-1] = float(t.get(f"bidPrice{i}", 0) or 0)
+                    ask_prices[i-1] = float(t.get(f"askPrice{i}", 0) or 0)
+                    bid_vols[i-1] = float(t.get(f"bidVol{i}", 0) or 0)
+                    ask_vols[i-1] = float(t.get(f"askVol{i}", 0) or 0)
                 amt = float(t.get("amount", 0) or 0)
-            data["stocks"].append({
+            stock = {
                 "code": code, "last": last, "volume": vol,
-                "pctChg": pct, "bid1": bid1, "ask1": ask1, "amount": amt,
-            })
+                "pctChg": pct, "amount": amt,
+            }
+            for i in range(10):
+                stock[f"bid{i+1}"] = bid_prices[i]
+                stock[f"bidVol{i+1}"] = bid_vols[i]
+                stock[f"ask{i+1}"] = ask_prices[i]
+                stock[f"askVol{i+1}"] = ask_vols[i]
+            data["stocks"].append(stock)
         with open(MARKET_FILE, "w") as f:
             json.dump(data, f)
     except Exception as e:

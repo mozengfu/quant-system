@@ -1,13 +1,13 @@
 #coding:gbk
 """
 iQuant 增强行情策略 v2
-新增: 换手率、量比、振幅、流通市值、涨速、五档深度
+新增: 换手率、量比、振幅、流通市值、涨速、十档深度
 输出到 C:\Users\Public\qmt_market_v2.json
 """
 import json, os, time
 
-OUTPUT = r"C:\Users\Public\qmt_market_v2.json"
-INDEX_OUT = r"C:\Users\Public\qmt_index_v2.json"
+OUTPUT = "C:/Users/Public/qmt_market_v2.json"
+INDEX_OUT = "C:/Users/Public/qmt_index_v2.json"
 INTERVAL = 3  # 3秒更新一次
 
 # 指数列表
@@ -65,8 +65,8 @@ def handlebar(ContextInfo):
                 continue
                 
             # 计算买卖盘总挂单量(bidVol1~bidVol5求和)
-            bid_vol_sum = sum(float(str(t.get("bidVol%d" % i, 0))) for i in range(1, 6))
-            ask_vol_sum = sum(float(str(t.get("askVol%d" % i, 0))) for i in range(1, 6))
+            bid_vol_sum = sum(float(str(t.get("bidVol%d" % i, 0))) for i in range(1, 11))
+            ask_vol_sum = sum(float(str(t.get("askVol%d" % i, 0))) for i in range(1, 11))
                 
             stock = {
                 "code": code,
@@ -87,29 +87,49 @@ def handlebar(ContextInfo):
                 "speed1m": float(str(t.get("speed1m", 0))),
                 "speed5m": float(str(t.get("speed5m", 0))),
                 
-                # 五档买卖价格
+                # 十档买卖价格
                 "bid1": float(str(t.get("bid1", 0))),
                 "bid2": float(str(t.get("bid2", 0))),
                 "bid3": float(str(t.get("bid3", 0))),
                 "bid4": float(str(t.get("bid4", 0))),
                 "bid5": float(str(t.get("bid5", 0))),
+                "bid6": float(str(t.get("bid6", 0))),
+                "bid7": float(str(t.get("bid7", 0))),
+                "bid8": float(str(t.get("bid8", 0))),
+                "bid9": float(str(t.get("bid9", 0))),
+                "bid10": float(str(t.get("bid10", 0))),
                 "ask1": float(str(t.get("ask1", 0))),
                 "ask2": float(str(t.get("ask2", 0))),
                 "ask3": float(str(t.get("ask3", 0))),
                 "ask4": float(str(t.get("ask4", 0))),
                 "ask5": float(str(t.get("ask5", 0))),
+                "ask6": float(str(t.get("ask6", 0))),
+                "ask7": float(str(t.get("ask7", 0))),
+                "ask8": float(str(t.get("ask8", 0))),
+                "ask9": float(str(t.get("ask9", 0))),
+                "ask10": float(str(t.get("ask10", 0))),
                 
-                # 五档挂单量(逐档)
+                # 十档挂单量(逐档)
                 "bidVol1": float(str(t.get("bidVol1", 0))),
                 "bidVol2": float(str(t.get("bidVol2", 0))),
                 "bidVol3": float(str(t.get("bidVol3", 0))),
                 "bidVol4": float(str(t.get("bidVol4", 0))),
                 "bidVol5": float(str(t.get("bidVol5", 0))),
+                "bidVol6": float(str(t.get("bidVol6", 0))),
+                "bidVol7": float(str(t.get("bidVol7", 0))),
+                "bidVol8": float(str(t.get("bidVol8", 0))),
+                "bidVol9": float(str(t.get("bidVol9", 0))),
+                "bidVol10": float(str(t.get("bidVol10", 0))),
                 "askVol1": float(str(t.get("askVol1", 0))),
                 "askVol2": float(str(t.get("askVol2", 0))),
                 "askVol3": float(str(t.get("askVol3", 0))),
                 "askVol4": float(str(t.get("askVol4", 0))),
                 "askVol5": float(str(t.get("askVol5", 0))),
+                "askVol6": float(str(t.get("askVol6", 0))),
+                "askVol7": float(str(t.get("askVol7", 0))),
+                "askVol8": float(str(t.get("askVol8", 0))),
+                "askVol9": float(str(t.get("askVol9", 0))),
+                "askVol10": float(str(t.get("askVol10", 0))),
                 
                 # 买卖盘总挂单
                 "bidVolSum": bid_vol_sum,

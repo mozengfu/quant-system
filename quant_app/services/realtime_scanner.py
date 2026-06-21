@@ -282,41 +282,70 @@ def factor_bb_bonus(rt, daily_data):
 # ============================================================
 
 def factor_orderbook(rt):
-    """盘口因子 — 价差 + 买卖失衡 + 挂单深度 (max 10)
-    QMT 实时盘口数据，日线无法提供。
-    价差越小流动性越好，bid量越厚支撑越强，挂单深度反映真实买卖意愿。
+    """盘口因子 — 价差 + 买卖失衡 + 深度分布 (max 10)
+    使用 10 档 Level-2 数据：
+    - 价差: 1档价差小 = 流动性好
+    - 深度分布: 10 档买卖盘总挂单比
+    - 压力位: 卖1~5档平均挂单厚度
+    - 大单识别: bid/ask 每档是否有异常大单（档位占比 > 40%）
     """
     bid1 = rt.get("bid1", 0)
     ask1 = rt.get("ask1", 0)
     last = rt.get("last", 0)
-    bid_vol1 = rt.get("bidVol1", 0)
-    ask_vol1 = rt.get("askVol1", 0)
     if last <= 0 or bid1 <= 0 or ask1 <= 0:
-        return 3  # 数据缺失给中位分
+        return 3
+
+    # 读取 10 档
+    bids = [rt.get(f"bid{i}", 0) for i in range(1, 11)]
+    asks = [rt.get(f"ask{i}", 0) for i in range(1, 11)]
+    bid_vols = [rt.get(f"bidVol{i}", 0) for i in range(1, 11)]
+    ask_vols = [rt.get(f"askVol{i}", 0) for i in range(1, 11)]
+
+    total_bid_vol = sum(bid_vols)
+    total_ask_vol = sum(ask_vols)
 
     score = 0
+
+    # 1. 1档价差（流动性）
     spread_pct = (ask1 - bid1) / last * 100
-    # 价差小 = 流动性好
-    if spread_pct < 0.05:      score += 4
-    elif spread_pct < 0.1:     score += 3
+    if spread_pct < 0.05:      score += 3
+    elif spread_pct < 0.1:     score += 2
     elif spread_pct < 0.2:     score += 1
     elif spread_pct > 0.5:     score -= 2
 
-    # 当前价偏向买一 = 买方主动
-    mid_price = (bid1 + ask1) / 2
-    if mid_price > 0:
-        bias = (last - mid_price) / mid_price * 100
-        if bias > 0.1:         score += 4   # 偏向买方
-        elif bias > 0:         score += 2
-        elif bias < -0.1:      score -= 1   # 偏向卖方
-        else:                  score += 1
+    # 2. 买卖盘总失衡（10 档总挂单）
+    if total_bid_vol > 0 and total_ask_vol > 0:
+        depth_ratio = total_bid_vol / (total_bid_vol + total_ask_vol)
+        if depth_ratio > 0.65:    score += 3
+        elif depth_ratio > 0.55:  score += 1
+        elif depth_ratio < 0.35:  score -= 2
+        elif depth_ratio < 0.45:  score -= 1
 
-    # 挂单深度：bid盘口厚 = 支撑强
-    if bid_vol1 > 0 and ask_vol1 > 0:
-        depth_ratio = bid_vol1 / (bid_vol1 + ask_vol1)
-        if depth_ratio > 0.7:      score += 2   # 买盘远大于卖盘
-        elif depth_ratio > 0.55:   score += 1
-        elif depth_ratio < 0.3:    score -= 1   # 卖盘压力大
+    # 3. 卖盘压力（卖1~5档平均挂单 vs 卖6~10档）
+    ask_vol_top5 = sum(ask_vols[:5])
+    ask_vol_deep = sum(ask_vols[5:])
+    if ask_vol_top5 > 0 and ask_vol_deep > 0:
+        ask_front_ratio = ask_vol_top5 / (ask_vol_top5 + ask_vol_deep)
+        if ask_front_ratio > 0.7:
+            score -= 1  # 卖盘集中在近档，抛压大
+        elif ask_front_ratio < 0.3:
+            score += 1  # 卖盘分散，抛压小
+
+    # 4. 买盘支撑强度（买1~5档 vs 买6~10档）
+    bid_vol_top5 = sum(bid_vols[:5])
+    bid_vol_deep = sum(bid_vols[5:])
+    if bid_vol_top5 > 0 and bid_vol_deep > 0:
+        bid_front_ratio = bid_vol_top5 / (bid_vol_top5 + bid_vol_deep)
+        if bid_front_ratio > 0.7:
+            score += 1  # 买盘集中在近档，支撑强
+
+    # 5. 大单检测（某档挂单占比 > 40% 视为大单）
+    big_bid = sum(1 for v in bid_vols if v > 0 and total_bid_vol > 0 and v / total_bid_vol > 0.4)
+    big_ask = sum(1 for v in ask_vols if v > 0 and total_ask_vol > 0 and v / total_ask_vol > 0.4)
+    if big_bid > 0:
+        score += 1  # 买方有大单护盘
+    if big_ask > 0:
+        score -= 1  # 卖方有大单压制
 
     return max(0, min(10, score))
 

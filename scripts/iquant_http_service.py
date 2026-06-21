@@ -18,7 +18,7 @@ def _get_db_config():
         "host": os.environ.get("DB_HOST", "192.168.10.30"),
         "port": int(os.environ.get("DB_PORT", 3306)),
         "user": os.environ.get("DB_USER", "root"),
-        "password": os.environ.get("DB_PASSWORD", ""),
+        "password": os.environ.get("DB_PASSWORD", "root123"),
         "database": os.environ.get("DB_DATABASE", "quant_db"),
         "charset": "utf8mb4",
     }
