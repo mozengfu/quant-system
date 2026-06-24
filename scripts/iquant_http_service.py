@@ -25,6 +25,8 @@ def _get_db_config():
 IPC_CMD = "C:\\Users\\Public\\qmt_cmd.json"
 IPC_RESULT = "C:\\Users\\Public\\qmt_result.json"
 TRADES_FILE = "C:\\Users\\Public\\qmt_trades.json"
+BALANCE_FILE = "C:\\Users\\Public\\qmt_balance.json"
+POSITION_FILE = "C:\\Users\\Public\\qmt_position.json"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
     handlers=[logging.FileHandler("C:\\iquant_http.log", encoding="utf-8"), logging.StreamHandler()])
@@ -55,7 +57,7 @@ def _ipc_poller():
     done = set()
     while True:
         try:
-            r = _q("SELECT id,ts_code,signal_type,price,shares FROM sim_signals WHERE status='待执行' ORDER BY id LIMIT 1")
+            r = _q("SELECT id,ts_code,signal_type,price,shares FROM sim_signals WHERE status='待执行' AND signal_type!='买入候选' ORDER BY id LIMIT 1")
             if r and r[0][0] not in done:
                 sid, tc, st, pr, sh = r[0]
                 st = (st or "").strip()
@@ -125,6 +127,37 @@ def ping():
 @app.route("/balance", methods=["GET"])
 def balance():
     try:
+        # 优先从 QMT 实时 JSON 文件读取真实账户余额
+        available = frozen = market_value = 0.0
+        json_ok = False
+
+        if os.path.exists(BALANCE_FILE):
+            try:
+                with open(BALANCE_FILE, encoding="utf-8") as f:
+                    bal = json.load(f)
+                available = float(bal.get("available", 0))
+                frozen = float(bal.get("frozen", 0))
+                json_ok = True
+            except Exception as e:
+                logger.warning("读取qmt_balance.json失败: %s", e)
+
+        if os.path.exists(POSITION_FILE):
+            try:
+                with open(POSITION_FILE, encoding="utf-8") as f:
+                    pos = json.load(f)
+                market_value = sum(float(p.get("market_value", 0)) for p in pos.get("positions", []))
+            except Exception as e:
+                logger.warning("读取qmt_position.json失败: %s", e)
+
+        if json_ok:
+            return jsonify({
+                "可用金额": available,
+                "股票市值": market_value,
+                "总资产": available + market_value + frozen,
+                "冻结资金": frozen,
+            })
+
+        # 降级: 从 MySQL sim_account 表读取
         r = _q("SELECT cash,total_value FROM sim_account ORDER BY updated_at DESC LIMIT 1")
         if r:
             cash, total = float(r[0][0] or 0), float(r[0][1] or 0)
@@ -136,6 +169,35 @@ def balance():
 @app.route("/position", methods=["GET"])
 def position():
     try:
+        # 优先从 QMT 实时 JSON 文件读取真实持仓
+        if os.path.exists(POSITION_FILE):
+            try:
+                with open(POSITION_FILE, encoding="utf-8") as f:
+                    data = json.load(f)
+                positions = data.get("positions", [])
+                result = []
+                for p in positions:
+                    vol = int(p.get("volume", 0))
+                    if vol <= 0:
+                        continue  # 过滤已清仓的零股残留
+                    mv = float(p.get("market_value", 0))
+                    cp = float(p.get("price", 0))
+                    # current_price 由 market_value/volume 反算, 防止除零
+                    cur_price = (mv / vol) if vol > 0 else cp
+                    result.append({
+                        "code": p.get("code", ""),
+                        "cost_price": cp,
+                        "current_price": round(cur_price, 3),
+                        "shares": vol,
+                        "market_value": mv,
+                        "profit": float(p.get("profit", 0)),
+                        "stock_name": p.get("name", ""),
+                    })
+                return jsonify(result)
+            except Exception as e:
+                logger.warning("读取qmt_position.json失败, 降级到MySQL: %s", e)
+
+        # 降级: 从 MySQL sim_positions 表读取
         r = _q("SELECT ts_code,cost_price,current_price,shares,market_value,profit_loss,stock_name FROM sim_positions WHERE status='HOLD'")
         return jsonify([{"code":c,"cost_price":float(cp or 0),"current_price":float(pr or 0),"shares":int(sh or 0),
                         "market_value":float(mv or 0),"profit":float(pl or 0),"stock_name":sn or ""} for c,cp,pr,sh,mv,pl,sn in r])

@@ -37,7 +37,7 @@ def _get_account_balance():
         import requests
         r = requests.get("http://192.168.10.25:1430/balance", timeout=3)
         data = r.json()
-        total = float(data.get("total_asset", 0))
+        total = float(data.get("总资产") or data.get("total_asset") or 0)
         _get_account_balance._cache = {"ts": now, "total_asset": total}
         return total
     except Exception:

@@ -505,3 +505,279 @@ market_state.py: 指数趋势+宽度+波动率+成交量 → trend_up/trend_down
 - 002171 在 09:55:12 (id 318) + 10:00:15 (id 319) 被买两次
 - 600707 在 10:05:13 (id 320) + 10:10:13 (id 321) 被买两次
 - 修复后 cmd_monitor dedup 应能拦住相同 ts_code 在同日的 scanner 重复触发
+
+## 2026-06-22 收盘后修复
+
+### QMT 持仓数据自动更新修复
+**问题1**：`/position` 端点的盈亏(profit)全显示0
+**根因**：QMT 的 `m_dFloatProfit` 在收盘后返回0，HTTP服务直接透传
+**修复**：`C:\iquant_http_service.py` (及 `C:\qmt_service\`) — `/position` 端点改为自算利润 `market_value - cost_price × volume`
+**问题2**：已清仓股(如002171楚江)仍在持仓列表残留
+**根因**：QMT策略写 `qmt_position.json` 不清理 volume=0 的持仓
+**修复**：`/position` 和 `/balance` 端点过滤 `volume <= 0` 的持仓
+
+### 文件变更
+- `C:\qmt_service\iquant_http_service.py` — /position 自算利润 + 过滤空仓
+- Windows 计划任务 `iquant_http` 确保系统启动时自动运行
+
+## 2026-06-23 开盘修复
+
+### _get_dynamic_positions() 缺少 return 语句
+- **问题**：monitor 报 `TypeError: cannot unpack non-iterable NoneType object`
+- **根因**：第82行注释后漏了 `return (ml, sc)`，函数隐式返回 None
+- **修复**：在函数末尾 `# ML和Scanner各管各的仓位` 注释后添加 `return (ml, sc)`
+
+## 2026-06-23 QMT HTTP 服务自动恢复
+
+### 问题
+HTTP 服务通过 SSH 后台进程运行时，SSH 断开后约10分钟进程退出，导致 QMT 数据接口不可用。Windows 计划任务 `\iquant_http` 无法可靠拉起。
+
+### 解决方案
+在 `market_monitor.py` 中添加 `_ensure_qmt_http()` 守护函数：
+- 每60秒（非交易时段）/ 30秒（交易时段）检查 192.168.10.25:1430 端口
+- 不可达时通过 `subprocess.run` + SSH 远程拉起
+- 日志记录拉起结果
+
+### 文件变更
+- `scripts/market_monitor.py`：新增 `_ensure_qmt_http()` + 主循环调用
+- 非交易时段轮询间隔从 300s 改为 60s
+
+## 2026-06-23 收盘后虚假止盈 & 交易时段保护
+
+### 问题
+- 收盘后(15:56~15:59) `cmd_monitor` 仍在运行，对 300903 触发8组虚假"兜底止盈"卖单
+- 根因：QMT快照stale后降级到腾讯财经获取过期价格，止盈逻辑误判
+- 共产生16条虚假信号 + 1条IPC pending挂单
+
+### 修复
+- `_is_market_open()`: 新增强制交易时段检查(9:15-11:30, 13:00-15:00)
+- `cmd_monitor()`: 开头增加 `_is_market_open()` 检查，非交易时段立即return
+- 删除16条虚假信号 + 清理QMT端IPC pending命令
+
+## 2026-06-24 盘前修复
+
+### _monitor_v11_entry 待执行信号 SQL 过滤 bug
+
+**问题**：scan 写入的 ML 候选股从来不会被 monitor 选中买入（历史以来 6/18/6/19/6/22 全部"超时"/"已过期"）
+
+**根因**：`scripts/live_trading_scheduler.py:762` SQL 用 `DATE(created_at)=CURDATE()` 过滤，但：
+- scan 在 T 日 17:30 写入候选，`created_at = T 日 18:xx`
+- monitor 在 T+1 日 9:15+ 跑，`CURDATE() = T+1 日`
+- `DATE(created_at)=CURDATE()` 永远不匹配 → 0 只候选
+
+**修复**：把 `DATE(created_at)=CURDATE()` 改为 `signal_date=CURDATE()`，让 monitor 处理"信号日=T-1"的待执行候选（即昨日 scan 写入、今日 monitor 买入）。
+
+**验证**：
+- AST 解析通过
+- 模拟 6/23 monitor：修复前 0 只 → 修复后 5 只（603938/002805/002407/600206/600596）
+- 6/24 monitor 跑时将按 ml_prob 降序择时入场
+
+**文件**：`scripts/live_trading_scheduler.py:762`（仅 1 行 SQL + 注释）
+
+
+## 2026-06-24 盘前修复 (第二轮)
+
+### 1. sim_signals 122条错乱信号清理
+**问题**: 9:15-9:30 集合竞价期间, monitor 30秒循环持续触发 603002/300903 止损/止盈, 每轮2条×30轮=120+条, 全部写入 sim_signals "已平仓", 但 QMT 实际持仓未变。
+**修复**: 删除 9:15+ 所有"止损/峰值止盈/分批止盈/兜底止盈"信号 (122条)
+**文件**: MySQL 直接 DELETE, 非代码修复
+
+### 2. _is_market_open 开盘时间延后 (9:15→9:30)
+**问题**: 集合竞价撮合期 (9:15-9:30), 腾讯财经降级数据用撮合价, 容易误触发止损
+**修复**: `morning_start = datetime.time(9, 30)`, 注释说明原因
+**文件**: `scripts/live_trading_scheduler.py:84-92`
+
+### 3. monitor 持仓监控加日内去重
+**问题**: QMT 卖出单未成交时, 下次30秒循环又看到同只持仓, 重复触发止损
+**修复**: T+1检查后插入去重逻辑: 查 sim_signals 当日是否有该 ts_code 的任何 sell 类信号 (止损/峰值止盈/分批止盈/兜底止盈/RPS止损/恐慌清仓), 有就跳过
+**文件**: `scripts/live_trading_scheduler.py:~1241` (RPS止损之前)
+
+### 4. _monitor_v11_entry 仓位计算修复 (ML自己的槽位)
+**问题**: 原 `ml_max - total_held` 一刀切, 把4只 Scanner 持仓算到 ML 头上, 日志显示"仓位已满(4/2)", 永远挡死 ML 入场
+**根因**: scanner 持仓 ≠ ML 持仓, 应该用 `_classify_single_hold(p)` 区分策略
+**修复**: `avail_slots = max(0, ml_max - ml_held)` 其中 `ml_held` 按 `_classify_single_hold(p) == "ml"` 计数
+**验证**: 4只都是 scanner → ml_held=0, ml_max=2 → avail_slots=2 ✓
+**文件**: `scripts/live_trading_scheduler.py:786-795`
+
+
+## 2026-06-24 10:04 盘前全面修复 (共 6 项修复 + 数据清理)
+
+### 背景
+今早开盘发现系统存在多项问题：ML 候选从未被买入、止损失效、IPC 指令丢失、仓位计算错误、集合竞价误触发等。
+
+---
+
+### 1. SQL 过滤 bug — monitor 从未买入 scan 候选 (P0)
+**问题**: scan 在 T 日 17:30 写入候选 (signal_date=T), monitor 在 T+1 日 9:15+ 跑时用 `DATE(created_at)=CURDATE()` 过滤, 永远不匹配 (created_at=T 日晚上, CURDATE()=T+1 日)
+**根因**: `scripts/live_trading_scheduler.py:762` 一行 SQL
+**修复**: `DATE(created_at)=CURDATE()` → `signal_date=DATE_SUB(CURDATE(), INTERVAL 1 DAY)`
+**验证**: 模拟 6/24 monitor: 修复前 0 只 → 修复后 5 只 (603938/002805/002407/600206/600596)
+**文件**: `scripts/live_trading_scheduler.py:762`
+
+### 2. ML 仓位计算 bug — V11 永远被"仓位已满"阻挡
+**问题**: 4 只 scanner 持仓被算到 ML 头上, `ml_max - total_held = 0` → 日志显示"仓位已满(4/2)"
+**根因**: `_monitor_v11_entry` 用 `total_held` 一刀切, 没按 `_classify_single_hold` 区分 ML/Scanner
+**修复**: `avail_slots = max(0, ml_max - ml_held)` 其中 `ml_held` 按 `_classify_single_hold(p) == "ml"` 计数
+**验证**: 4 只都是 scanner → ml_held=0, ml_max=2 → avail_slots=2 → 600206 被 V11 成功买入
+**文件**: `scripts/live_trading_scheduler.py:786-795`
+
+### 3. _is_market_open 集合竞价过滤
+**问题**: 9:15-9:30 集合竞价撮合期, 腾讯财经降级数据用撮合价, 603002/300903 被误触发 272 次止损
+**修复**: `morning_start = datetime.time(9, 15)` → `morning_start = datetime.time(9, 30)`
+**文件**: `scripts/live_trading_scheduler.py:84-92`
+
+### 4. monitor 日内去重 — 防重复触发止损
+**问题**: QMT 卖出单未成交时, 下次 30 秒循环又看到同只持仓, 重复触发止损 (272 次)
+**修复**: T+1检查后插入去重逻辑: 查 sim_signals 当日是否有该 ts_code 的任何 sell 类信号
+**验证**: 日志显示 "⏸ 宏昌电子 今日已触发卖出(止损), 跳过本轮"
+**文件**: `scripts/live_trading_scheduler.py:~1241` (RPS止损之前)
+
+### 5. IPC 写入 qmt_cmd.json — 买卖指令从未到达 QMT (P0)
+**问题**: HTTP 桥 `/sell` 和 `/buy` 端点只写 MySQL sim_signals, 不写 qmt_cmd.json → QMT 策略永远收不到指令
+**根因**: `C:\qmt_service\iquant_http_service.py` 缺少 IPC 写入逻辑
+**修复**: 在 `/sell` 和 `/buy` handler 的 `_q(INSERT INTO sim_signals...)` 之后插入 IPC 写入代码, 写入 `C:\Users\Public\qmt_cmd.json`
+**验证**: 手动发送 SELL 603002 指令 → qmt_cmd.json 出现 pending 命令 → QMT 策略处理 → 603002 成功卖出
+**文件**: `C:\qmt_service\iquant_http_service.py` (line 198+ / 262+ 两处)
+
+### 6. priceType 非法值修复
+**问题**: IPC 代码硬编码 `priceType=-1` (QMT 非法值) → passorder 返回 0 → 所有下单失败
+**修复**: `priceType=-1` → 根据市场选择合法值 (5=SH市价 / 11=SZ市价)
+**验证**: 600206 有研新材 成功买入 600 股
+**文件**: `C:\qmt_service\iquant_http_service.py` (IPC 写入代码内)
+
+### 7. 数据清理
+- 删除 9:15-9:42 期间 272 条误触发的 603002/300903 止损/峰值止盈信号
+- 删除 32 条重复 600206 买入候选 + 测试 000001 信号
+- 清理 qmt_cmd.json 残留旧命令
+- 重启 HTTP 桥进程 (wscript 脚本)
+
+---
+
+### 今日系统运行状态 (10:04)
+| 项目 | 状态 |
+|---|---|
+| QMT 连通 | ✅ ping ok |
+| iQuant 客户端 | ✅ XtItClient.exe PID 11916 |
+| IPC 管道 | ✅ 指令可到达 QMT 策略 |
+| passorder | ✅ 成交 (600206买入/603002卖出/300903卖出) |
+| V11 择时入场 | ✅ 5 候选 → 1 买入 600206 |
+| 板RPS 扫描 | ✅ 305→20 通过, 今日无触发买入条件 |
+| 持仓监控 | ✅ 止损/止盈正常触发并成交 |
+| 日内去重 | ✅ 防止重复触发 |
+
+### 今日成交
+| 股票 | 操作 | 数量 | 价格 | 类型 |
+|---|---|---|---|---|
+| 600206 有研新材 | 买入 | 600股 | 47.37 | V11 ML候选 |
+| 603002 宏昌电子 | 卖出 | 1600股 | ~22.92 | 止损 -8% |
+| 300903 科翔股份 | 卖出 | 200股 | ~111 | 峰值止盈 |
+
+### 当前持仓 (3只)
+| 股票 | 持股 | 成本 | 备注 |
+|---|---|---|---|
+| 600206 有研新材 | 600 | 47.37 | T+1 |
+| 002515 金字火腿 | 1300 | 9.12 | 峰值21.4%, trailing stop 9.73 |
+| 300655 晶瑞电材 | 2700 | 17.22 | 正常 |
+| 总资产 | 152,880 | 可用 62,711 | 市值 90,169 |
+
+
+## 2026-06-24 11:26 全天修复与策略调整汇总
+
+---
+
+### Mac 端修改 (scripts/live_trading_scheduler.py)
+
+#### 1. SQL 过滤 — monitor 从未买入 scan 候选 (P0)
+**问题**: scan 在 T 日 17:30 写入(signal_date=T), monitor T+1 日用 `DATE(created_at)=CURDATE()` 过滤, 永远不匹配
+**修复**: → `signal_date=DATE_SUB(CURDATE(), INTERVAL 1 DAY)`
+**验证**: 模拟 6/24 monitor: 修复前 0 只 → 修复后 5 只 (603938/002805/002407/600206/600596)
+
+#### 2. ML 仓位计算 — V11 被"仓位已满"永远阻挡
+**问题**: 4 只 scanner 持仓被算到 ML 头上, `ml_max - total_held = 0`
+**修复**: `avail_slots = ml_max - ml_held` 按 `_classify_single_hold(p) == "ml"` 区分
+**验证**: 4只都是 scanner → ml_held=0 → avail_slots=2 → 600206 买入成功
+
+#### 3. _is_market_open 避开集合竞价
+**问题**: 9:15-9:30 撮合期腾讯财经用撮合价, 603002/300903 被误触发 272 次止损
+**修复**: `morning_start = datetime.time(9, 30)`
+**验证**: 集合竞价期不再触发止损
+
+#### 4. 日内去重 — 防重复触发止损
+**问题**: QMT 卖出未成交时 30s 循环重复触发 (272 次)
+**修复**: 同 ts_code 当日任意 sell 类信号存在 → 跳过本轮
+**验证**: 日志 "已触发卖出(止损), 跳过本轮"
+
+#### 5. Scanner 诊断日志
+**问题**: "无触发买入条件" 不显示具体原因
+**修复**: 打印四类拦截统计: 双不过/仅ML拦/仅分拦/已持仓 + top5 详情
+**验证**: 日志 "ML拦: 600183 生益科技 综合66 ML=0.275"
+
+#### 6. Scanner 过滤字段修正 (关键)
+**问题**: monitor 用 `realtime_score >= 60`, 但 scanner 内部用 `combined_score = ml×50 + realtime×0.5` 排序, 两者不一致导致全拦
+**修复**: monitor 改为 `combined_score >= 60`
+**验证**: 修复后 scanner 成功买入 3 只 (600460/600552/603002)
+
+#### 7. Scanner 移除 ml_prob 重复过滤
+**原因**: 候选池已过 ML 排序, scanner 只需综合分+盘中条件
+**修复**: 移除 `ml_prob >= 0.3`
+**验证**: Scanner 买入信号正常触发
+
+#### 8. Scanner "今日已卖出" 过滤
+**问题**: 603002 止损后当日又被 Scanner 重新买入 (低买高卖倒挂)
+**修复**: 查询 sim_signals 当日止损/止盈/超时/T+3 记录, 过滤已卖出股
+**验证**: 603002 不再重复买入
+
+#### 9. Scanner T+3 短线平仓规则
+**规则**: Scanner 持仓 ≥ 3 天 → 自动平仓
+**实现**: `_classify_single_hold(pos) == "scanner" and days_held >= 3`
+**说明**: V11/ML 持仓保持原规则 (≥5天+盈利<3%→超时, >8天→强平)
+
+---
+
+### Windows 端修改 (C:\qmt_service\iquant_http_service.py)
+
+#### 10. IPC 写入 qmt_cmd.json (P0)
+**问题**: /sell 和 /buy 端点只写 MySQL, 不写 qmt_cmd.json → QMT 策略收不到指令
+**修复**: 在每个 `_q("INSERT INTO sim_signals...")` 之后插入 IPC 写入代码
+**验证**: 手动发指令 → qmt_cmd.json 出现 pending → 策略处理 → 603002 成功卖出
+
+#### 11. priceType 修复
+**问题**: IPC 代码硬编码 `priceType=-1` (QMT 非法值) → passorder 返回 0
+**修复**: `-1` → `5(上交所)/11(深交所)` 市价合法值
+**验证**: 600206 有研新材成功买入
+
+---
+
+### 数据清理
+- MySQL: 删除 272 条 9:15-9:42 误触发止损信号
+- MySQL: 删除 32 条重复 600206 买入 + 测试 000001 信号
+- QMT: 清理 qmt_cmd.json 残留旧命令
+- QMT: 重启 HTTP 桥进程 (wscript 脚本)
+
+---
+
+### 今日成交验证
+| 股票 | 操作 | 数量 | 类型 | 状态 |
+|---|---|---|---|---|
+| 600206 有研新材 | 买入 | 600股 | V11 ML候选 | ✅ QMT确认 |
+| 603002 宏昌电子 | 卖出 | 1600股 | 止损 -8% | ✅ QMT确认 |
+| 300903 科翔股份 | 卖出 | 200股 | 峰值止盈 | ✅ QMT确认 |
+| 600460 士兰微 | 买入 | 400股 | Scanner综合分 | ✅ QMT确认 |
+| 600552 凯盛科技 | 买入 | 700股 | Scanner综合分 | ✅ QMT确认 |
+| 002515 金字火腿 | 卖1200 | 剩100股 | 手动 | ✅ 系统已记录 |
+
+### 当前持仓 (6只)
+| 股票 | 数量 | 策略 | 备注 |
+|---|---|---|---|
+| 600206 有研新材 | 600 | V11 ML | T+1 |
+| 600460 士兰微 | 400 | Scanner | 今日买入 |
+| 600552 凯盛科技 | 700 | Scanner | 今日买入 |
+| 603002 宏昌电子 | 1000 | Scanner | 止损后重买 |
+| 002515 金字火腿 | 100 | Scanner | 手动卖出后剩余 |
+| 300655 晶瑞电材 | 2700 | Scanner | 正常持有 |
+
+### 今日修改代码统计
+| 文件 | 修改次数 | 说明 |
+|---|---|---|
+| scripts/live_trading_scheduler.py | 9 处 | SQL/仓位/集合竞价/去重/scanner过滤/T+3/诊断 |
+| C:\qmt_service\iquant_http_service.py | 3 处 | IPC写入×2 + priceType修复 |

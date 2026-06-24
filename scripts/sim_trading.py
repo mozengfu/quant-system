@@ -22,7 +22,9 @@ from datetime import datetime, timedelta
 
 import pymysql
 
-# sys.path.insert(REMOVED)  # noqa)))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +67,14 @@ def _count_trading_days_since(buy_date):
         count = cursor.fetchone()[0] or 0
         cursor.close()
         conn.close()
+        # fallback: 如果MySQL没有数据(今天数据未导入), 用日历日
+        if count == 0 and buy_date:
+            try:
+                calendar_days = (datetime.now().date() - buy_date).days if hasattr(buy_date, 'date') else (datetime.now().date() - buy_date).days
+            except TypeError:
+                calendar_days = (datetime.now().date() - datetime.strptime(str(buy_date), '%Y-%m-%d').date()).days if buy_date else 0
+            if calendar_days > 0:
+                return max(1, calendar_days - 1)  # 至少1天, 扣除周末近似
         return count
     except Exception:
         return (datetime.now().date() - buy_date).days if buy_date else 0
@@ -1165,6 +1175,13 @@ def update_account_value():
             holding_value += market_value
 
     total_value = float(account["cash"]) + holding_value
+    # 防护：如果计算异常（策略重启导致脏数据），跳过更新
+    initial = float(account.get("initial_capital", 100000))
+    if total_value < 0 or total_value < initial * 0.5:
+        logger.warning("账户价值异常(%.0f < %.0f)，跳过 sim_account 更新", total_value, initial * 0.5)
+        cursor.close()
+        conn.close()
+        return
     profit_loss = total_value - float(account["initial_capital"])
     profit_pct = profit_loss / float(account["initial_capital"]) if float(account["initial_capital"]) > 0 else 0
 

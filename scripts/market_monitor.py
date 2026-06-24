@@ -216,6 +216,29 @@ def is_trading_time():
     afternoon_end = t <= datetime.strptime("15:05", "%H:%M").time()
     return (morning_start and morning_end) or (afternoon_start and afternoon_end)
 
+def _ensure_qmt_http():
+    """确保 QMT HTTP 服务(1430端口)正常运行，挂了就SSH远程拉起"""
+    import subprocess
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(3)
+        alive = (s.connect_ex(("192.168.10.25", 1430)) == 0)
+        s.close()
+        if not alive:
+            logger.warning("QMT HTTP服务(1430)不可达，尝试远程拉起...")
+            # SSH后台拉起（Mac端&分离），已验证可行
+            subprocess.Popen([
+                "ssh", "-i", os.path.expanduser("~/.ssh/id_ed25519_qmt"),
+                "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
+                "mozf@192.168.10.25",
+                "cd C:\\qmt_service && python iquant_http_service.py >> http.log 2>&1"
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            logger.info("已发送SSH拉起命令")
+    except Exception as e:
+        logger.warning("HTTP守护异常: %s", e)
+
+
 def run_once():
     """执行一次市场状态采集"""
     sh = get_sh_index()
@@ -227,6 +250,10 @@ def run_once():
 
     logger.info("市场状态: %s | 上证 %.2f (%+.2f%%)",
                state['state_name'], state.get('sh_price', 0), state.get('sh_pct', 0))
+
+    # ====== QMT HTTP服务守护（每30s执行一次） ======
+    _ensure_qmt_http()
+
     return state
 
 def main():
@@ -235,6 +262,9 @@ def main():
 
     while True:
         try:
+            # QMT HTTP服务守护（交易/非交易都执行）
+            _ensure_qmt_http()
+
             if is_trading_time():
                 state = run_once()
                 # 恐慌状态额外告警
@@ -242,8 +272,8 @@ def main():
                     logger.warning("恐慌状态! 上证 %.2f%%", state['sh_pct'])
                 sleep = 30  # 交易时段每30秒刷新
             else:
-                # 非交易时段每5分钟检查一次（用于显示盘前数据）
-                sleep = 300
+                # 非交易时段每60秒检查一次（含HTTP守护）
+                sleep = 60
                 try:
                     sh = get_sh_index()
                     if sh:

@@ -16,6 +16,7 @@ ORD = BASE + "/qmt_order.json"
 TRD = BASE + "/qmt_trades.json"
 MARKET_FILE = BASE + "/qmt_market.json"
 INDEX_FILE = BASE + "/qmt_index.json"
+TICK_CMD = BASE + "/qmt_tick.json"
 STOCKPOOL_FILE = BASE + "/stockpool.json"
 ACCOUNT = "170000758981"
 
@@ -141,7 +142,7 @@ def _handlebar_impl(ContextInfo):
                         json.dump(cmd, f, ensure_ascii=False)
                     return
 
-                accts = get_trade_detail_data(ACCOUNT, "STOCK", "ACCOUNT")
+                accts = get_trade_detail_data("170000758981", "STOCK", "ACCOUNT")
                 aid = str(accts[0].m_strAccountID) if accts else ACCOUNT
                 pt = int(cmd.get("priceType", 11))
 
@@ -160,7 +161,7 @@ def _handlebar_impl(ContextInfo):
                     for _ in range(15):
                         time.sleep(1)
                         try:
-                            orders = get_trade_detail_data(ACCOUNT, "STOCK", "ORDER")
+                            orders = get_trade_detail_data("170000758981", "STOCK", "ORDER")
                             if orders:
                                 for o in orders:
                                     if str(o.m_strOrderSysID) == str(oid):
@@ -203,30 +204,23 @@ def _handlebar_impl(ContextInfo):
     if now - ContextInfo._last_cache_sync >= 30:
         ContextInfo._last_cache_sync = now
 
-        # 余额
+        # 余额: 只写 available(从QMT账户取), total/market_value 由HTTP服务从sim_positions算
         try:
-            accts = get_trade_detail_data(ACCOUNT, "STOCK", "ACCOUNT")
+            accts = get_trade_detail_data("170000758981", "STOCK", "ACCOUNT")
+            available = 0.0
             if accts:
                 a = accts[0]
-                available = float(str(a.m_dAvailable))
-                total_asset = float(str(a.m_dBalance))
-                market_value = float(str(a.m_dMarketValue))
-                frozen = float(str(a.m_dFrozenCash))
-                if not (available == 0 and total_asset == 0 and market_value == 0):
-                    with open(BAL, "w", encoding="utf-8") as f:
-                        json.dump({
-                            "available": available,
-                            "total_asset": total_asset,
-                            "market_value": market_value,
-                            "frozen": frozen,
-                            "ts": now
-                        }, f, ensure_ascii=False)
+                available = float(str(getattr(a, "m_dAvailable", getattr(a, "available", 0))))
+            if True:  # always write
+                with open(BAL, "w", encoding="utf-8") as f:
+                    frozen_val = float(str(getattr(a, "m_dFrozenCash", getattr(a, "frozen", 0)))) if accts else 0.0
+                    json.dump({"available": available, "frozen": frozen_val, "ts": now}, f, ensure_ascii=False)
         except Exception as e:
             print("bal err:", e)
 
         # 持仓
         try:
-            positions = get_trade_detail_data(ACCOUNT, "STOCK", "POSITION")
+            positions = get_trade_detail_data("170000758981", "STOCK", "POSITION")
             if positions is not None:
                 pl = []
                 for p in positions:
@@ -247,7 +241,7 @@ def _handlebar_impl(ContextInfo):
 
         # 委托
         try:
-            orders = get_trade_detail_data(ACCOUNT, "STOCK", "ORDER")
+            orders = get_trade_detail_data("170000758981", "STOCK", "ORDER")
             if orders is not None:
                 ol = []
                 for o in orders:
@@ -268,7 +262,7 @@ def _handlebar_impl(ContextInfo):
 
         # 成交
         try:
-            trades = get_trade_detail_data(ACCOUNT, "STOCK", "TRADE")
+            trades = get_trade_detail_data("170000758981", "STOCK", "TRADE")
             if trades is not None:
                 tl = []
                 for t in trades:

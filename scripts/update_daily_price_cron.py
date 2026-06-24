@@ -19,7 +19,8 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-# sys.path.insert(REMOVED)  # noqa)))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path: sys.path.insert(0, _PROJECT_ROOT)
 from quant_app.utils.config import get_db_config
 
 TUSHARE_TOKEN = os.environ.get('TUSHARE_TOKEN', '')

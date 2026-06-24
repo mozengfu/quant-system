@@ -241,6 +241,7 @@ class RemoteTraderExecutor(AbstractTradeExecutor):
         code = _ts_code_to_remote(ts_code)
         result = self._request("POST", "/buy", json={
             "code": code, "price": price, "amount": quantity,
+            "priceType": -1,   # 市价单标识（HTTP服务→IPC→QMT策略最终用11兜底）
         })
         logger.info("买入 %s(%s) %d股 @ %.2f: %s", name, code, quantity, price, result)
 
@@ -300,6 +301,7 @@ class RemoteTraderExecutor(AbstractTradeExecutor):
         code = _ts_code_to_remote(ts_code)
         result = self._request("POST", "/sell", json={
             "code": code, "price": price, "amount": quantity,
+            "priceType": -1,   # 市价单标识（HTTP服务转action → IPC → QMT策略用11兜底）
         })
         logger.info("卖出 %s %d股 @ %.2f: %s", code, quantity, price, result)
 
@@ -317,7 +319,7 @@ class RemoteTraderExecutor(AbstractTradeExecutor):
         code = _ts_code_to_remote(ts_code)
         result = self._request("POST", "/sell", json={
             "code": code, "price": price, "amount": quantity,
-            "priceType": -1,   # 市价单，v23 支持
+            "priceType": -1,   # 市价单标识（HTTP服务转action → IPC → QMT策略用11兜底）
         })
         logger.info("市价卖出 %s %d股: %s", code, quantity, result)
 

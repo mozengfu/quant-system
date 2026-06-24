@@ -330,9 +330,18 @@ def simulate_t(strategy, bars: list[dict], base_shares: int = 1000,
                 state["t_skip_streak"] += 1
                 continue
 
+            # 量能过滤: 缩量阴线才高抛
+            # 当前 bar 成交量 < 当日均量 * 0.8 说明缩量, 信号可靠
+            # 当前 bar 成交量 > 当日均量 * 1.5 且价格在下跌, 不放抛
+            avg_vol = cum_volume / max(1, len([_ for _ in bars if int(_.get("time", "0000")) <= int(bar.get("time", "0000"))]))
+            if avg_vol > 0 and vol < avg_vol * 0.8:
+                pass  # 缩量 → 信号更可靠
+            vol_shrink_ok = not (vol > avg_vol * 1.5 and price < open_price)
+
             if (vwap > 0 and price >= vwap * (1 + sell_vwap_band)
                     and intraday_pct >= sell_pct_min
-                    and drawdown_from_high >= pullback_from_high):
+                    and drawdown_from_high >= pullback_from_high
+                    and vol_shrink_ok):
                 t_shares = int(base_shares * t_ratio)
                 t_shares = (t_shares // 100) * 100
                 if t_shares >= 100 and base_remaining - t_shares >= 100:

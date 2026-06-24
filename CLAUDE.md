@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 智能量化选股分析 + 实盘交易系统。v2.0，模块化重构后。
 
+> **操作问题先查 `AGENTS.md`**（管线操作、数据库诊断、crash恢复流程）。**架构问题查本文档**（模块关系、数据流、设计模式）。
+
 ## 开发命令
 
 ```bash
@@ -56,6 +58,12 @@ python3 scripts/sim_trading.py scan       # 每日ML扫描（盘后执行）
 python3 scripts/sim_trading.py v4_scan    # V4级联策略候选扫描
 python3 scripts/sim_trading.py status     # 账户状态/持仓/交易记录
 python3 scripts/sim_trading.py init       # 建表初始化
+
+# 日内做T策略
+python3 scripts/intraday_t_monitor.py --mode dryrun --once   # 做T监控(dryrun模式)
+python3 scripts/intraday_t_analysis.py --days 7 --tune --send  # 盘后分析+调优建议
+python3 scripts/intraday_t_backtest.py                        # 做T策略回测
+bash scripts/start_intraday_t.sh                              # 启动日内做T服务
 
 # 回测
 python3 run_backtest_v11.py                           # 全量回测（注意：含有数据泄露，见脚本注释）
@@ -121,6 +129,32 @@ python3 scripts/sync_tushare_boards.py
 python3 scripts/update_daily_price_cron.py
 python3 scripts/calc_technical.py
 bash scripts/auto_refresh_data.sh
+
+# 告警与监控
+python3 scripts/feishu_alerts.py morning    # 开盘预警
+python3 scripts/feishu_alerts.py daily      # 盘后汇总
+python3 scripts/feishu_alerts.py alert      # 盘中告警+心跳检测(每5分钟)
+python3 scripts/daily_health_check.py       # 每日开盘健康检查
+python3 scripts/position_monitor.py         # 风控扫描(备用)
+
+# 数据回填
+python3 scripts/backfill_moneyflow.py       # 资金流向回填
+python3 scripts/backfill_margin.py          # 融资融券回填
+python3 scripts/backfill_block_trade.py     # 大宗交易回填
+
+# 诊断与验证
+python3 scripts/validate_icir_fast.py       # IC/IR 快速验证
+python3 scripts/validate_icir_long.py       # IC/IR 完整验证
+python3 scripts/diag_features.py            # 特征诊断
+python3 scripts/diag_label.py               # 标签诊断
+bash scripts/verify_v5_morning.sh           # V5早盘验证
+
+# 模型维护
+python3 scripts/retrain_monthly.py          # 月度全量重训(需Windows训练机在线)
+python3 scripts/retrain_v11_fast.py         # Mac快速重训(Top500)
+python3 scripts/rebundle_model.py           # 模型重新打包
+python3 scripts/cron_retrain.py             # 定时重训练调度(每月1号cron调用)
+bash scripts/rolling_train.sh               # 滚动训练(ML+TopDown)
 ```
 
 ## 架构概览
@@ -228,7 +262,9 @@ Windows训练机 (192.168.10.39, 32GB RAM + 16GB VRAM)
 | `data/` | 运行时数据（模型 .pkl、状态 .json、预测 .parquet、股票池 .csv） |
 | `tests/` | 测试（`test_inference.py` ML 推理管线测试） |
 | `archive/` | 历史脚本归档（仅参考，不删除） |
+| `migrations/` | Schema 变更留档（`001_widen_strategy_columns.sql` 等，按编号管理） |
 | `MEMORY.md` | 历史决策记录 + 版本演进日志 — **排查不明行为或回顾架构变更时优先查阅此文件** |
+| `AGENTS.md` | AI Agent 操作手册（管线详解、DB诊断、crash恢复流程），**操作问题优先查此文件** |
 | `ml_regime_detector.py` | 市场状态分类检测器（独立运行） |
 
 ### quant_app 子包补充
@@ -240,7 +276,7 @@ Windows训练机 (192.168.10.39, 32GB RAM + 16GB VRAM)
 | `quant_app/features/` | 特征构建统一入口 `build_features_for()`，含 v11/pattern/sector_relay/LHB/HSGT/research 等模块 |
 | `quant_app/risk/` | 风控过滤: `hot_money.py`(游资过滤)、`position_manager.py`(仓位管理)、`sector.py`(行业分散)、`filters.py`(过滤管线) |
 | `quant_app/backtest/` | 回测引擎: `engine.py`(简单信号回测)、`strategy_engine.py`(完整策略回测，含T+1/滑点/手续费/止损止盈) |
-| `quant_app/services/` | 业务服务: `board_rps_scanner.py`(每周板RPS筛选+ML排序)、`realtime_scanner.py`(盘中实时扫描)、`scanner_strategy.py`(策略参数读取)、`scanner_backtest.py`(扫描策略回测)、`factor_scorer.py`(5因子等权打分)、`strategy_service.py`(V4+ML过滤策略)、`market_service.py`、`technical_service.py`(技术指标)、`qmt_adapter.py`(QMT协议适配)、`backtest_service.py`(回测数据/指标)、`notification_service.py`(飞书/企微/邮件/短信)、`market_state.py`(服务层市场状态封装) |
+| `quant_app/services/` | 业务服务: `board_rps_scanner.py`(每周板RPS筛选+ML排序)、`realtime_scanner.py`(盘中实时扫描)、`realtime_service.py`(实时行情降级链路)、`market_attribution.py`(市场归因分析)、`scanner_strategy.py`(策略参数读取)、`scanner_backtest.py`(扫描策略回测)、`factor_scorer.py`(5因子等权打分)、`strategy_service.py`(V4+ML过滤策略)、`market_service.py`、`technical_service.py`(技术指标)、`qmt_adapter.py`(QMT协议适配)、`backtest_service.py`(回测数据/指标)、`notification_service.py`(飞书/企微/邮件/短信)、`market_state.py`(服务层市场状态封装) |
 | `quant_app/data/database.py` | SQLAlchemy 引擎创建 + `with_session()` 上下文管理器 |
 | `quant_app/data/models/` | SQLAlchemy ORM 模型: `daily_price`、`stock_info`、`fina_indicator`、`moneyflow`、`margin`、`board`、`market_index`、`sector_moneyflow` |
 | `quant_app/data/track/` | 持仓追踪 `sim_positions`/`sim_signals` 表读写 |
@@ -388,7 +424,7 @@ quant_app/trading/executor.py
 
 ② V11择时入场
   盘后候选股 → 监控量价条件(回踩开盘价/量比/涨跌幅)
-  → 满足则买入(资金上限: 总资产×50%÷3)
+  → 满足则买入(资金从共享预算中扣除)
 
 ③ 板RPS实时扫描
   实时重算板RPS→Top5板块→成分股
@@ -398,7 +434,7 @@ quant_app/trading/executor.py
   → 实时分≥60 且 ML概率>0 → 按综合分遍历 → 预算够就买
 ```
 
-**资金分配**: 总资产 × 50% = V11预算(70%) + 实时扫描预算(30%)
+**资金分配**: 总资产 × 50% 为总投资资金上限，V11和实时扫描共享此预算，先到先得（不再按固定比例分配）。
 
 #### 风控参数（按市场状态）
 
@@ -550,8 +586,7 @@ market_monitor.py（守护进程，30s 拉上证 → data/market_state.json）
 
 ### 仓位与资金管控
 
-- V11(70%) + 实时扫描(30%) 各占独立仓位，互不阻塞
-- `总资产 × 50%` 为总投资资金，按比例分给 V11 和 扫描
+- `总资产 × 50%` 为总投资资金上限，V11和实时扫描共享此预算，先到先得
 - 每轮买入前查询今日已用资金，超预算跳过
 - 持仓自动归类: `sim_positions.strategy` 含 qmt_sync/ML/扫描等标签
 - 单票最高 30%（硬性上限，减仓执行触达）
@@ -632,6 +667,7 @@ market_monitor.py（守护进程，30s 拉上证 → data/market_state.json）
 
 | 文档 | 内容 |
 |---|---|
+| `AGENTS.md` | **AI Agent 操作手册**（管线操作、DB诊断、crash恢复、常用SQL）— 操作问题优先查 |
 | `MEMORY.md` | 历史决策记录 + 版本演进日志 — **排查不明行为时优先查阅** |
 | `CODE_REVIEW_REPORT.md` | 代码审查报告（2026-05-30） |
 | `REFACTOR_PLAN.md` | 模块化重构计划（v1→v2） |
@@ -646,30 +682,50 @@ market_monitor.py（守护进程，30s 拉上证 → data/market_state.json）
 3. **QMT 因子不可用**: `get_factor_data()` 在 iQuant 策略中无法调用
 4. **QMT 股票池仅 110 只**: 板RPS实时扫描候选池受限于 QMT 快照范围，不在池中的票无法评分买入
 5. **QMT 持仓无 buy_date**: 时间风控依赖 sim_positions 表补查，需保持 sim_positions 同步
-6. **国信iQuant免费行情无Level2盘口**: `ask1/bid1` 恒为0，`factor_orderbook` 等盘口因子无数据。不影响核心交易，需付费订阅Level 2才可解决
+6. **国信iQuant免费行情无Level2盘口**: QMT快照已从5档扩展到10档(bid/ask 1~10, 2026-06-21)，`factor_orderbook` 盘口因子已有10档数据可用。但仍缺逐笔成交/委托队列等真正的Level-2数据，需付费订阅才可解决
 
 ## 定时任务（crontab）
 
-项目根 `crontab` 文件定义了 macOS 的自动执行计划，周一至周五运行：
+项目根 `crontab` 文件定义了 macOS 的自动执行计划。安装方式：`crontab /Users/mozengfu/workspace/quant-system/crontab`
+
+### 交易相关（周一至周五）
 
 | 时间 | 任务 | 说明 |
 |---|---|---|
+| `* 9-15 * * 1-5` | `live_trading_scheduler.py monitor` | **主力**: 盘中持仓监控+板RPS实时扫描（每分钟） |
+| `*/5 9-15 * * 1-5` | `feishu_alerts.py alert` | 飞书告警+心跳检测（每5分钟） |
+| `*/5 9-15 * * 1-5` | `position_monitor.py` | 风控扫描（备用） |
 | `0 9 * * 1-5` | `feishu_alerts.py morning` | 飞书开盘预警 |
 | `0 9 * * 1-5` | `auto_refresh_data.sh` | 开盘前数据刷新 |
-| `*/30 9-14 * * 1-5` | `auto_refresh_data.sh` | 盘中数据刷新（每 30 分钟） |
-| `35 9 * * 1-5` | `live_trading_scheduler.py morning` | 早盘择时买入 |
-| `36 9 * * 1-5` | `daily_health_check.py` | 每日开盘健康检查 |
-| `* 9-15 * * 1-5` | `live_trading_scheduler.py monitor` | 实时扫描+持仓监控（每分钟） |
-| `*/5 9-15 * * 1-5` | `position_monitor.py` | 风控扫描（备用） |
-| `*/30 9-14 * * 1-5` | `auto_refresh_data.sh` | 盘中数据刷新（每 30 分钟） |
-| `35 9 * * 1-5` | `live_trading_scheduler.py morning` | 早盘择时买入 |
+| `*/30 9-14 * * 1-5` | `auto_refresh_data.sh` | 盘中数据刷新（每30分钟） |
 | `5 15 * * 1-5` | `feishu_alerts.py daily` | 飞书盘后汇总 |
-| `0 17 * * 1-5` | `update_daily_price_cron.py` | 盘后数据导入 |
-| `15 17 * * 1-5` | `scan_daily_pool()` | 股票池生成（含 OOS Top10 注入） |
-| `30 17 * * 1-5` | `live_trading_scheduler.py scan` | 盘后选股 |
-| `45 17 * * 1-5` | `run_three_strategies.py` | V4 辅助策略 |
+
+### 盘后数据管线（周一至周五，按依赖顺序）
+
+| 时间 | 任务 | 说明 |
+|---|---|---|
+| `0 17 * * 1-5` | `update_daily_price_cron.py` | 盘后行情导入（**必须先于scan**） |
+| `5 17 * * 1-5` | `backfill_moneyflow.py` | 资金流向回填 |
+| `5 17 * * 1-5` | `sync_daily_basic.py` | 每日基本面同步 |
+| `10 17 * * 1-5` | `backfill_block_trade.py` | 大宗交易回填 |
+| `15 17 * * 1-5` | `backfill_margin.py` | 融资融券回填 |
+| `30 17 * * 1-5` | `sim_trading.py scan` | 模拟交易扫描 |
+| `45 17 * * 1-5` | `run_three_strategies.py` | V4辅助策略 |
 | `55 17 * * 1-5` | `scan_bottom_awakening.py` | 底部觉醒扫描 |
-| `0 3 * * 6` | `rolling_train.sh` | 周末模型重训 |
+
+### 日内做T策略（周一至周五）
+
+| 时间 | 任务 | 说明 |
+|---|---|---|
+| `*/1 9-11 * * 1-5` | `intraday_t_monitor.py --mode dryrun --once` | 做T监控（早盘每分钟） |
+| `*/1 13-14 * * 1-5` | `intraday_t_monitor.py --mode dryrun --once` | 做T监控（午盘每分钟） |
+| `10 17 * * 1-5` | `intraday_t_analysis.py --days 7 --tune --send` | 做T盘后分析+调优建议 |
+
+### 月度任务
+
+| 时间 | 任务 | 说明 |
+|---|---|---|
+| `0 3 1 * *` | `cron_retrain.py` | 每月1号凌晨3点ML模型重训练 |
 
 ## 环境
 
@@ -679,3 +735,56 @@ market_monitor.py（守护进程，30s 拉上证 → data/market_state.json）
 - MySQL: 192.168.10.30:3306, root/root123, quant_db
 - 域名: `lh.mozengfu.com.cn` → nginx (8.148.158.153) → 反向代理到 Mac :5001
 - SPA 地址: https://lh.mozengfu.com.cn/app/
+
+## 2026-06-22 QMT HTTP服务修复
+
+### /position 端点
+- 利润(profit)自算：`market_value - cost_price × volume`，不依赖QMT的m_dFloatProfit（收盘后为0）
+- 过滤 volume<=0 的已清仓持仓
+### /balance 端点
+- 累加市值时同样过滤 volume<=0
+### 部署路径
+- 主文件：`C:\qmt_service\iquant_http_service.py`
+- 计划任务：`\iquant_http` 系统启动时自动运行
+- 更新流程：修改 → `scp` 到 `C:\` → `copy /Y` 到 `C:\qmt_service\` → `schtasks /run /tn iquant_http`
+
+## 2026-06-24 _monitor_v11_entry SQL 过滤修复
+
+- 1 行 SQL 改动：`DATE(created_at)=CURDATE()` → `signal_date=CURDATE()`
+- 文件：`scripts/live_trading_scheduler.py:762`
+- 原因：scan 在 T 日 17:30 写入候选，T+1 日 monitor 买入。原 SQL 用 created_at 过滤导致历史所有 scan 候选都"超时"
+- 验证：模拟 6/23 monitor 从 0 只 → 5 只
+
+## 2026-06-24 盘前修复 (第二轮)
+
+### 4 项代码修复
+1. `_is_market_open()`: 9:15→9:30 避开集合竞价撮合期
+2. monitor 持仓监控: 加日内去重 (同一ts_code当日已有sell类信号则跳过)
+3. `_monitor_v11_entry`: 仓位计算改为 `ml_max - ml_held` (按 `_classify_single_hold` 区分 ML/Scanner), 原一刀切把4只scanner持仓全算ML头上
+4. 清理 122 条 9:15-9:30 期间误触发的 sim_signals 止损/止盈信号
+
+**文件**: `scripts/live_trading_scheduler.py` (3处代码改动)
+
+
+## 2026-06-24 10:04 全面修复总结
+
+### Mac 端 (3 处代码改动)
+1. `scripts/live_trading_scheduler.py:762` — SQL: `signal_date=DATE_SUB(CURDATE(), INTERVAL 1 DAY)` (修复 monitor 从未买入 scan 候选)
+2. `scripts/live_trading_scheduler.py:786-795` — ML仓位: `ml_max - ml_held` 按 `_classify_single_hold` 区分策略
+3. `scripts/live_trading_scheduler.py:84-92` — `_is_market_open`: 9:15→9:30 避开集合竞价
+4. `scripts/live_trading_scheduler.py:~1241` — monitor 加日内去重 (同一ts_code当日已触发sell则跳过)
+
+### Windows 端 (2 处代码改动)
+5. `C:\qmt_service\iquant_http_service.py:198+/262+` — /sell 和 /buy 路由加 IPC 写入 qmt_cmd.json
+6. `C:\qmt_service\iquant_http_service.py` — priceType=-1 修复为合法值 (5=SH/11=SZ)
+
+### 数据清理
+- MySQL: 删除 272+32=304 条错乱/垃圾信号
+- QMT: 清理 qmt_cmd.json 残留
+
+### 验证结果
+- 600206 有研新材 V11 ML 候选自动买入 600股 ✅
+- 603002 宏昌电子止损 -8% 自动卖出 ✅
+- 300903 科翔股份峰值止盈自动卖出 ✅
+- IPC 管道畅通 ✅
+- passorder 正常执行 ✅

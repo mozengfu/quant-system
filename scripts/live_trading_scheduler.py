@@ -12,6 +12,9 @@ import datetime
 from pathlib import Path
 
 import numpy as np
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 # 项目根路径: scripts/ 自动加入 PYTHONPATH（由 crontab 或 start.sh 注入）
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -26,7 +29,7 @@ BASE_DIR = Path(__file__).parent.parent
 COMMISSION_BUFFER = 0.005
 
 # 每日扫描候选数量 (不随仓位变动,多产生候选让 monitor 择时)
-ML_CANDIDATES_COUNT = 3
+ML_CANDIDATES_COUNT = 5
 
 import pymysql
 
@@ -61,12 +64,12 @@ def _get_dynamic_positions():
 
     base_alloc = {
         "trend_up":     (3, 2),   # ML追涨有效
-        "range":        (2, 3),   # 震荡市短线更优
+        "range":        (2, 5),   # 震荡市短线更优, 给Scanner充足空间
         "trend_down":   (2, 1),   # 都减仓，ML略可逆势
         "panic":        (1, 0),   # 不开新仓
         "overheated":   (2, 1),   # 减仓防回调
     }
-    ml, sc = base_alloc.get(state, (2, 2))
+    ml, sc = base_alloc.get(state, (2, 5))
     # 不超过 market_state 的总仓位上限
     max_pos = mp.get("max_positions", 3)
     total = ml + sc
@@ -74,6 +77,18 @@ def _get_dynamic_positions():
         ml = max(1, round(ml * max_pos / total))
         sc = max(max_pos - ml, 0)
     return (ml, sc)
+
+
+def _is_market_open():
+    """当前是否在连续竞价时段 (9:30-11:30, 13:00-15:00)
+    修复 2026-06-24: 9:15→9:30, 避开集合竞价撮合期 (9:15-9:30 撮合价不稳定, 容易误触发止损)。"""
+    import datetime
+    now = datetime.datetime.now().time()
+    morning_start = datetime.time(9, 30)
+    morning_end = datetime.time(11, 30)
+    afternoon_start = datetime.time(13, 0)
+    afternoon_end = datetime.time(15, 0)
+    return (morning_start <= now <= morning_end) or (afternoon_start <= now <= afternoon_end)
 
 
 def _is_trading_day(for_intraday=False):
@@ -87,7 +102,7 @@ def _is_trading_day(for_intraday=False):
             cur.execute("SELECT MAX(trade_date) FROM daily_price")
             last_date = cur.fetchone()[0]
             if last_date:
-                return (today - last_date).days <= 3
+                return (today - last_date).days <= 4  # 容忍周末+1天数据延迟
             return False
         cur.execute("SELECT COUNT(*) FROM daily_price WHERE trade_date=%s", (today.strftime("%Y%m%d"),))
         return cur.fetchone()[0] > 100
@@ -348,7 +363,7 @@ def _get_realtime_market_state():
         "state_name": ms.get("state_name", "常态"),
         "mkt_chg": ms.get("mkt_chg", 0),
         "threshold": ms.get("threshold", 1.5),
-        "state": "normal",
+        "state": ms.get("state", "normal"),
     }
 
 
@@ -401,8 +416,113 @@ def _get_atr(ts_code, period=20):
         logger.warning(f"ATR计算失败 {ts_code}: {e}")
         return None
 
+
+def _sync_positions_from_qmt(executor):
+    """从QMT实际持仓同步到sim_positions，确保两边HOLD记录一致"""
+    import pymysql
+    from datetime import datetime
+    try:
+        qmt_list = get_holding_positions_from_executor(executor)
+    except Exception as e:
+        logger.warning("[仓位同步] 获取QMT持仓失败: %s", e)
+        return
+    if not qmt_list:
+        return
+    qmt_map = {}
+    for p in qmt_list:
+        ts = p.get("ts_code", "")
+        if not ts:
+            continue
+        qmt_map[ts] = {
+            "shares": int(p.get("shares", 0)),
+            "cost_price": float(p.get("cost_price", 0)),
+            "current_price": float(p.get("current_price", 0)),
+            "market_value": float(p.get("market_value", 0)),
+            "profit_loss": float(p.get("profit_loss", 0)),
+            "stock_name": p.get("stock_name", ""),
+            "market": p.get("market", "sh" if ts.startswith("6") else "sz"),
+        }
+    try:
+        conn = pymysql.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute("SELECT ts_code, shares, cost_price, profit_loss FROM sim_positions WHERE status='HOLD'")
+        sim_map = {}
+        for ts, sh, cp, pl in cur.fetchall():
+            sim_map[ts] = {"shares": int(sh), "cost_price": float(cp), "profit_loss": float(pl or 0)}
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        changed = 0
+        # QMT有但sim没有 -> INSERT
+        for ts, qp in qmt_map.items():
+            if qp["shares"] <= 0:
+                continue
+            if ts not in sim_map:
+                try:
+                    from market_state import get_market_state
+                    ms = get_market_state() or {}
+                    mp = ms.get("params", {})
+                    sl = float(mp.get("stop_loss_pct", -3)) / 100
+                    tp = float(mp.get("take_profit_pct", 6)) / 100
+                except Exception:
+                    sl, tp = -0.03, 0.06
+                cost = qp["cost_price"]
+                cur.execute(
+                    "INSERT INTO sim_positions (ts_code, stock_name, market, shares, "
+                    "cost_price, total_cost, current_price, market_value, profit_loss, "
+                    "stop_loss, take_profit, buy_date, buy_time, status, updated_at) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'HOLD',%s) "
+                    "ON DUPLICATE KEY UPDATE shares=VALUES(shares)",
+                    (ts, qp["stock_name"], qp["market"], qp["shares"],
+                     cost, round(cost * qp["shares"], 2),
+                     qp["current_price"], qp["market_value"], qp["profit_loss"],
+                     round(cost * (1 + sl), 3), round(cost * (1 + tp), 3),
+                     today, now, now))
+                changed += 1
+                logger.info("[仓位同步] INSERT %s %d股@%.2f", ts, qp["shares"], cost)
+        # sim有HOLD但QMT没有/股数为0 -> SOLD
+        for ts, sp in sim_map.items():
+            qp = qmt_map.get(ts)
+            q_shares = qp["shares"] if qp else 0
+            if q_shares == 0:
+                cur.execute(
+                    "UPDATE sim_positions SET status='SOLD', sell_date=%s, "
+                    "current_price=%s, market_value=0, profit_loss=%s, "
+                    "updated_at=%s WHERE ts_code=%s AND status='HOLD'",
+                    (today, 0, sp["profit_loss"], now, ts))
+                changed += 1
+                logger.info("[仓位同步] SOLD %s (QMT已无持仓)", ts)
+        # 两边都有但股数/成本不一致 -> UPDATE
+        for ts, qp in qmt_map.items():
+            if ts not in sim_map or qp["shares"] <= 0:
+                continue
+            sim_s = sim_map[ts]["shares"]
+            sim_c = sim_map[ts]["cost_price"]
+            if qp["shares"] != sim_s or abs(qp["cost_price"] - sim_c) > 0.05:
+                tc = round(qp["cost_price"] * qp["shares"], 2)
+                pnl_pct = round(qp["profit_loss"] / max(tc, 1), 4)
+                cur.execute(
+                    "UPDATE sim_positions SET shares=%s, cost_price=%s, total_cost=%s, "
+                    "current_price=%s, market_value=%s, profit_loss=%s, profit_pct=%s, "
+                    "updated_at=%s WHERE ts_code=%s AND status='HOLD'",
+                    (qp["shares"], qp["cost_price"], tc,
+                     qp["current_price"], qp["market_value"], qp["profit_loss"], pnl_pct,
+                     now, ts))
+                changed += 1
+                logger.info("[仓位同步] UPDATE %s: %d->%d股 成本%.2f->%.2f",
+                            ts, sim_s, qp["shares"], sim_c, qp["cost_price"])
+        if changed:
+            conn.commit()
+            logger.info("[仓位同步] 完成: %d处变更", changed)
+        else:
+            logger.info("[仓位同步] 无变更，QMT与sim_positions已对齐")
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error("[仓位同步] 失败: %s", e)
+
 def cmd_scan():
     executor = get_executor()
+    _sync_positions_from_qmt(executor)
     mode_label = "实盘" if trading_config.is_live else "模拟"
     logger.info("=== 交易调度器每日扫描开始 [%s] ===", mode_label)
 
@@ -638,7 +758,11 @@ def _monitor_v11_entry(executor, mkt_info, market_params):
         cur_sig.execute(
             "SELECT id, ts_code, price as rec_price, shares as rec_shares, ml_prob, strategy "
             "FROM sim_signals "
-            "WHERE (strategy LIKE '%%V11%%' OR strategy LIKE '%%因子%%' OR strategy LIKE '%%5因子%%') AND status='待执行' AND DATE(created_at)=CURDATE() "
+            # 修复: 用 signal_date=DATE_SUB(CURDATE(), INTERVAL 1 DAY) 而非 created_at。
+            #   scan 在 T 日 17:30 写入, signal_date=T, T+1 日 monitor 才会处理。
+            #   原 DATE(created_at)=CURDATE() 永远不匹配 (历史以来全超时根因)。
+            #   signal_date=CURDATE() 也不行 (T+1 跑 monitor 时 CURDATE()=T+1, 不等于 T)。
+            "WHERE (strategy LIKE '%%V11%%' OR strategy LIKE '%%因子%%' OR strategy LIKE '%%5因子%%') AND status='待执行' AND signal_date=DATE_SUB(CURDATE(), INTERVAL 1 DAY) "
             "ORDER BY ml_prob DESC"
         )
         pending = [dict(zip([d[0] for d in cur_sig.description], row)) for row in cur_sig.fetchall()]
@@ -658,12 +782,15 @@ def _monitor_v11_entry(executor, mkt_info, market_params):
     current_holds = get_holding_positions_from_executor(executor)
     held_codes = {p["ts_code"] for p in current_holds}
 
-    # 计算可用仓位（扣减全部持仓，不区分策略）
+    # 计算可用仓位 (ML 自己的槽位, 不和 Scanner 混算)
+    # 修复 2026-06-24: 原 ml_max - total_held 一刀切, 把 4 只 Scanner 持仓算到 ML 头上, 永远挡死 ML 入场。
+    # 当前 4 只持仓都是板RPS实时(scanner), ML 实际占用 0, ml_max=2 → avail_slots=2 才对。
     ml_max, _ = _get_dynamic_positions()
-    total_held = len(current_holds)
-    avail_slots = max(0, ml_max - total_held)
+    ml_held = sum(1 for p in current_holds
+                  if _classify_single_hold(p) == "ml")
+    avail_slots = max(0, ml_max - ml_held)
     if avail_slots <= 0:
-        logger.info("[V11入场] 仓位已满 (%d/%d)", total_held, ml_max)
+        logger.info("[V11入场] ML 仓位已满 (%d/%d)", ml_held, ml_max)
         return
 
     # 计算每只预算
@@ -856,8 +983,7 @@ def _monitor_board_rps_entry(executor, mkt_info, market_params):
     ml_max, scanner_max = _get_dynamic_positions()
     scanner_held = sum(1 for p in current_holds
                        if _classify_single_hold(p) == "scanner")
-    total_avail = max(0, ml_max + scanner_max - len(current_holds))
-    avail_slots = max(0, min(scanner_max - scanner_held, total_avail))
+    avail_slots = max(0, scanner_max - scanner_held)  # Scanner只看自己的槽位, 不和ML混算
     if avail_slots <= 0:
         logger.debug("[板RPS实时] 仓位已满 (%d/%d)", scanner_held, scanner_max)
         return
@@ -877,18 +1003,55 @@ def _monitor_board_rps_entry(executor, mkt_info, market_params):
     # 过滤: 实时分 >= 60 (BUY及以上) + ML 概率 >= 0.3 (不能是模型勉强)
     # 修复: 之前 ml_prob > 0 等于不卡 ML, 0.001 概率也买入, 太松
     buys = [s for s in signals
-            if s['realtime_score'] >= 60 and s['ml_prob'] >= 0.3
+            # Scanner候选已过ML排序, 只按综合分+盘中条件过滤 (2026-06-24)
+            if s.get('combined_score', 0) >= 60
             and s['ts_code'] not in held_codes]
 
+    # 过滤今日已卖出的股票, 防止止损/T+3后立即重新买入 (2026-06-24)
+    try:
+        conn_sold = pymysql.connect(**DB_CONFIG)
+        cur_sold = conn_sold.cursor()
+        cur_sold.execute(
+            "SELECT DISTINCT ts_code FROM sim_signals "
+            "WHERE DATE(created_at)=CURDATE() "
+            "  AND signal_type IN ('止损','峰值止盈','分批止盈','兜底止盈','RPS止损','恐慌清仓','超时','T+3','强制平仓') "
+            "  AND status IN ('已平仓','待执行')"
+        )
+        today_sold = {r[0] for r in cur_sold.fetchall()}
+        cur_sold.close()
+        conn_sold.close()
+        buys = [s for s in buys if s['ts_code'] not in today_sold]
+        if today_sold:
+            logger.info("[板RPS实时] 过滤今日已卖出: %d只", len(today_sold))
+    except Exception as e:
+        logger.debug("查询今日卖出失败: %s", e)
+
     if not buys:
-        logger.info("[板RPS实时] 无触发买入条件的候选")
+        # 详细原因诊断 (2026-06-24)
+        score_fail = [s for s in signals if s['realtime_score'] < 60 and s['ml_prob'] < 0.3]
+        ml_only_fail = [s for s in signals if s['realtime_score'] >= 60 and s['ml_prob'] < 0.3]
+        score_only_fail = [s for s in signals if s['realtime_score'] < 60 and s['ml_prob'] >= 0.3]
+        held = [s for s in signals if s['ts_code'] in held_codes and s['realtime_score'] >= 60 and s['ml_prob'] >= 0.3]
+        logger.info("[板RPS实时] 无触发买入条件: 双不过%d 仅ML拦%d 仅分拦%d 已持仓%d",
+                   len(score_fail), len(ml_only_fail), len(score_only_fail), len(held))
+        if ml_only_fail:
+            ml_top = sorted(ml_only_fail, key=lambda s: -s['realtime_score'])[:5]
+            for s in ml_top:
+                logger.info("  ML拦: %s %s 综合%.0f ML=%.3f", s['ts_code'], s.get('name',''), s['realtime_score'], s['ml_prob'])
+        if score_only_fail:
+            sc_top = sorted(score_only_fail, key=lambda s: -s['ml_prob'])[:5]
+            for s in sc_top:
+                logger.info("  分拦: %s %s 综合%.0f ML=%.3f", s['ts_code'], s.get('name',''), s['realtime_score'], s['ml_prob'])
+        if held:
+            for s in held:
+                logger.info("  已持仓: %s %s 综合%.0f ML=%.3f", s['ts_code'], s.get('name',''), s['realtime_score'], s['ml_prob'])
         return
 
     # 预算
     balance = executor.get_balance()
     available_cash = (balance.available or 0) if balance else 0
-    # 50% 资金预算 (2026-06-16 调整: 0.3→0.5, 生益科技179元股价单手需1.8万, 0.3预算10694元买不起1手)
-    scanner_budget = available_cash
+    # 每个 Scanner slot 最多用 50% 可用现金（防止一次买光所有余额）
+    scanner_budget = available_cash * 0.5
     if scanner_budget < 5000:
         logger.info("[板RPS实时] 可用资金不足 %.0f", scanner_budget)
         return
@@ -994,7 +1157,11 @@ def cmd_monitor():
     if not _is_trading_day(for_intraday=True):
         logger.info("今日非交易日, 跳过监控")
         return
+    if not _is_market_open():
+        logger.info("当前非交易时段 (仅9:15-11:30/13:00-15:00), 跳过监控")
+        return
     executor = get_executor()
+    _sync_positions_from_qmt(executor)
     mode_label = "实盘" if trading_config.is_real_trading_enabled else (f"模拟({trading_config.trade_mode})")
 
     logger.info("=== 持仓监控开始 [%s] ===", mode_label)
@@ -1101,9 +1268,31 @@ def cmd_monitor():
         # === A股 T+1 检查: 今日买入当日不可卖出, 跳过止盈止损 ===
         # 即便 QMT 拒单也是浪费一次下单, 直接 skip 干净
         # 注意: buy_date 未知(QMT 有但 sim 没有的孤儿持仓)不 skip, 让止损和峰值止盈照常跑
-        if days_held == 0 and buy_date:
+        if days_held == 0 and buy_date and str(buy_date) == str(datetime.date.today()):
             logger.info("⏸ %s 今日买入 (T+1), 跳过卖出检查", pos["stock_name"])
             continue
+
+        # === 日内去重: 今日已触发的卖出信号不重复触发（修复 2026-06-24） ===
+        # QMT 卖出单没成交时, 持仓监控 30 秒循环会持续看到持仓,
+        # 导致 603002/300903 在 9:15-9:30 之间被触发 100+ 次。
+        # 策略: 同 ts_code 当日任意 sell 类信号存在 → 跳过本轮, 等 QMT 异步确认。
+        try:
+            conn_dd = pymysql.connect(**DB_CONFIG)
+            cur_dd = conn_dd.cursor()
+            cur_dd.execute(
+                "SELECT id, signal_type FROM sim_signals "
+                "WHERE ts_code=%s AND DATE(created_at)=CURDATE() "
+                "  AND signal_type IN ('\u6b62\u635f','\u5cf0\u503c\u6b62\u76c8','\u5206\u6279\u6b62\u76c8','\u5151\u5e95\u6b62\u76c8','RPS\u6b62\u635f','\u6050\u614c\u6e05\u4ed3') "
+                "  AND status IN ('\u5f85\u6267\u884c','\u5df2\u5e73\u4ed3') LIMIT 1",
+                (pos["ts_code"],))
+            row_dd = cur_dd.fetchone()
+            cur_dd.close()
+            conn_dd.close()
+            if row_dd:
+                logger.info("\u23f8 %s \u4eca\u65e5\u5df2\u89e6\u53d1\u5356\u51fa(%s), \u8df3\u8fc7\u672c\u8f6e", pos["stock_name"], row_dd[1])
+                continue
+        except Exception as e:
+            logger.debug("\u65e5\u5185\u53bb\u91cd\u67e5\u8be2\u5931\u8d25 %s: %s", pos["ts_code"], e)
 
         # === RPS 止损（2026-06-20 补充）===
         # 资金退潮先于价格下跌: RPS < 15 或 20日累计跌破历史下沿 → 立即止损
@@ -1167,7 +1356,23 @@ def cmd_monitor():
         # 改为以 daily_price 中今天(CURDATE)high 为准, 与 QMT 实时取大值,
         # 同时一次查询带出历史最高用于 peak_price 计算。
         today_high = quote.get("最高", 0) or 0
-        peak_price = max(cost_price, price, today_high)
+        # 跨轮次峰值追踪: 从 daily_peaks.json 读取历史峰值
+        import json as _json
+        _peak_file = "/Users/mozengfu/workspace/quant-system/data/daily_peaks.json"
+        _stored_peak = cost_price
+        try:
+            if os.path.exists(_peak_file):
+                with open(_peak_file) as pf:
+                    _peaks = _json.load(pf)
+                _stored_peak = _peaks.get(pos["ts_code"], cost_price)
+        except: pass
+        peak_price = max(cost_price, price, today_high, _stored_peak)
+        # 回写新峰值
+        _peaks = {}
+        if os.path.exists(_peak_file):
+            with open(_peak_file) as pf: _peaks = _json.load(pf)
+        _peaks[pos["ts_code"]] = peak_price
+        with open(_peak_file, "w") as pf: _json.dump(_peaks, pf)
         try:
             conn_pk = pymysql.connect(**DB_CONFIG)
             cur_pk = conn_pk.cursor()
@@ -1269,13 +1474,19 @@ def cmd_monitor():
                 sell_reason = f"兜底止盈(+3%): 峰值{peak_profit:.0f}%回落到剩{remain_pct:.1f}%"
                 sell_label = "兜底止盈"
 
-        # b) 超时卖出：持有>=5天且盈利<3%（弱股不耗时间）
+        # b) Scanner T+3 短线平仓 (2026-06-24)
+        elif _classify_single_hold(pos) == "scanner" and days_held >= 3:
+            should_sell = True
+            sell_reason = f"T+3平仓(scanner): 持有{days_held}天 {pct_chg:+.1f}%"
+            sell_label = "T+3"
+
+        # c) 超时卖出（V11/ML）：持有>=5天且盈利<3%（弱股不耗时间）
         elif days_held >= 5 and pct_chg < 3.0:
             should_sell = True
             sell_reason = f"超时卖出: 持有{days_held}天仅{pct_chg:.1f}%"
             sell_label = "超时"
 
-        # c) 绝对持有上限：8天强制平仓
+        # d) 绝对持有上限：8天强制平仓
         elif days_held > 8:
             should_sell = True
             sell_reason = f"强制平仓: 持有{days_held}天"

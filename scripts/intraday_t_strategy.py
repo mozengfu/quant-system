@@ -418,7 +418,12 @@ def check_risk(state: IntradayState, cfg: TConfig, hs300_change_pct: Optional[fl
 # 信号
 # ============================================================
 def should_sell_high(state: IntradayState, cfg: TConfig) -> tuple[bool, str]:
-    """高抛信号: 价偏离 VWAP 上方 + 涨幅达标 + 距高点回撤 (防追高)"""
+    """高抛信号: 价偏离 VWAP 上方 + 涨幅达标 + 距高点回撤 + 量能检查
+
+    量能规则 (参考5分钟K线战法):
+      - 缩量阴线 (vol < cum_avg_vol*0.8): 高抛信号可靠
+      - 放量下跌 (vol > cum_avg_vol*1.5 且 价在开盘价下方): 不抛
+    """
     v = state.vwap
     if v <= 0:
         return False, "vwap not ready"
@@ -428,6 +433,12 @@ def should_sell_high(state: IntradayState, cfg: TConfig) -> tuple[bool, str]:
         return False, f"intraday_pct {state.intraday_pct}% < {cfg.sell_pct_min}%"
     if state.drawdown_from_high < cfg.pullback_from_high:
         return False, f"too close to high: drawdown {state.drawdown_from_high}% < {cfg.pullback_from_high}%"
+
+    # 5分钟战法: 量能检查
+    # 当前成交量 > 估算均量*1.5 且 价在开盘价下方 → 放量下跌, 不抛
+    if state.cum_volume > 0 and state.volume > state.cum_volume * 0.1 * 1.5 and state.cur_price < state.open_price:
+        return False, f"volume surge + price below open, skip sell"
+
     return True, "ok"
 
 

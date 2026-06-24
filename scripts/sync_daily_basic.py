@@ -139,7 +139,7 @@ def main():
                 n = sync_date(pro, conn, current)
                 if n > 0:
                     total += n
-                    logger.info(f"  {current.date()}: {n} 条")
+                    logger.info(f"  {current}: {n} 条")
                 time.sleep(0.5)  # Tushare 限频
         current += timedelta(days=1)
 

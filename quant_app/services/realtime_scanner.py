@@ -15,16 +15,9 @@ QMT_HOST = "http://192.168.10.25:1430"
 
 
 def _get_db_config():
-    from dotenv import load_dotenv
-    load_dotenv()
-    return {
-        "host": os.environ.get("DB_HOST", "127.0.0.1"),
-        "port": int(os.environ.get("DB_PORT", 3306)),
-        "user": os.environ.get("DB_USER", "root"),
-        "password": os.environ.get("DB_PASSWORD") or os.environ.get("MYSQL_PASSWORD", ""),
-        "database": os.environ.get("DB_DATABASE", "quant_db"),
-        "charset": "utf8mb4",
-    }
+    """统一数据库配置，复用 quant_app.utils.config"""
+    from quant_app.utils.config import get_db_config
+    return get_db_config(charset="utf8mb4")
 
 
 def _get_qmt(endpoint):

@@ -1219,10 +1219,14 @@ def scan_daily_pool():
         logger.info(f"股票基础信息: {len(basics)}只")
 
         # 当日行情
+        # 当日行情
         cur.execute("""
-            SELECT d.ts_code, d.close, d.pct_chg, d.volume_ratio, d.turnover_rate,
+            SELECT d.ts_code, d.close, d.pct_chg,
+                   COALESCE(NULLIF(d.volume_ratio,0), b.volume_ratio, 0) AS volume_ratio,
+                   COALESCE(NULLIF(d.turnover_rate,0), b.turnover_rate, 0) AS turnover_rate,
                    d.ma5, d.ma10, d.ma20, d.amount, d.pre_close
             FROM daily_price d
+            LEFT JOIN daily_basic b ON d.ts_code=b.ts_code AND d.trade_date=b.trade_date
             WHERE d.trade_date=%s
               AND d.close BETWEEN 3 AND 200
               AND LEFT(d.ts_code,1) NOT IN ('8','4','9')

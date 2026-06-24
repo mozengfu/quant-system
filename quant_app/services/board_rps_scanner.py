@@ -527,26 +527,196 @@ def _filter_stocks_by_kept_boards(ts_codes, kept_board_codes):
     finally:
         conn.close()
 
+def get_climbing_board_stocks(top_n=3, as_of_date=None):
+    """获取周板RPS排名持续提升的板块的成分股，作为 Top5 的补充。
 
-def board_scan_recommend(top_n=3, as_of_date=None, use_weekly=True):
-    """板RPS周线 → Top5板块成分股 → ML排序 → TopN
+    流程:
+      1. 从 get_board_rps() 获取全量板块 RPS
+      2. 从 get_rank_slope_map() 获取全量 rank 序列
+      3. 筛选通过 is_rank_climbing() 的板块
+      4. 从通过的板块中按 RPS 降序取 Top N
+      5. 对 Top N 加广度检查，失败则回退到原始 Top N
+      6. 获取成分股（同 get_top_board_stocks 的过滤逻辑）
 
     Returns:
-        list[dict] 或 None
+        dict: {board_codes, board_names, board_rps, ts_codes, stock_map}
+        无爬升板块时返回空结构
+    """
+    board_df = get_board_rps(as_of_date=as_of_date, use_weekly=True)
+    if board_df.empty:
+        logger.warning("爬升板块: 无 RPS 数据")
+        return {'board_codes': [], 'board_names': [], 'board_rps': [],
+                'ts_codes': [], 'stock_map': {}}
+
+    slope_series = get_rank_slope_map(as_of_date=as_of_date)
+    if not slope_series:
+        logger.warning("爬升板块: 无 rank 序列数据")
+        return {'board_codes': [], 'board_names': [], 'board_rps': [],
+                'ts_codes': [], 'stock_map': {}}
+
+    # 遍历全量板块，筛选通过 is_rank_climbing 的板块
+    climbing_boards = []
+    for _, row in board_df.iterrows():
+        bc = row['board_code']
+        ok, info = is_rank_climbing(bc, slope_series)
+        if ok:
+            delta = info.get('delta', 0)
+            rank_series = info.get('ranks', [])
+            climbing_boards.append({
+                'board_code': bc,
+                'board_name': row['board_name'],
+                'rps': row['rps'],
+                'rank': row['rank'],
+                'climbing_score': delta,
+                'rank_series': rank_series,
+            })
+
+    if not climbing_boards:
+        logger.info("爬升板块: 无板块通过 is_rank_climbing")
+        return {'board_codes': [], 'board_names': [], 'board_rps': [],
+                'ts_codes': [], 'stock_map': {}}
+
+    # 从通过检查的板块中按 RPS 降序取 Top N
+    climbing_sorted = sorted(climbing_boards, key=lambda x: x['climbing_score'], reverse=True)
+    raw_top = climbing_sorted[:top_n]
+
+    logger.info("爬升板块: 总计 %d 个板块通过爬升检查, 按爬升幅度取Top%d",
+                len(climbing_boards), top_n)
+    for cb in raw_top:
+        logger.info("  [爬升候选] %s(%s) RPS=%.1f rank=%d 爬升=%d 序列=%s",
+                    cb['board_name'], cb['board_code'], cb['rps'], cb['rank'],
+                    cb['climbing_score'], cb['rank_series'])
+
+    # 广度检查（同 P0 过滤逻辑），失败则回退
+    climb_codes = [cb['board_code'] for cb in raw_top]
+    climb_names = [cb['board_name'] for cb in raw_top]
+    climb_rps = [cb['rps'] for cb in raw_top]
+    breadth_map = get_board_breadth(climb_codes, as_of_date=as_of_date)
+
+    kept_codes, kept_names, kept_rps = [], [], []
+    for bc, bn, br in zip(climb_codes, climb_names, climb_rps):
+        upshare = breadth_map.get(bc)
+        ok_breadth = (upshare is None) or (upshare >= BREADTH_MIN_UPSHARE)
+        if ok_breadth:
+            kept_codes.append(bc)
+            kept_names.append(bn)
+            kept_rps.append(br)
+        else:
+            logger.info("  [爬升广度剔除] %s(%s) upshare=%s",
+                        bn, bc, f"{upshare:.1%}" if upshare is not None else 'N/A')
+
+    # 如果广度过滤后为空，回退到原始爬升 Top N
+    if not kept_codes and climb_codes:
+        kept_codes = climb_codes
+        kept_names = climb_names
+        kept_rps = climb_rps
+        logger.warning("爬升板块广度过滤后全剔除，回退到原始 Top%d", top_n)
+
+    # 获取成分股（同 get_top_board_stocks 的查询和过滤逻辑）
+    conn = pymysql.connect(**get_db_config())
+    try:
+        ph = ','.join(['%s'] * len(kept_codes))
+        cur = conn.cursor()
+        cur.execute(f"""
+            SELECT DISTINCT bcc.ts_code, bcc.stock_name
+            FROM board_concept_cons bcc
+            WHERE bcc.board_code IN ({ph})
+              AND (bcc.is_latest = 1 OR bcc.is_latest IS NULL)
+        """, kept_codes)
+        rows = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
+
+    ts_codes = []
+    stock_map = {}
+    for code, name in rows:
+        if code in stock_map:
+            continue
+        if name and 'ST' in name:
+            continue
+        if code.startswith('688') or code.startswith('8') or \
+           code.startswith('4') or code.startswith('9'):
+            continue
+        stock_map[code] = name or code
+        ts_codes.append(code)
+
+    # 剔除 > 200 元的高价股
+    if ts_codes:
+        try:
+            conn2 = pymysql.connect(**get_db_config())
+            cur2 = conn2.cursor()
+            ph = ','.join(['%s'] * len(ts_codes))
+            cur2.execute(
+                f"SELECT ts_code FROM daily_price WHERE ts_code IN ({ph}) "
+                f"AND trade_date=(SELECT MAX(trade_date) FROM daily_price) "
+                f"AND close > 200",
+                ts_codes
+            )
+            high_price_codes = {r[0] for r in cur2.fetchall()}
+            cur2.close()
+            conn2.close()
+            if high_price_codes:
+                ts_codes = [c for c in ts_codes if c not in high_price_codes]
+                logger.info("  爬升板块剔除高价股(>200元): %d只", len(high_price_codes))
+        except Exception:
+            pass
+
+    logger.info("爬升板块 Top%d: %s | 成分股: %d只",
+                len(kept_codes), kept_names, len(ts_codes))
+
+    return {
+        'board_codes': kept_codes,
+        'board_names': kept_names,
+        'board_rps': kept_rps,
+        'ts_codes': ts_codes,
+        'stock_map': stock_map,
+    }
+
+
+def board_scan_recommend(top_n=3, as_of_date=None, use_weekly=True, climbing_boards=3):
+    """板RPS周线 → Top5板块成分股 + 爬升板块成分股 → 合并ML排序 → TopN
+
+    Args:
+        climbing_boards: 爬升板块数（0=关闭爬升补充）
     """
     model_ver = 'V11.0(板RPS周线)' if use_weekly else 'V11.0(板RPS60)'
 
+    # 1. 现有 Top5 路径
     try:
-        candidates = get_top_board_stocks(as_of_date=as_of_date, use_weekly=use_weekly)
+        top5_candidates = get_top_board_stocks(as_of_date=as_of_date, use_weekly=use_weekly)
     except Exception as e:
         logger.warning("Board RPS 失败: %s", e)
         return None
 
-    if not candidates['ts_codes']:
+    if not top5_candidates['ts_codes']:
         logger.warning("Board RPS 候选池为空")
         return None
 
-    all_codes = candidates['ts_codes']
+    # 2. 爬升板块路径（新增）
+    climb_candidates = None
+    if climbing_boards > 0:
+        try:
+            climb_candidates = get_climbing_board_stocks(top_n=climbing_boards, as_of_date=as_of_date)
+        except Exception as e:
+            logger.warning("爬升板块扫描失败: %s，跳过爬升补充", e)
+
+    # 3. 合并候选池（去重，保留 top5 优先）
+    all_ts_codes = list(top5_candidates['ts_codes'])
+    all_stock_map = dict(top5_candidates['stock_map'])
+    climb_added = 0
+    if climb_candidates and climb_candidates['ts_codes']:
+        for code in climb_candidates['ts_codes']:
+            if code not in all_stock_map:
+                all_ts_codes.append(code)
+                if code in climb_candidates['stock_map']:
+                    all_stock_map[code] = climb_candidates['stock_map'][code]
+                climb_added += 1
+
+    logger.info("候选池来源: Top5板块 %d只 + 爬升板块 %d只 = 合计%d只",
+                len(top5_candidates['ts_codes']), climb_added, len(all_ts_codes))
+
+    all_codes = all_ts_codes
     logger.info(f"ML排序: {len(all_codes)}只候选股")
 
     from ml_predict import predict_batch
@@ -557,7 +727,7 @@ def board_scan_recommend(top_n=3, as_of_date=None, use_weekly=True):
 
     ranked = sorted(
         [(code, pred) for code, pred in predictions.items()
-         if code in candidates['stock_map']],
+         if code in all_stock_map],
         key=lambda x: x[1].get('probability', 0),
         reverse=True
     )
@@ -573,7 +743,7 @@ def board_scan_recommend(top_n=3, as_of_date=None, use_weekly=True):
 
         result = []
         for code, pred in ranked[:top_n]:
-            name = candidates['stock_map'].get(code, code)
+            name = all_stock_map.get(code, code)
             cur.execute(
                 "SELECT close, pct_chg FROM daily_price WHERE ts_code=%s AND trade_date=%s",
                 (code, latest))
