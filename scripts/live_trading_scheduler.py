@@ -5,13 +5,14 @@
 """
 
 import argparse
+import datetime
 import logging
 import os
 import sys
-import datetime
 from pathlib import Path
 
 import numpy as np
+
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -33,17 +34,19 @@ ML_CANDIDATES_COUNT = 5
 
 import pymysql
 
-from quant_app.services.notification_service import send_feishu
 from quant_app.services.board_rps_scanner import check_rps_stop
+from quant_app.services.notification_service import send_feishu
 from quant_app.trading.config import trading_config
-from quant_app.trading.trade_recorder import record_trade
 from quant_app.trading.executor import create_executor
+from quant_app.trading.risk.pre_trade_check import PreTradeChecker
+from quant_app.trading.trade_recorder import record_trade
 from quant_app.utils.config import get_db_config
 
 DB_CONFIG = get_db_config()
 
+from scripts.intraday_t_monitor import TConfig
+from scripts.intraday_t_monitor import main as intraday_t_main
 from scripts.sim_trading import _count_trading_days_since, record_signal, sync_positions_to_json
-from scripts.intraday_t_monitor import main as intraday_t_main, TConfig
 from scripts.sim_trading import get_market_params as _get_market_params
 
 
@@ -64,12 +67,12 @@ def _get_dynamic_positions():
 
     base_alloc = {
         "trend_up":     (3, 2),   # ML追涨有效
-        "range":        (2, 5),   # 震荡市短线更优, 给Scanner充足空间
+        "range":        (1, 4),   # 震荡市 scanner为主 (ML=1 做防御底仓)
         "trend_down":   (2, 1),   # 都减仓，ML略可逆势
         "panic":        (1, 0),   # 不开新仓
         "overheated":   (2, 1),   # 减仓防回调
     }
-    ml, sc = base_alloc.get(state, (2, 5))
+    ml, sc = base_alloc.get(state, (1, 5))
     # 不超过 market_state 的总仓位上限
     max_pos = mp.get("max_positions", 3)
     total = ml + sc
@@ -419,8 +422,9 @@ def _get_atr(ts_code, period=20):
 
 def _sync_positions_from_qmt(executor):
     """从QMT实际持仓同步到sim_positions，确保两边HOLD记录一致"""
-    import pymysql
     from datetime import datetime
+
+    import pymysql
     try:
         qmt_list = get_holding_positions_from_executor(executor)
     except Exception as e:
@@ -445,10 +449,10 @@ def _sync_positions_from_qmt(executor):
     try:
         conn = pymysql.connect(**DB_CONFIG)
         cur = conn.cursor()
-        cur.execute("SELECT ts_code, shares, cost_price, profit_loss FROM sim_positions WHERE status='HOLD'")
+        cur.execute("SELECT ts_code, shares, cost_price, profit_loss, buy_date FROM sim_positions WHERE status='HOLD'")
         sim_map = {}
-        for ts, sh, cp, pl in cur.fetchall():
-            sim_map[ts] = {"shares": int(sh), "cost_price": float(cp), "profit_loss": float(pl or 0)}
+        for ts, sh, cp, pl, bd in cur.fetchall():
+            sim_map[ts] = {"shares": int(sh), "cost_price": float(cp), "profit_loss": float(pl or 0), "buy_date": bd}
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
         changed = 0
@@ -484,6 +488,11 @@ def _sync_positions_from_qmt(executor):
             qp = qmt_map.get(ts)
             q_shares = qp["shares"] if qp else 0
             if q_shares == 0:
+                # T+1: 当日买入的持仓不做 SOLD（QMT可能还没成交）
+                bd = sp.get("buy_date")
+                if bd and str(bd) == today:
+                    logger.debug("[仓位同步] 跳过T+1 SOLD: %s", ts)
+                    continue
                 cur.execute(
                     "UPDATE sim_positions SET status='SOLD', sell_date=%s, "
                     "current_price=%s, market_value=0, profit_loss=%s, "
@@ -528,7 +537,7 @@ def cmd_scan():
 
     ml_candidates = []  # 防御初始化，防止在某些分支未赋值
 
-    # === 盘前清理: 仅清掉昨日及更早的"待执行"信号 ===
+    # === 盘前清理: 清理昨日及更早的"待执行"信号 + 候选状态切换 ===
     # 修复: 之前没日期过滤, 14:00 手动跑 scan 会清掉当日已写的信号,
     #       导致 monitor 看不到早上的候选
     # 加 DATE(created_at) < CURDATE() 后: 手动 scan 不会影响当日信号,
@@ -541,6 +550,11 @@ def cmd_scan():
             "UPDATE sim_signals SET status='已过期' "
             "WHERE status='待执行' AND DATE(created_at) < CURDATE()"
         )
+        if _is_market_open():
+            _cu.execute(
+                "UPDATE sim_signals SET status='待执行' "
+                "WHERE status='买入候选' AND signal_date=CURDATE()"
+            )
         _c.commit()
         _cu.close()
         _c.close()
@@ -639,7 +653,7 @@ def cmd_scan():
                                     pick.get("ml_prob",0), pick.get("ml_score",0),
                                     _mp_buy.get("state","常态"),
                                     f"周线板RPS {pick.get('model_ver','V11.2')} 排序{pick.get('ml_score',0):.3f}",
-                                    status="待执行")
+                                    status="买入候选")
                     except Exception as _sig_err:
                         logger.debug("[scan] 跳过重复信号 %s: %s", ts_code, _sig_err)
                         continue
@@ -801,6 +815,24 @@ def _monitor_v11_entry(executor, mkt_info, market_params):
         return
     budget_per_slot = available_cash / max(avail_slots, 1)
 
+    # 过滤今日已买入的股票, 防止重复买入 (2026-06-25)
+    try:
+        conn_b = pymysql.connect(**DB_CONFIG)
+        cur_b = conn_b.cursor()
+        cur_b.execute(
+            "SELECT DISTINCT ts_code FROM sim_signals "
+            "WHERE DATE(created_at)=CURDATE() "
+            "  AND signal_type IN ('买入','买入候选','BUY') "
+            "  AND status IN ('已执行','待执行','已提交','部分成交')"
+        )
+        today_bought = {r[0] for r in cur_b.fetchall()}
+        cur_b.close(); conn_b.close()
+        pending = [s for s in pending if s['ts_code'] not in today_bought]
+        if today_bought:
+            logger.info("[V11入场] 过滤今日已买入: %d只", len(today_bought))
+    except Exception as e:
+        logger.debug("查询今日买入失败: %s", e)
+
     bought = 0
     for sig in pending:
         if bought >= avail_slots:
@@ -811,7 +843,7 @@ def _monitor_v11_entry(executor, mkt_info, market_params):
             continue
 
         code = ts_code.split(".")[0]
-        market = "SH" if ts_code.startswith("6") else "SZ"
+        market = "sh" if ts_code.startswith("6") else "sz"
 
         # 获取实时行情
         quote = _get_qmt_realtime(code, market)
@@ -893,6 +925,13 @@ def _monitor_v11_entry(executor, mkt_info, market_params):
 
         logger.info("[V11入场] 买入: %s(%s) %.2f %d股 %s", name, ts_code, price, shares, reason)
 
+        # 风控检查 (PreTradeChecker: 交易时段/单笔限额/熔断/60s去重/余额)
+        checker = PreTradeChecker()
+        rc = checker.check_buy(ts_code, name, market, price, shares)
+        if not rc["passed"]:
+            logger.warning("[V11入场] 风控拦截 %s(%s): %s", name, ts_code, rc["message"])
+            continue
+
         strategy_label = sig.get("strategy", "周线板RPS+ML")
         order = executor.buy(ts_code, name, market, price, shares, strategy=strategy_label)
         if order is None or getattr(order, "status", None) in ("rejected", "failed"):
@@ -901,18 +940,19 @@ def _monitor_v11_entry(executor, mkt_info, market_params):
 
         _log_trade_buy(strategy_label, ts_code, name, price, shares)
 
-        # 更新 sim_signals 状态
+        # 更新 sim_signals 状态 (用桥返回的真实 signal_id, 而非原始 scan 信号 id)
+        sig_id = order.order_id.replace("sig_", "") if order.order_id and "sig_" in order.order_id else sig["id"]
         try:
             conn_up = pymysql.connect(**DB_CONFIG)
             cur_up = conn_up.cursor()
             cur_up.execute(
-                "UPDATE sim_signals SET status='已执行', price=%s, shares=%s, updated_at=NOW() WHERE id=%s",
-                (price, shares, sig["id"])
+                "UPDATE sim_signals SET status='已执行', price=%s, shares=%s WHERE id=%s",
+                (price, shares, sig_id)
             )
             conn_up.commit()
             cur_up.close(); conn_up.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error("[V11入场] 更新信号状态失败 id=%s: %s", sig_id, e)
 
         _sync_position_after_buy(ts_code, name, market, shares, price, strategy_label, sig.get("ml_prob", 0))
         _notify_trade("买入", name, ts_code, price, shares, f"V11择时 {reason}")
@@ -1026,6 +1066,25 @@ def _monitor_board_rps_entry(executor, mkt_info, market_params):
     except Exception as e:
         logger.debug("查询今日卖出失败: %s", e)
 
+    # 过滤今日已买入的股票, 防止同一个 monitor 循环重复买入 (2026-06-25)
+    try:
+        conn_bought = pymysql.connect(**DB_CONFIG)
+        cur_bought = conn_bought.cursor()
+        cur_bought.execute(
+            "SELECT DISTINCT ts_code FROM sim_signals "
+            "WHERE DATE(created_at)=CURDATE() "
+            "  AND signal_type IN ('买入','买入候选','BUY') "
+            "  AND status IN ('已执行','待执行','已提交','部分成交')"
+        )
+        today_bought = {r[0] for r in cur_bought.fetchall()}
+        cur_bought.close()
+        conn_bought.close()
+        buys = [s for s in buys if s['ts_code'] not in today_bought]
+        if today_bought:
+            logger.info("[板RPS实时] 过滤今日已买入: %d只", len(today_bought))
+    except Exception as e:
+        logger.debug("查询今日买入失败: %s", e)
+
     if not buys:
         # 详细原因诊断 (2026-06-24)
         score_fail = [s for s in signals if s['realtime_score'] < 60 and s['ml_prob'] < 0.3]
@@ -1067,7 +1126,7 @@ def _monitor_board_rps_entry(executor, mkt_info, market_params):
             continue
 
         code = ts_code.split(".")[0]
-        market = "SH" if ts_code.startswith("6") else "SZ"
+        market = "sh" if ts_code.startswith("6") else "sz"
 
         # 获取最新实时行情
         quote = _get_qmt_realtime(code, market)
@@ -1100,6 +1159,13 @@ def _monitor_board_rps_entry(executor, mkt_info, market_params):
         reason = (f"[{strategy_tag}]实时扫描: ML分{sig['ml_score']:.3f} "
                   f"实时分{sig['realtime_score']} 量比{vol_ratio:.1f}")
 
+        # 风控检查 (PreTradeChecker: 交易时段/单笔限额/熔断/60s去重/余额)
+        checker = PreTradeChecker()
+        rc = checker.check_buy(ts_code, sig.get('name', ts_code), market, price, shares)
+        if not rc["passed"]:
+            logger.warning("[板RPS实时] 风控拦截 %s(%s): %s", sig.get("name", ts_code), ts_code, rc["message"])
+            continue
+
         order = executor.buy(
             ts_code, sig['name'], market, price, shares,
             strategy=strategy_tag,
@@ -1108,17 +1174,17 @@ def _monitor_board_rps_entry(executor, mkt_info, market_params):
             market_state=mkt_info.get('state_name', ''),
             reason=reason,
         )
-        if order:
+        if order and getattr(order, "status", None) not in ("rejected", "failed"):
             bought += 1
             held_codes.add(ts_code)
             _log_trade_buy(strategy_tag, ts_code, sig['name'], price, shares)
             logger.info("[板RPS实时] 买入 %s(%s) %.0f股@%.2f 分%.1f",
                         sig['name'], ts_code, shares, price, sig['combined_score'])
             # 写 sim_signals
+            from datetime import datetime; today = datetime.now().strftime('%Y-%m-%d')
             try:
                 conn_sig = pymysql.connect(**DB_CONFIG)
                 cur_sig = conn_sig.cursor()
-                from datetime import datetime; today = datetime.now().strftime('%Y-%m-%d')
                 cur_sig.execute(
                     "INSERT IGNORE INTO sim_signals "
                     "(ts_code, stock_name, signal_date, signal_type, strategy, enhanced_score, "
@@ -1132,6 +1198,8 @@ def _monitor_board_rps_entry(executor, mkt_info, market_params):
                 conn_sig.close()
             except Exception:
                 pass
+        else:
+            logger.warning("[板RPS实时] 买入失败: %s %s", ts_code, order.status if order else "")
             _sync_position_after_buy(ts_code, sig['name'], market, shares, price, strategy_tag, sig['ml_prob'])
             _notify_trade("买入", sig['name'], ts_code, price, shares, strategy_tag)
 
@@ -1181,7 +1249,7 @@ def cmd_monitor():
         positions_for_panic = get_holding_positions_from_executor(executor)
         for pos in positions_for_panic:
             code = pos["ts_code"].split(".")[0]
-            market = pos.get("market", "SH" if pos["ts_code"].startswith("6") else "SZ")
+            market = pos.get("market", "sh" if pos["ts_code"].startswith("6") else "sz")
             quote = _get_qmt_realtime(code, market)
             price = quote["现价"] if quote else 0
             if price > 0:
@@ -1358,7 +1426,7 @@ def cmd_monitor():
         today_high = quote.get("最高", 0) or 0
         # 跨轮次峰值追踪: 从 daily_peaks.json 读取历史峰值
         import json as _json
-        _peak_file = "/Users/mozengfu/workspace/quant-system/data/daily_peaks.json"
+        _peak_file = str(BASE_DIR / "data" / "daily_peaks.json")
         _stored_peak = cost_price
         try:
             if os.path.exists(_peak_file):
@@ -1553,6 +1621,14 @@ def _execute_morning_buy(executor, ts_code, stock_name, market, current_price, b
 
     ml_avail_ref / scanner_avail_ref: 单元素 list 包装的 int, 用于在函数内修改外部变量。
     """
+    # 风控检查 (PreTradeChecker: 交易时段/单笔限额/熔断/60s去重/余额)
+    checker = PreTradeChecker()
+    rc = checker.check_buy(ts_code, stock_name, market, current_price, buy_shares)
+    if not rc["passed"]:
+        skipped.append((stock_name, ts_code, f"风控拦截: {rc['message']}"))
+        logger.warning("早盘风控拦截 %s(%s): %s", stock_name, ts_code, rc["message"])
+        return
+
     order = executor.buy(
         ts_code, stock_name, market, current_price, buy_shares,
         strategy=strategy or "纯ML(OOS-v2)",
@@ -1560,9 +1636,9 @@ def _execute_morning_buy(executor, ts_code, stock_name, market, current_price, b
         market_state=market_state_str or mkt_state_name,
         reason=f"[{strat_tag}]早盘: 跳空{gap_pct:.1f}% 量比{volume_ratio:.2f} ML排序{enhanced_score or 0:.3f}",
     )
-    if not order:
-        skipped.append((stock_name, ts_code, "买入执行失败"))
-        logger.warning("买入执行失败 %s(%s)", stock_name, ts_code)
+    if not order or getattr(order, "status", None) in ("rejected", "failed"):
+        skipped.append((stock_name, ts_code, "买入执行失败/废单"))
+        logger.warning("买入执行失败 %s(%s) status=%s", stock_name, ts_code, order.status if order else "")
         return
 
     executed.append((stock_name, ts_code, current_price, buy_shares))
@@ -1577,18 +1653,20 @@ def _execute_morning_buy(executor, ts_code, stock_name, market, current_price, b
                 strat_tag, mode_label, stock_name, buy_shares, current_price, gap_pct, volume_ratio)
 
     reason_text = f"[{strat_tag}]早盘: 跳空{gap_pct:.1f}% 量比{volume_ratio:.2f} 价{current_price}"
+    # 用桥返回的 signal_id, 而非原始 sig_id
+    order_sig_id = order.order_id.replace("sig_", "") if order.order_id and "sig_" in order.order_id else sig_id
     try:
         conn3 = pymysql.connect(**DB_CONFIG)
         cur3 = conn3.cursor()
         if is_real_live:
             cur3.execute(
                 "UPDATE sim_signals SET status='已执行', price=%s, shares=%s, reason=%s WHERE id=%s",
-                (current_price, buy_shares, reason_text, sig_id),
+                (current_price, buy_shares, reason_text, order_sig_id),
             )
         else:
             cur3.execute(
                 "UPDATE sim_signals SET status='已执行', reason=%s WHERE id=%s",
-                (reason_text, sig_id),
+                (reason_text, order_sig_id),
             )
         conn3.commit()
         cur3.close()
@@ -1921,40 +1999,27 @@ _qmt_market_cache = None
 _qmt_market_cache_ts = 0
 
 def _get_tencent_quote_simple(code, market="sz"):
-    """腾讯接口兜底拉单只行情 — _get_qmt_realtime 失败时用
-
-    返回 dict 包含 名称/代码/现价/昨收/涨跌幅/最高/最低/今开/量比
-    与 _get_qmt_realtime 内部结构一致，便于无缝衔接
-    """
-    import urllib.request
-    symbol = f"{market}{code}"
-    url = f"https://qt.gtimg.cn/q={symbol}"
+    """腾讯接口 — requests 版 (SSL 更可靠)"""
+    import requests as _req
+    url = f"https://qt.gtimg.cn/q={market}{code}"
     try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://finance.qq.com",
-        })
-        ctx = __import__("ssl").create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = __import__("ssl").CERT_NONE
-        with urllib.request.urlopen(req, timeout=5, context=ctx) as resp:
-            raw = resp.read().decode("gbk")
-        if "=" not in raw or "~" not in raw:
+        r = _req.get(url, headers={"User-Agent":"Mozilla/5.0","Referer":"https://finance.qq.com"},
+                     timeout=5, verify=False)
+        raw = r.text
+        if "~" not in raw:
             return None
         parts = raw.strip().split("~")
-        if len(parts) < 50:
+        if len(parts) < 20:
             return None
         prev_close = float(parts[4]) if parts[4] else 0
         cur_price = float(parts[3]) if parts[3] else 0
         return {
-            "名称": parts[1],
-            "代码": code,
-            "现价": cur_price,
-            "昨收": prev_close,
+            "名称": parts[1], "代码": code,
+            "现价": cur_price, "昨收": prev_close,
             "今开": float(parts[5]) if parts[5] else 0,
             "涨跌幅": round((cur_price - prev_close) / prev_close * 100, 2) if prev_close else 0,
-            "最高": float(parts[33]) if parts[33] else 0,
-            "最低": float(parts[34]) if parts[34] else 0,
+            "最高": float(parts[33]) if len(parts)>33 and parts[33] else 0,
+            "最低": float(parts[34]) if len(parts)>34 and parts[34] else 0,
             "量比": 0,
         }
     except Exception:
@@ -2006,16 +2071,16 @@ def _get_qmt_realtime(code, market="sz", with_history=False):
                     "volume": float(s.get("volume", 0) or 0),  # 修复 P0: 当前股票成交量，量比计算用
                 }
                 break
-    if qmt_hit:
+    # 先尝试腾讯接口（覆盖更广）
+    tq = _get_tencent_quote_simple(code, market)
+    if tq:
+        result = tq
+        logger.info("_get_qmt_realtime 腾讯接口: %s", code)
+    elif qmt_hit:
         result = qmt_hit
     else:
-        # 第二级：腾讯接口兜底（修复 600707 等不在 QMT 自选池里的持仓）
-        tq = _get_tencent_quote_simple(code, market)
-        if not tq:
-            logger.warning("_get_qmt_realtime 全部兜底失败: %s.%s", code, market)
-            return None
-        result = tq
-        logger.info("_get_qmt_realtime QMT snapshot 未命中，降级腾讯接口: %s", code)
+        logger.warning("_get_qmt_realtime 全部兜底失败: %s.%s", code, market)
+        return None
 
     ts_code_full = f"{code}.{'SZ' if market=='sz' else 'SH'}"
     if with_history:
@@ -2066,5 +2131,4 @@ def _get_qmt_realtime(code, market="sz", with_history=False):
 
 if __name__ == "__main__":
     main()
-
 
