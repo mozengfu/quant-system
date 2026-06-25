@@ -349,7 +349,7 @@ def do_login(request: FastAPIRequest, data: LoginRequest):
     save_access_log(username, get_client_ip(request), "login")
     from fastapi.responses import JSONResponse
 
-    resp = JSONResponse({"success": True, "redirect": "/dashboard"})
+    resp = JSONResponse({"success": True, "redirect": "/"})
     resp.set_cookie(key="token", value=token, httponly=True, samesite="strict", max_age=86400 * 7, secure=False)
     return resp
 
