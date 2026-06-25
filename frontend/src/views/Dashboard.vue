@@ -44,7 +44,7 @@
           累计收益
         </div>
         <div :class="['kpi-v', pnlCls(store.performanceSummary?.total_return ?? store.performance.total_return)]">{{ perfReturnLabel }}</div>
-        <div class="kpi-s">夏普 {{ shapely(store.performanceSummary?.sharpe ?? store.performance.sharpe) }} <span class="dim">胜率 {{ winRateLabel }}</span></div>
+        <div class="kpi-s">夏普 {{ shapely(store.performanceSummary?.sharpe ?? store.performance.sharpe) }} <span class="dim">{{ winRateLabel }}</span></div>
       </div>
       <div class="kpi">
         <div class="kpi-h">
@@ -272,9 +272,11 @@ const perfReturnLabel = computed(() => {
 })
 
 const winRateLabel = computed(() => {
-  const v = store.performanceSummary?.win_rate ?? store.performance.win_rate
-  if (v == null) return '-'
-  return (v * 100).toFixed(1) + '%'
+  const w = store.performanceSummary?.win_rate ?? store.performance.win_rate
+  if (w != null) return '胜率 ' + (w * 100).toFixed(1) + '%'
+  const c = store.performanceSummary?.trade_count
+  if (c != null) return '交易 ' + c + ' 次'
+  return '胜率 -'
 })
 
 const chartOption = computed(() => {
