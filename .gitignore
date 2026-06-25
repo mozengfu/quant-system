@@ -71,3 +71,11 @@ static.backup_*/
 
 # macOS
 .DS_Store
+
+# 数据文件不入库
+data/backup/
+data/qmt_daily/
+
+# Windows 路径错位文件 (sync_positions.py 修前会生成)
+C:\Users\18978\*.json
+C:\iquant_*.log
