@@ -463,13 +463,13 @@ td.reason { font-size: 11px; color: #a1a1aa; max-width: 220px; overflow: hidden;
 
 /* Score */
 .score { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 11.5px; font-weight: 700; }
-.sc-hi { background: rgba(52,211,153,0.15); color: #34d399; }
+.sc-hi { background: rgba(248,113,113,0.15); color: #f87171; }
 .sc-md { background: rgba(251,191,36,0.15); color: #fbbf24; }
-.sc-lo { background: rgba(248,113,113,0.15); color: #f87171; }
+.sc-lo { background: rgba(52,211,153,0.15); color: #34d399; }
 
 /* Color */
-.up { color: #34d399; }
-.dn { color: #f87171; }
+.up { color: #f87171; }
+.dn { color: #34d399; }
 .dim { color: #6b7280; }
 
 /* Empty */
