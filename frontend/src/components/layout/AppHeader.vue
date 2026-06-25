@@ -1,133 +1,60 @@
-<script setup>
-import { ref, computed, onMounted } from 'vue'
-import { useMarketStore } from '../../stores/market'
-import { useTradingStore } from '../../stores/trading'
-import api from '../../api'
-
-const props = defineProps({
-  isMobile: Boolean,
-})
-const emit = defineEmits(['toggle-sidebar'])
-
-const market = useMarketStore()
-const trading = useTradingStore()
-const user = ref('')
-const checkedAuth = ref(false)
-
-const stateTagType = computed(() => {
-  const s = market.state?.state
-  if (s === '恐慌' || s === '恐慌清仓') return 'danger'
-  if (s === '阻断') return 'warning'
-  if (s === '逆市') return 'warning'
-  if (s === '偏弱') return 'info'
-  return 'success'
-})
-
-const shIndex = computed(() => market.premarket?.indices?.['上证指数'])
-
-async function checkAuth() {
-  try {
-    const r = await api.get('/auth/me')
-    if (r?.user) user.value = r.user
-  } catch {
-    user.value = ''
-  } finally {
-    checkedAuth.value = true
-  }
-}
-
-onMounted(() => {
-  market.fetchState()
-  trading.checkStatus()
-  checkAuth()
-})
-</script>
-
 <template>
-  <el-header class="app-header">
+  <header class="app-header">
     <div class="header-left">
-      <el-button v-if="isMobile" class="hamburger-btn" text @click="emit('toggle-sidebar')">
-        <el-icon size="20"><Operation /></el-icon>
-      </el-button>
-      <span class="logo">智量</span>
-      <span v-if="!isMobile" class="logo-sub">量化交易系统</span>
-    </div>
-    <div v-if="!isMobile" class="header-center">
-      <template v-if="shIndex">
-        <span class="index-value" :class="shIndex.涨跌幅 >= 0 ? 'up' : 'down'">
-          上证 {{ shIndex.最新价?.toFixed(2) }}
-          <span class="change">{{ shIndex.涨跌幅 >= 0 ? '+' : '' }}{{ shIndex.涨跌幅?.toFixed(2) }}%</span>
-        </span>
-      </template>
-      <el-tag v-if="market.state?.state" :type="stateTagType" size="small" effect="dark">
-        {{ market.state.state }}
-      </el-tag>
-      <span v-if="market.state?.position_ratio != null" class="position-hint">
-        仓位建议: {{ market.state.position_ratio }}%
-      </span>
+      <span class="header-title">量化交易系统</span>
+      <span class="header-subtitle">V11.2 板RPS周线</span>
     </div>
     <div class="header-right">
-      <template v-if="checkedAuth">
-        <el-button v-if="!user" text size="small" @click="$router.push('/login')">
-          {{ isMobile ? '' : '登录' }}
-          <el-icon v-if="isMobile"><User /></el-icon>
-        </el-button>
-        <span v-else class="user-name">{{ user }}</span>
-      </template>
-      <el-tag v-if="!isMobile" :type="trading.connected ? 'success' : 'info'" size="small" effect="plain">
-        QMT: {{ trading.connected ? '已连接' : '未连接' }}
-      </el-tag>
+      <el-tag v-if="store.system.qmtConnected" type="success" size="small" effect="dark">QMT 已连接</el-tag>
+      <el-tag v-else type="danger" size="small" effect="dark">QMT 断开</el-tag>
+      <span class="header-time" v-if="store.lastUpdated">更新 {{ store.lastUpdated }}</span>
+      <el-button :icon="Refresh" circle size="small" @click="refresh" :loading="store.loading" />
     </div>
-  </el-header>
+  </header>
 </template>
+
+<script setup>
+import { Refresh } from '@element-plus/icons-vue'
+import { useDashboardStore } from '../../stores/dashboard'
+
+const store = useDashboardStore()
+function refresh() {
+  store.refreshAll()
+}
+</script>
 
 <style scoped>
 .app-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  height: 48px;
+  padding: 0 20px;
   background: #fff;
   border-bottom: 1px solid #e4e7ed;
-  padding: 0 20px;
-  height: 48px;
+  flex-shrink: 0;
 }
 .header-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
-.hamburger-btn {
-  margin-left: -8px;
-  font-size: 18px;
+.header-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
 }
-.logo {
-  font-size: 18px;
-  font-weight: 800;
-  background: linear-gradient(135deg, #2563eb, #6366f1);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-.logo-sub {
+.header-subtitle {
   font-size: 12px;
   color: #909399;
 }
-.header-center {
+.header-right {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
 }
-.index-value { font-size: 14px; font-weight: 600; }
-.index-value.up { color: #ef4444; }
-.index-value.down { color: #10b981; }
-.change { font-weight: 400; margin-left: 4px; }
-.position-hint { font-size: 12px; color: #909399; }
-.header-right { display: flex; align-items: center; gap: 12px; }
-.user-name { font-size: 13px; color: #409eff; font-weight: 500; }
-
-@media (max-width: 767px) {
-  .app-header {
-    padding: 0 12px;
-  }
+.header-time {
+  font-size: 12px;
+  color: #909399;
 }
 </style>

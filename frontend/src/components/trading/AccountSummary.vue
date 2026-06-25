@@ -1,52 +1,62 @@
-<script setup>
-import { computed } from 'vue'
-import { fmtMoney } from '../../utils/format'
-
-const props = defineProps({
-  balance: Object,
-  connected: Boolean,
-})
-
-const totalAsset = computed(() => props.balance?.total_asset ?? props.balance?.total_asset ?? 0)
-const available = computed(() => props.balance?.available ?? props.balance?.可用金额 ?? 0)
-const marketValue = computed(() => props.balance?.market_value ?? props.balance?.股票市值 ?? 0)
-</script>
-
 <template>
-  <el-row :gutter="12">
-    <el-col :span="6">
-      <el-card shadow="never" class="summary-card">
-        <div class="summary-label">总资产</div>
-        <div class="summary-value">¥{{ fmtMoney(totalAsset) }}</div>
-      </el-card>
-    </el-col>
-    <el-col :span="6">
-      <el-card shadow="never" class="summary-card">
-        <div class="summary-label">可用资金</div>
-        <div class="summary-value">{{ fmtMoney(available) }}</div>
-      </el-card>
-    </el-col>
-    <el-col :span="6">
-      <el-card shadow="never" class="summary-card">
-        <div class="summary-label">股票市值</div>
-        <div class="summary-value">{{ fmtMoney(marketValue) }}</div>
-      </el-card>
-    </el-col>
-    <el-col :span="6">
-      <el-card shadow="never" class="summary-card">
-        <div class="summary-label">连接状态</div>
-        <div class="summary-value">
-          <el-tag :type="connected ? 'success' : 'danger'" size="small" effect="dark">
-            {{ connected ? '已连接' : '未连接' }}
-          </el-tag>
-        </div>
-      </el-card>
-    </el-col>
-  </el-row>
+  <div class="account-summary">
+    <div class="account-row">
+      <div class="account-item">
+        <span class="label">总资产</span>
+        <span class="value main">{{ fmt(balance.总资产 || 0) }}</span>
+      </div>
+      <div class="account-item">
+        <span class="label">可用资金</span>
+        <span class="value">{{ fmt(balance.可用金额 || 0) }}</span>
+      </div>
+      <div class="account-item">
+        <span class="label">持仓市值</span>
+        <span class="value">{{ fmt(balance.股票市值 || 0) }}</span>
+      </div>
+      <div class="account-item">
+        <span class="label">持仓数量</span>
+        <span class="value">{{ positionCount }}</span>
+      </div>
+    </div>
+  </div>
 </template>
 
+<script setup>
+defineProps({
+  balance: { type: Object, default: () => ({}) },
+  positionCount: { type: Number, default: 0 },
+})
+
+function fmt(v) {
+  return '¥' + Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+</script>
+
 <style scoped>
-.summary-card { text-align: center; }
-.summary-label { font-size: 12px; color: #909399; margin-bottom: 4px; }
-.summary-value { font-size: 20px; font-weight: 700; }
+.account-summary {
+  width: 100%;
+}
+.account-row {
+  display: flex;
+  gap: 32px;
+  flex-wrap: wrap;
+}
+.account-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 100px;
+}
+.label {
+  font-size: 12px;
+  color: #909399;
+}
+.value {
+  font-size: 18px;
+  font-weight: 600;
+  color: #303133;
+}
+.value.main {
+  color: #409eff;
+}
 </style>
