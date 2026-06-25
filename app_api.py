@@ -103,8 +103,27 @@ app.include_router(pnl_router)
 # ========== 前端 SPA (Vue 3) 静态文件挂载 ==========
 _frontend_dist = BASE_DIR / "frontend" / "dist"
 if _frontend_dist.is_dir():
-    app.mount("/app", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend_app")
-    logger.info("Vue SPA 已挂载: /app (from %s)", _frontend_dist)
+    # 挂载静态资源路径（JS/CSS/图片）
+    app.mount("/assets", StaticFiles(directory=str(_frontend_dist / "assets")), name="frontend_assets")
+    logger.info("Vue SPA 静态资源已挂载: /assets (from %s)", _frontend_dist)
+    
+    # SPA 入口页路由（带 JWT 校验）
+    from fastapi.responses import HTMLResponse, RedirectResponse
+    from fastapi import Cookie as Fcookie
+    
+    @app.get("/", response_class=HTMLResponse)
+    @app.get("/app", response_class=HTMLResponse)
+    @app.get("/app/{path:path}", response_class=HTMLResponse)
+    async def serve_spa(token: str = Fcookie(None), path: str = ""):
+        # 如果请求 API 路径，跳过（由其他路由处理）
+        if path.startswith("api/"):
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+        # 检查 JWT 登录状态
+        from quant_app.routes.auth import SESSIONS
+        if not token or token not in SESSIONS:
+            return RedirectResponse(url="/login")
+        html_content = (_frontend_dist / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(content=html_content)
 
 # ========== WebSocket 事件总线 ==========
 class PipelineEventBus:

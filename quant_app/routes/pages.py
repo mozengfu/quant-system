@@ -72,7 +72,7 @@ def log_analytics_page():
         return f.read()
 
 
-@router.get("/", response_class=HTMLResponse)
+@router.get("/landing", response_class=HTMLResponse)
 def landing():
     """公开落地页 - 系统介绍与模块入口"""
     from fastapi.responses import HTMLResponse as HR
@@ -82,7 +82,7 @@ def landing():
     return HR(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
-@router.get("/dashboard", response_class=HTMLResponse)
+@router.get("/legacy-dashboard", response_class=HTMLResponse)
 def dashboard(token: str = Cookie(None)):
     """主控面板 - 需要登录"""
     from fastapi.responses import Response
