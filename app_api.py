@@ -21,21 +21,15 @@ from quant_app.utils.config import get_db_config
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
 
-# 导入核心业务函数
-from quant_app.routes.admin import router as admin_router
+# 导入核心路由模块
 from quant_app.routes.auth import router as auth_router
-from quant_app.routes.backtest import router as backtest_router
 from quant_app.routes.dashboard import router as dashboard_router
-from quant_app.routes.market import router as market_router
 
 # ========== 路由模块导入 ==========
 from quant_app.routes.pages import router as pages_router
 from quant_app.routes.pipeline import router as pipeline_router
-from quant_app.routes.pnl import router as pnl_router
 from quant_app.routes.recommend import router as recommend_router
 from quant_app.routes.scanning import router as scanning_router
-from quant_app.routes.signals import router as signals_router
-from quant_app.routes.strategy import router as strategy_router
 from quant_app.routes.trading import router as trading_router
 from quant_app.services.realtime_scanner import scan_stocks
 from quant_app.utils.persistence import (
@@ -88,17 +82,11 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")))
 # ========== 注册子路由 ==========
 app.include_router(pages_router)
 app.include_router(auth_router)
-app.include_router(admin_router)
-app.include_router(strategy_router)
-app.include_router(signals_router)
 app.include_router(scanning_router)
 app.include_router(recommend_router)
-app.include_router(backtest_router)
-app.include_router(market_router)
 app.include_router(dashboard_router)
 app.include_router(trading_router)
 app.include_router(pipeline_router)
-app.include_router(pnl_router)
 
 # ========== 前端 SPA (Vue 3) 静态文件挂载 ==========
 _frontend_dist = BASE_DIR / "frontend" / "dist"

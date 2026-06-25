@@ -3,22 +3,15 @@ import api from '../api/index'
 
 export const useDashboardStore = defineStore('dashboard', {
   state: () => ({
-    // 市场状态
     market: { state: '加载中', position_ratio: 80, index: null, change_pct: null },
-    // 账户
     balance: { 可用金额: 0, 总资产: 0, 股票市值: 0 },
-    // 持仓
     positions: [],
-    // ML 候选
     mlCandidates: [],
-    // 交易日志
+    scannerSignals: [],
     trades: [],
-    // ML/绩效
     ml: { status: 'normal' },
     performance: {},
-    // 系统
     system: { heartbeat: null, scanTime: null, qmtConnected: false },
-    // 加载状态
     loading: false,
     error: null,
     lastUpdated: null,
@@ -38,12 +31,13 @@ export const useDashboardStore = defineStore('dashboard', {
       this.loading = true
       this.error = null
       try {
-        const [statusRes, positionRes, balanceRes, tradesRes, recommendRes] = await Promise.allSettled([
+        const [statusRes, positionRes, balanceRes, tradesRes, recommendRes, scannerRes] = await Promise.allSettled([
           api.get('/pipeline/status'),
           api.get('/trading/positions'),
           api.get('/trading/balance'),
           api.get('/trading/trades', { params: { limit: 20 } }),
           api.get('/recommend/v11', { params: { top_n: 5 } }),
+          api.get('/scanner/signals'),
         ])
 
         if (statusRes.status === 'fulfilled') {
@@ -72,7 +66,11 @@ export const useDashboardStore = defineStore('dashboard', {
           this.mlCandidates = r.推荐股票 || r.stocks || []
         }
 
-        // 系统状态：从 performance 提取额外信息
+        if (scannerRes.status === 'fulfilled') {
+          const r = scannerRes.value
+          this.scannerSignals = (r.signals || []).slice(0, 10)
+        }
+
         if (statusRes.status === 'fulfilled') {
           if (this.ml.last_predict) {
             this.system.scanTime = this.ml.last_predict
