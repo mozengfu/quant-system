@@ -5,8 +5,10 @@ iQuant HTTP 状态服务 + IPC 命令写入
 import json
 import logging
 import os
+import re
 import threading
 import time
+from datetime import datetime
 
 from flask import Flask, jsonify, request
 
@@ -51,13 +53,103 @@ def _q(sql, p=None):
         c.close()
 
 
+def _is_trading_time() -> bool:
+    """是否在连续竞价时段 (9:30-11:30 / 13:00-14:57), 与 pre_trade_check 对齐。
+
+    盘后/周末返回 False —— poller 据此跳过送单, /buy /sell 据此直接拒绝。
+    """
+    now = datetime.now()
+    if now.weekday() >= 5:
+        return False
+    t = now.hour * 60 + now.minute
+    return (9 * 60 + 30 <= t <= 11 * 60 + 30) or (13 * 60 <= t <= 14 * 60 + 57)
+
+
+# v23 回写 status 取值 → scheduler 可识别的统一状态
+_V23_STATUS_MAP = {
+    "filled": "filled",
+    "partial": "partial",
+    "rejected": "rejected",
+    "canceled": "canceled",
+    "submitted": "submitted",
+    "done": "filled",     # 旧版兼容
+    "failed": "failed",
+}
+
+
+def _dispatch_ipc(code: str, price: float, amount: int, action: str,
+                  wait_seconds: int = 35) -> dict:
+    """同步派发一笔订单到 v23 策略并等待回写。
+
+    写 IPC_CMD 命令文件, 轮询等待 v23 策略回写结果, 返回:
+      {"status": filled/partial/rejected/canceled/submitted/failed/timeout,
+       "order_id": str, "filled_volume": int, "error": str}
+    市价单(止损/恐慌清仓/买入) priceType=-1。超时返回 submitted 不死等。
+
+    与 _ipc_poller 共用同一 IPC 协议; /buy /sell 走同步路径, poller 兜底历史信号。
+    """
+    cmd = {
+        "id": int(time.time() * 1000) % 100000000,  # 临时 id, 仅匹配回写
+        "action": action, "code": code, "price": float(price or 0),
+        "amount": int(amount or 0), "status": "pending", "ts": time.time(),
+    }
+    # 市价单: 买入/止损/恐慌清仓用 priceType=-1
+    if action in ("BUY", "BUY_TARGET", "止损", "恐慌清仓"):
+        cmd["priceType"] = -1
+
+    # 清除旧结果文件, 避免读到上一笔回写
+    if os.path.exists(IPC_CMD):
+        try:
+            os.remove(IPC_CMD)
+        except Exception:
+            pass
+
+    try:
+        with open(IPC_CMD, "w", encoding="utf-8") as f:
+            json.dump(cmd, f, ensure_ascii=False)
+    except Exception as e:
+        return {"status": "failed", "order_id": "", "filled_volume": 0, "error": f"写IPC失败:{e}"}
+
+    logger.info("dispatch IPC: %s %s %d@%.2f", action, code, int(amount or 0), float(price or 0))
+
+    # 等 v23 回写 (CMD 文件 status 从 pending 变为其他)
+    for _ in range(wait_seconds):
+        time.sleep(1)
+        try:
+            if not os.path.exists(IPC_CMD):
+                continue
+            with open(IPC_CMD, encoding="utf-8") as f:
+                res = json.load(f)
+            if res.get("id") == cmd["id"] and res.get("status") != "pending":
+                v23_status = res.get("status", "done")
+                mapped = _V23_STATUS_MAP.get(v23_status, v23_status)
+                oid = str(res.get("order_id", "") or "")
+                filled = int(res.get("filled_volume", 0) or 0)
+                if mapped == "filled":
+                    filled = int(amount or 0)
+                err = res.get("error", "") or ("" if mapped not in ("rejected", "failed") else "passorder返回0")
+                logger.info("dispatch ok: %s %s status=%s oid=%s", action, code, mapped, oid)
+                return {"status": mapped, "order_id": oid, "filled_volume": filled, "error": err}
+        except Exception:
+            pass
+
+    logger.warning("dispatch timeout: %s %s 策略%d秒未响应", action, code, wait_seconds)
+    return {"status": "timeout", "order_id": "", "filled_volume": 0, "error": f"IPC等待超时(策略{wait_seconds}秒未响应)"}
+
+
 # ========== IPC 命令轮询 ==========
 def _ipc_poller():
     logger.info("IPC poller started")
     done = set()
     while True:
         try:
-            r = _q("SELECT id,ts_code,signal_type,price,shares FROM sim_signals WHERE status='待执行' AND signal_type!='买入候选' ORDER BY id LIMIT 1")
+            # 交易时段闸门: 非交易时段(盘后/周末)不送单, 待执行信号直接标已过期
+            # 避免盘后 scan 信号被送 v23 → 30秒超时噪音
+            if not _is_trading_time():
+                _q("UPDATE sim_signals SET status='已过期', reason='非交易时段' WHERE status='待执行'")
+                time.sleep(60)
+                continue
+            r = _q("SELECT id,ts_code,signal_type,price,shares FROM sim_signals WHERE status='待执行' AND signal_type!='买入候选' AND DATE(created_at) < CURDATE() ORDER BY id LIMIT 1")
             if r and r[0][0] not in done:
                 sid, tc, st, pr, sh = r[0]
                 st = (st or "").strip()
@@ -67,8 +159,8 @@ def _ipc_poller():
                 else: done.add(sid); continue
                 c = tc.split(".")[0] if "." in tc else tc
                 cmd = {"id": sid, "action": a, "code": c, "price": float(pr or 0), "amount": int(sh or 0), "status": "pending", "ts": time.time()}
-                # 止损/恐慌清仓用市价单确保立即成交
-                if st in ("止损", "恐慌清仓"):
+                # 市价单确保立即成交（买卖都用）
+                if st in ("止损", "恐慌清仓", "买入", "买入候选", "BUY"):
                     cmd["priceType"] = -1
                     logger.info("IPC cmd: %s 使用市价单", st)
                 # 清除旧结果文件
@@ -207,62 +299,139 @@ def position():
 @app.route("/positions", methods=["GET"])
 def positions(): return position()
 
+def _insert_signal(code, price, shares, sig_type, reason):
+    """INSERT 一条 sim_signals 待执行信号, 返回新 signal_id (lastrowid)。"""
+    import pymysql
+    c = pymysql.connect(**_get_db_config(), connect_timeout=5)
+    try:
+        cur = c.cursor()
+        cur.execute(
+            "INSERT INTO sim_signals(ts_code,price,shares,status,signal_type,reason,created_at,signal_date)"
+            " VALUES(%s,%s,%s,'待执行',%s,%s,NOW(),CURDATE())",
+            (code, price, shares, sig_type, reason),
+        )
+        c.commit()
+        sid = cur.lastrowid
+        cur.close()
+        return sid
+    finally:
+        c.close()
+
+
+# v23 回写 status → 中文状态 (落库 sim_signals.status)
+_SIGNAL_STATUS_TEXT = {
+    "filled": "已执行", "partial": "部分成交", "rejected": "失败",
+    "canceled": "已撤单", "submitted": "已提交", "failed": "失败",
+    "timeout": "已提交",  # 超时按"已提交"留痕, 策略可能仍在处理
+}
+
+
+def _update_signal_result(sid, ipc_result, base_reason):
+    """把 _dispatch_ipc 回写结果落库到 sim_signals。
+
+    兼容 migration 上线前后: 先尝试带 order_id 列, 失败则只更新 status/reason。
+    """
+    status = ipc_result.get("status", "submitted")
+    oid = ipc_result.get("order_id", "") or ""
+    err = ipc_result.get("error", "") or ""
+    cn_status = _SIGNAL_STATUS_TEXT.get(status, "已提交")
+    reason_text = f"{base_reason} | {status}" + (f": {oid}" if oid else "") + (f" ({err})" if err else "")
+    try:
+        _q("UPDATE sim_signals SET status=%s, order_id=%s, reason=%s WHERE id=%s",
+           (cn_status, oid, reason_text, sid))
+    except Exception:
+        _q("UPDATE sim_signals SET status=%s, reason=%s WHERE id=%s",
+           (cn_status, reason_text, sid))
+
+
 @app.route("/buy", methods=["POST"])
 def buy():
+    """买入: INSERT → IPC 派发 → 同步等回写 → 落库真实状态 → HTTP 返回。
+
+    返回中带 status (filled/rejected/submitted 等)、filled_volume、order_id_real。
+    非交易时段直接拒绝。
+    """
     try:
         d = request.get_json(force=True)
         code = (d.get("code") or d.get("security") or "").strip()
         price = float(d.get("price", 0))
         shares = int(d.get("amount", d.get("shares", 0)))
-        if not code or price <= 0 or shares <= 0: return jsonify({"error": "required"}), 400
-        if "." not in code: code = ("%s.SH" % code) if code.startswith("6") else ("%s.SZ" % code)
-        # 修复 P0: 之前忽略 action 字段，全部当 "买入候选" 处理
-        # 现在尊重调用方传入的 action: BUY / BUY_TARGET
-        # 兜底：缺省为"买入候选"
+        if not code or price <= 0 or shares < 0:
+            return jsonify({"error": "required"}), 400
+        if "." not in code:
+            code = ("%s.SH" % code) if code.startswith("6") else ("%s.SZ" % code)
+        if not _is_trading_time():
+            return jsonify({"error": "非交易时段", "status": "rejected"}), 400
+
         action = (d.get("action") or "买入候选").strip() or "买入候选"
         if action not in ("买入候选", "买入", "BUY", "BUY_TARGET"):
             action = "买入候选"
-        _q("INSERT INTO sim_signals(ts_code,price,shares,status,signal_type,reason,created_at,signal_date) VALUES(%s,%s,%s,'待执行',%s,'HTTP',NOW(),CURDATE())", (code,price,shares,action))
-        return jsonify({"order_id": "sig_%d" % int(time.time()), "code": code, "price": price, "amount": shares, "action": action}), 201
+        sig_type = "买入" if action in ("买入候选", "买入", "BUY", "BUY_TARGET") else action
+
+        sid = _insert_signal(code, price, shares, sig_type, "HTTP")
+        ipc_action = "BUY_TARGET" if action == "BUY_TARGET" else "BUY"
+        ipc = _dispatch_ipc(code.split(".")[0], price, shares, ipc_action)
+        _update_signal_result(sid, ipc, "HTTP")
+
+        return jsonify({
+            "order_id": "sig_%d" % sid, "signal_id": sid,
+            "code": code, "price": price, "amount": shares, "action": action,
+            "status": ipc["status"], "order_id_real": ipc.get("order_id", ""),
+            "filled_volume": ipc.get("filled_volume", 0), "error": ipc.get("error", ""),
+        }), 201
     except Exception as e:
+        logger.error("/buy 失败: %s", e)
         return jsonify({"error": str(e)}), 400
 
 @app.route("/sell", methods=["POST"])
 def sell():
+    """卖出: INSERT → IPC 派发 → 同步等回写 → 落库 → 返回真实状态。
+
+    市价单 (priceType=-1) action 转为"止损"以触发 v23 走市价单逻辑。
+    """
     try:
         d = request.get_json(force=True)
         code = (d.get("code") or d.get("security") or "").strip()
         price = float(d.get("price", 0))
         shares = int(d.get("amount", d.get("shares", 0)))
-        if not code or price <= 0 or shares <= 0: return jsonify({"error": "required"}), 400
-        if "." not in code: code = ("%s.SH" % code) if code.startswith("6") else ("%s.SZ" % code)
-        # 修复 P0: 之前忽略 action 字段，全部当 "卖出" 处理 → IPC poller 不走市价单
-        # 现在尊重调用方传入的 action: 卖出/止损/止盈/恐慌清仓/超时/RPS止损/SELL
-        # priceType=-1 → 市价单 (v23 策略会用)
+        if not code or price <= 0 or shares < 0:
+            return jsonify({"error": "required"}), 400
+        if "." not in code:
+            code = ("%s.SH" % code) if code.startswith("6") else ("%s.SZ" % code)
+        if not _is_trading_time():
+            return jsonify({"error": "非交易时段", "status": "rejected"}), 400
+
         action = (d.get("action") or "卖出").strip() or "卖出"
         valid_actions = ("卖出", "止损", "止盈", "恐慌清仓", "超时", "RPS止损", "SELL", "分批止盈", "兜底止盈")
         if action not in valid_actions:
             action = "卖出"
         price_type = d.get("priceType", 0)
-        # 市价单时把 action 改成"止损"或"恐慌清仓"以触发 IPC poller 走 priceType=-1
-        # 防止: 调用方传 "SELL" + priceType=-1 时被 IPC 当成普通限价
         if str(price_type) == "-1" and action in ("卖出", "SELL"):
             action = "止损"
-        reason = "HTTP"
-        if str(price_type) == "-1":
-            reason = "HTTP(市价)"
-        _q("INSERT INTO sim_signals(ts_code,price,shares,status,signal_type,reason,created_at,signal_date) VALUES(%s,%s,%s,'待执行',%s,%s,NOW(),CURDATE())", (code,price,shares,action,reason))
-        return jsonify({"order_id": "sig_%d" % int(time.time()), "code": code, "price": price, "amount": shares, "action": action}), 201
+        reason = "HTTP(市价)" if str(price_type) == "-1" else "HTTP"
+
+        sid = _insert_signal(code, price, shares, action, reason)
+        ipc = _dispatch_ipc(code.split(".")[0], price, shares, action)
+        _update_signal_result(sid, ipc, reason)
+
+        return jsonify({
+            "order_id": "sig_%d" % sid, "signal_id": sid,
+            "code": code, "price": price, "amount": shares, "action": action,
+            "status": ipc["status"], "order_id_real": ipc.get("order_id", ""),
+            "filled_volume": ipc.get("filled_volume", 0), "error": ipc.get("error", ""),
+        }), 201
     except Exception as e:
+        logger.error("/sell 失败: %s", e)
         return jsonify({"error": str(e)}), 400
 
 @app.route("/orders", methods=["GET"])
 def orders():
     try:
-        r = _q("SELECT id,ts_code,signal_type,price,shares,status,close_date,reason,order_id FROM sim_signals WHERE created_at>=DATE_SUB(NOW(),INTERVAL 7 DAY) ORDER BY created_at DESC LIMIT 50")
+        r = _q("SELECT id,ts_code,signal_type,price,shares,status,close_date,reason FROM sim_signals WHERE created_at>=DATE_SUB(NOW(),INTERVAL 7 DAY) ORDER BY created_at DESC LIMIT 50")
         return jsonify({"orders": [{"id":str(i),"ts_code":c,"signal_type":s,"price":float(p or 0),"shares":int(sh or 0),
-                                   "status":st,"close_date":str(cd or ""),"reason":str(rs or ""),"order_id":str(oid or "")}
-                                   for i,c,s,p,sh,st,cd,rs,oid in r]})
+                                   "status":st,"close_date":str(cd or ""),"reason":str(rs or ""),
+                                   "order_id":str(re.search(r'成交:(\d+)', rs).group(1)) if rs and re.search(r'成交:(\d+)', rs) else ""}
+                                   for i,c,s,p,sh,st,cd,rs in r]})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
@@ -385,4 +554,4 @@ if __name__ == "__main__":
     logger.info("Starting on port %d", PORT)
     try: _q("SELECT 1"); logger.info("DB OK")
     except: logger.warning("DB unavailable")
-    app.run(host="0.0.0.0", port=PORT, debug=False)
+    app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)

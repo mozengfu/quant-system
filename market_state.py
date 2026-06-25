@@ -318,7 +318,7 @@ def _get_strategy_params(state):
         'range': {
             'stop_loss_pct': -7,
             'take_profit_pct': 8,
-            'max_positions': 3,     # 震荡适中
+            'max_positions': 7,     # 震荡市 scanner=4 + ML=3
             'position_pct': 50,
             'hold_days': 5,
             'ml_threshold': 0.55,

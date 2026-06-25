@@ -97,8 +97,6 @@ def main():
     for i, (tc, prob, ret, mt) in enumerate(top15, 1):
         logger.info(f"  {i:2d}. {tc}  prob={prob:.3f}  ret={ret:.4f}  model={mt}")
 
-    cursor.close()
-    conn.close()
     logger.info("完成")
 
 

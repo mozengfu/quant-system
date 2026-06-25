@@ -2364,7 +2364,7 @@
           "price": 17.07,
           "score": 136,
           "recommendation_time": "09:00",
-          "1day_result": null,
+          "1day_result": 5.92,
           "1week_result": null,
           "1month_result": null
         },
@@ -2374,7 +2374,7 @@
           "price": 45.65,
           "score": 136,
           "recommendation_time": "09:00",
-          "1day_result": null,
+          "1day_result": 7.03,
           "1week_result": null,
           "1month_result": null
         },
@@ -2384,13 +2384,13 @@
           "price": 26.17,
           "score": 134,
           "recommendation_time": "09:00",
-          "1day_result": null,
+          "1day_result": 0.23,
           "1week_result": null,
           "1month_result": null
         }
       ],
-      "tracked": false,
-      "result": null
+      "tracked": true,
+      "result": "partial"
     },
     {
       "date": "2026-06-24",
@@ -2429,17 +2429,55 @@
       ],
       "tracked": false,
       "result": null
+    },
+    {
+      "date": "2026-06-25",
+      "strategy": "ML选股策略 TOP3",
+      "stocks": [
+        {
+          "code": "300347",
+          "name": "泰格医药",
+          "price": 43.38,
+          "score": 141,
+          "recommendation_time": "09:00",
+          "1day_result": null,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "000783",
+          "name": "长江证券",
+          "price": 9.23,
+          "score": 140,
+          "recommendation_time": "09:00",
+          "1day_result": null,
+          "1week_result": null,
+          "1month_result": null
+        },
+        {
+          "code": "002077",
+          "name": "大港股份",
+          "price": 18.95,
+          "score": 139,
+          "recommendation_time": "09:00",
+          "1day_result": null,
+          "1week_result": null,
+          "1month_result": null
+        }
+      ],
+      "tracked": false,
+      "result": null
     }
   ],
   "stats": {
-    "total_days": 65,
-    "total_recommendations": 191,
+    "total_days": 66,
+    "total_recommendations": 194,
     "profit_days": 0,
     "loss_days": 0,
-    "total_pnl": 365.98,
-    "win_count": 100,
+    "total_pnl": 379.16,
+    "win_count": 103,
     "loss_count": 83,
-    "win_rate": 54.64,
-    "avg_profit": 2.0
+    "win_rate": 55.38,
+    "avg_profit": 2.04
   }
 }

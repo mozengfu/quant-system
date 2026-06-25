@@ -129,7 +129,7 @@ class RemoteTraderExecutor(AbstractTradeExecutor):
         port = port or trading_config.remote_trader_port or 1430
         self.base_url = f"http://{host}:{port}"
         self._session = requests.Session()
-        self._session.timeout = (10, 30)
+        self._session.timeout = (10, 40)
         self._connected = False
         self._password = trading_config.trade_password
         self._is_remote = True
@@ -157,12 +157,12 @@ class RemoteTraderExecutor(AbstractTradeExecutor):
             return {"e": str(e)[:200]}
 
     def ping(self) -> dict:
-        """健康检查 — 通过 /status 或降级到 /balance 检测连通性"""
+        """健康检查 — 优先 /ping (桥存在该端点), 降级 /balance"""
         try:
-            status = self._request("GET", "/status")
+            status = self._request("GET", "/ping")
             if status.get("ok"):
-                return {"status": "ok", "message": f"已连接: {status.get('title', '')}", "data": status}
-            # /status 不存在时降级用 /balance 验证连通性
+                return {"status": "ok", "message": f"已连接: {status.get('service', '')}", "data": status}
+            # /ping 异常时降级用 /balance 验证连通性
             if status.get("e"):
                 balance = self._request("GET", "/balance")
                 if not balance.get("e"):
@@ -177,21 +177,21 @@ class RemoteTraderExecutor(AbstractTradeExecutor):
         """连接服务 + 自动解锁
 
         状态检查降级策略:
-        1. 先尝试 /status 端点
-        2. 404/不可用时以 /unlock 和 /balance 结果判断连通性
+        1. 先尝试 /ping 端点
+        2. 不可用时以 /unlock 和 /balance 结果判断连通性
         """
         result = {}
         self._connected = True
 
         # 检查状态 — 404 不影响连通性判定
         try:
-            status = self._request("GET", "/status")
+            status = self._request("GET", "/ping")
             if status.get("ok"):
-                logger.info("✅ 已连接远程交易服务: %s", status.get("title", ""))
+                logger.info("✅ 已连接远程交易服务: %s", status.get("service", ""))
                 result["status"] = "connected"
-            elif status.get("e") and "404" in str(status.get("e", "")):
-                logger.info("⚠️ /status 端点不存在，将通过解锁和余额验证连通性")
-                result["status"] = "connected"  # 不因缺少 /status 报错
+            elif status.get("e"):
+                logger.info("⚠️ /ping 响应异常，将通过解锁和余额验证连通性")
+                result["status"] = "connected"
             else:
                 logger.warning("远程服务状态异常: %s", status)
                 result["status"] = "warning"
@@ -241,7 +241,7 @@ class RemoteTraderExecutor(AbstractTradeExecutor):
         code = _ts_code_to_remote(ts_code)
         result = self._request("POST", "/buy", json={
             "code": code, "price": price, "amount": quantity,
-            "priceType": -1,   # 市价单标识（HTTP服务→IPC→QMT策略最终用11兜底）
+            "priceType": -1,
         })
         logger.info("买入 %s(%s) %d股 @ %.2f: %s", name, code, quantity, price, result)
 
@@ -249,15 +249,8 @@ class RemoteTraderExecutor(AbstractTradeExecutor):
             logger.error("买入失败: %s", result["e"])
             return None
 
-        return Order(
-            order_id=result.get("order_id", f"remote_{int(time.time())}"),
-            ts_code=ts_code, name=name, action="BUY",
-            price=price, quantity=quantity, amount=round(price * quantity, 2),
-            status="pending",
-            filled_quantity=0, filled_amount=0.0,
-            reason=reason or result.get("msg", ""),
-            created_at=time.strftime("%Y-%m-%d %H:%M:%S"),
-        )
+        # 桥已同步返回真实状态 (filled/rejected/submitted 等), 走统一解析
+        return self._parse_order_status(result, ts_code, "BUY", price, quantity, reason or result.get("msg", ""))
 
     def _parse_order_status(self, result: dict, ts_code: str, action: str,
                             price: float, quantity: int, reason: str = "") -> Order | None:
