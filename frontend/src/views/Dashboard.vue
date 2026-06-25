@@ -44,6 +44,7 @@
           累计收益
         </div>
         <div :class="['kpi-v', pnlCls(store.performanceSummary?.total_return ?? store.performance.total_return)]">{{ perfReturnLabel }}</div>
+        <div :class="['kpi-v', 'kpi-amount', pnlCls(store.performanceSummary?.total_return ?? store.performance.total_return)]" style="font-size:11px;line-height:1">{{ perfAmountLabel }}</div>
         <div class="kpi-s">夏普 {{ shapely(store.performanceSummary?.sharpe ?? store.performance.sharpe) }} <span class="dim">{{ winRateLabel }}</span></div>
       </div>
       <div class="kpi">
@@ -61,19 +62,25 @@
       </div>
     </div>
 
-    <!-- 2. 收益曲线 (点击切换) -->
-    <div v-if="showChart && store.navHistory.dates.length > 1" class="chart-wrap">
-      <div class="sec">
-        <div class="sec-h">
-          <div class="sec-t">净值曲线</div>
-          <div class="sec-m">近 {{ store.navHistory.dates.length }} 个交易日</div>
-          <button class="sec-close" @click="showChart = false">&times;</button>
-        </div>
-        <div class="chart-box">
-          <VChart :option="chartOption" autoresize style="height:260px;width:100%" />
+    <!-- 2. 收益图表区域 -->
+    <template v-if="store.navHistory.dates.length > 1">
+      <div class="chart-wrap">
+        <div class="sec">
+          <div class="sec-h">
+            <div class="sec-t">
+              <span :class="['tab', { active: chartTab === 'nav' }]" @click="chartTab = 'nav'">净值曲线</span>
+              <span :class="['tab', { active: chartTab === 'daily' }]" @click="chartTab = 'daily'">每日收益</span>
+            </div>
+            <div class="sec-m">共 {{ store.navHistory.dates.length }} 个交易日</div>
+            <button class="sec-close" @click="showChart = !showChart">{{ showChart ? '收起' : '展开' }}</button>
+          </div>
+          <div v-show="showChart" class="chart-box" :key="chartTab">
+            <VChart v-if="chartTab === 'nav'" :option="chartOption" autoresize style="height:220px;width:100%" />
+            <VChart v-if="chartTab === 'daily'" :option="dailyReturnOption" autoresize style="height:220px;width:100%" />
+          </div>
         </div>
       </div>
-    </div>
+    </template>
 
     <!-- 3. 主网格 -->
     <div class="main-g">
@@ -248,13 +255,14 @@ import { useDashboardStore } from '../stores/dashboard'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
-import { LineChart } from 'echarts/charts'
+import { LineChart, BarChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
 
-use([CanvasRenderer, LineChart, GridComponent, TooltipComponent, LegendComponent])
+use([CanvasRenderer, LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent])
 
 const store = useDashboardStore()
-const showChart = ref(false)
+const showChart = ref(true)
+const chartTab = ref('nav')
 let timer = null
 
 function toggleChart() { showChart.value = !showChart.value }
@@ -269,6 +277,14 @@ const perfReturnLabel = computed(() => {
   const v = store.performanceSummary?.total_return ?? store.performance.total_return
   if (v == null) return '-'
   return (v >= 0 ? '+' : '') + v.toFixed(2) + '%'
+})
+
+const perfAmountLabel = computed(() => {
+  const v = store.performanceSummary?.current_value
+  const i = store.performanceSummary?.initial_capital
+  if (v == null || i == null) return '-'
+  const diff = v - i
+  return (diff >= 0 ? '+' : '') + '¥' + Math.abs(diff).toLocaleString('zh-CN', {minimumFractionDigits:2})
 })
 
 const winRateLabel = computed(() => {
@@ -321,6 +337,59 @@ const chartOption = computed(() => {
           ],
         },
       },
+    }],
+  }
+})
+
+const dailyReturnOption = computed(() => {
+  const d = store.navHistory
+  if (!d.dates || !d.dates.length || !d.values || d.values.length < 2) return {}
+  const dates = d.dates.slice(1)
+  const returns = []
+  for (let i = 1; i < d.values.length; i++) {
+    const r = (d.values[i] - d.values[i - 1]) / d.values[i - 1] * 100
+    returns.push(parseFloat(r.toFixed(2)))
+  }
+  return {
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(30,30,46,0.92)',
+      borderColor: '#2d2d3f',
+      textStyle: { color: '#d4d4d8', fontSize: 12 },
+      formatter: (params) => {
+        const p = params[0]
+        const idx = p.dataIndex
+        const navValues = store.navHistory.values
+        if (navValues && idx >= 0 && idx + 1 < navValues.length) {
+          const amt = navValues[idx + 1] - navValues[idx]
+          const amtStr = (amt >= 0 ? '+' : '') + '¥' + Math.abs(amt).toLocaleString('zh-CN', {minimumFractionDigits:2})
+          const color = p.value >= 0 ? '#f87171' : '#34d399'
+          return '<div style="font-size:12px">' + p.axisValue + '</div><div style="font-size:13px;font-weight:700;color:' + color + '">' + (p.value >= 0 ? '+' : '') + p.value + '%</div><div style="font-size:11px;color:' + color + '">' + amtStr + '</div>'
+        }
+        const color = p.value >= 0 ? '#f87171' : '#34d399'
+        return '<div style="font-size:12px">' + p.axisValue + '</div><div style="font-size:13px;font-weight:700;color:' + color + '">' + (p.value >= 0 ? '+' : '') + p.value + '%</div>'
+      },
+    },
+    grid: { left: 50, right: 16, top: 12, bottom: 24 },
+    xAxis: {
+      type: 'category',
+      data: dates,
+      axisLine: { lineStyle: { color: '#2d2d3f' } },
+      axisLabel: { color: '#6b7280', fontSize: 10 },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: 'value',
+      splitLine: { lineStyle: { color: '#27272a', type: 'dashed' } },
+      axisLabel: { color: '#6b7280', fontSize: 10, formatter: (v) => v.toFixed(1) + '%' },
+    },
+    series: [{
+      type: 'bar',
+      data: returns.map(v => ({
+        value: v,
+        itemStyle: { color: v >= 0 ? '#f87171' : '#34d399' }
+      })),
+      barWidth: '60%',
     }],
   }
 })
@@ -422,10 +491,13 @@ onUnmounted(() => {
 /* Section */
 .sec { background: #1e1e2e; border: 1px solid #2d2d3f; border-radius: 8px; overflow: hidden; }
 .sec-h { display: flex; align-items: center; padding: 9px 14px; border-bottom: 1px solid #2d2d3f; }
-.sec-t { font-size: 12.5px; font-weight: 600; color: #d4d4d8; flex: 1; }
+.sec-t { font-size: 12.5px; font-weight: 600; color: #d4d4d8; flex: 1; display: flex; align-items: center; gap: 4px; }
+.tab { cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; color: #6b7280; transition: all 0.15s; }
+.tab:hover { color: #a1a1aa; background: rgba(255,255,255,0.04); }
+.tab.active { color: #93c5fd; background: rgba(96,165,250,0.12); }
 .sec-m { font-size: 11.5px; color: #a1a1aa; }
 .sec-tg { display: inline-flex; font-size: 10px; color: #818cf8; background: rgba(129,140,248,0.1); padding: 2px 7px; border-radius: 4px; }
-.sec-close { background: none; border: none; color: #6b7280; font-size: 18px; cursor: pointer; padding: 0 4px; }
+.sec-close { background: none; border: none; color: #6b7280; font-size: 11px; cursor: pointer; padding: 2px 8px; border-radius: 4px; }
 .sec-b { padding: 0; }
 
 .badge { display: inline-flex; align-items: center; justify-content: center; background: #2d2d3f; color: #a1a1aa; font-size: 10.5px; font-weight: 600; min-width: 18px; height: 16px; border-radius: 8px; padding: 0 5px; }

@@ -649,3 +649,116 @@ def _compute_max_drawdown(curve_values):
         if dd > max_dd:
             max_dd = dd
     return round(max_dd * 100, 2)
+
+
+@router.get("/api/live/performance_summary")
+def get_live_performance_summary(request: FastAPIRequest, token: str = Cookie(None)):
+    """返回实盘绩效汇总指标 — 使用已知的每日盈亏 + QMT 当前余额校准"""
+    if not get_current_user(token):
+        raise HTTPException(status_code=401, detail="未登录")
+
+    # 1. 从 QMT 获取当前总资产
+    try:
+        from quant_app.trading.modes.remote_executor import RemoteTraderExecutor
+        e = RemoteTraderExecutor()
+        if not e._connected:
+            e.prepare()
+        balance = e.get_balance()
+        if not balance:
+            return {"error": "无法获取 QMT 余额"}
+        current_total = float(balance.total_asset)
+    except Exception as ex:
+        logger.error("获取 QMT 余额失败: %s", ex)
+        return {"error": "获取 QMT 余额失败"}
+
+    # 2. 优先使用 daily_pnl.json 里的 initial_capital（已扣除入金）
+    #    避免把入金当成收益 (current_total 含入金 vs initial 6.8 万假象)
+    initial_capital = 150000.0  # fallback: 当前入金后的本金
+    import json, os
+    pnl_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'live_daily_pnl.json')
+    if os.path.exists(pnl_path):
+        with open(pnl_path) as f:
+            pnl_data = json.load(f)
+        initial_capital = float(pnl_data.get('initial_capital', 150000.0))
+        daily_pnl = {item['date']: float(item['pnl']) for item in pnl_data.get('daily_pnl', [])}
+    else:
+        daily_pnl = {}
+
+    # 3. 构建净值曲线（用 daily_pnl 累加，不含入金）
+    dates = sorted(daily_pnl.keys())
+    nav_values = []
+    cum_pnl = 0
+    for d in dates:
+        cum_pnl += daily_pnl[d]
+        nav = initial_capital + cum_pnl
+        nav_values.append(round(nav, 2))
+
+    # total_return: 基于 daily_pnl 真实累加, 排除入金假象
+    total_return = (cum_pnl / initial_capital) * 100 if initial_capital > 0 else 0
+
+    import pymysql
+    from quant_app.utils.config import get_db_config
+    conn = pymysql.connect(**get_db_config())
+    cur = conn.cursor()
+
+    # 4. 统计胜率
+    cur.execute("""
+        SELECT ts_code,
+               SUM(CASE WHEN action='BUY' THEN amount ELSE 0 END) AS buy_amt,
+               SUM(CASE WHEN action='SELL' THEN amount ELSE 0 END) AS sell_amt
+        FROM qmt_trades
+        WHERE mode='live' AND status='filled' AND trade_date >= '2026-06-08'
+        GROUP BY ts_code
+    """)
+    stock_rows = cur.fetchall()
+
+    win_count = 0
+    total_closed = 0
+    for _, buy_amt, sell_amt in stock_rows:
+        if float(sell_amt) > 0:
+            total_closed += 1
+            if float(sell_amt) > float(buy_amt):
+                win_count += 1
+
+    cur.execute("SELECT COUNT(*) FROM qmt_trades WHERE mode='live' AND status='filled' AND trade_date >= '2026-06-08'")
+    trade_count = cur.fetchone()[0]
+    conn.close()
+
+    # 6. 夏普（基于日收益率）
+    daily_returns = []
+    for i in range(1, len(nav_values)):
+        if nav_values[i-1] > 0:
+            dr = (nav_values[i] - nav_values[i-1]) / nav_values[i-1]
+            daily_returns.append(dr)
+
+    avg_ret = sum(daily_returns) / len(daily_returns) if daily_returns else 0
+    var = sum((r - avg_ret) ** 2 for r in daily_returns) / len(daily_returns) if daily_returns else 0
+    std = var ** 0.5
+    sharpe = (avg_ret / std) * (252 ** 0.5) if std > 0 else 0
+
+    # 7. 最大回撤
+    max_dd = 0
+    peak = nav_values[0] if nav_values else 0
+    for v in nav_values:
+        if v > peak:
+            peak = v
+        dd = (peak - v) / (peak + 0.01) if peak > 0 else 0
+        if dd > max_dd:
+            max_dd = dd
+
+    return {
+        "total_return": round(total_return, 2),
+        "annual_return": None,
+        "sharpe": round(sharpe, 2),
+        "max_drawdown": round(max_dd * 100, 2),
+        "trade_count": trade_count,
+        "win_count": win_count,
+        "total_closed": total_closed,
+        "win_rate": round(win_count / total_closed, 4) if total_closed > 0 else 0,
+        "current_value": round(current_total, 2),
+        "initial_capital": round(initial_capital, 2),
+        "nav_dates": dates,
+        "nav_values": nav_values,
+        "data_source": "live",
+    }
+

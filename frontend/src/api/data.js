@@ -45,7 +45,7 @@ export function getNavHistory() {
 }
 
 export function getPerformanceSummary() {
-  return api.get('/sim/performance_summary')
+  return api.get('/live/performance_summary')
 }
 
 export function getTodaySignals() {

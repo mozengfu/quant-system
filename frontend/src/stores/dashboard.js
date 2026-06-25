@@ -44,7 +44,7 @@ export const useDashboardStore = defineStore('dashboard', {
           api.get('/trading/trades', { params: { limit: 20 } }),
           api.get('/recommend/v11', { params: { top_n: 5 } }),
           api.get('/scanner/signals'),
-          api.get('/sim/performance_summary'),
+          api.get('/live/performance_summary'),
         ])
 
         // ---- /api/pipeline/status ----
@@ -121,7 +121,7 @@ export const useDashboardStore = defineStore('dashboard', {
           this.scannerSignals = (r.signals || []).slice(0, 15)
         }
 
-        // ---- /api/sim/performance_summary ----
+        // ---- /api/live/performance_summary ----
         if (navRes.status === 'fulfilled') {
           const p = navRes.value
           if (p && !p.error) {
