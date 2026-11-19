@@ -8,23 +8,25 @@
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                    Mac (192.168.10.30)                    │
+│                    Mac (<MAC_HOST>)                    │
 │                                                          │
-│  app.py + app_api.py     FastAPI (:5001) + WebSocket     │
+│  app.py + app_api.py     FastAPI (<APP_PORT>) + WebSocket     │
 │  market_monitor.py       30s 轮询 → data/market_state    │
 │  live_trading_scheduler  交易调度器 (scan/monitor/等)     │
 │  ml_predict.py           ML 推理引擎 (V11)               │
 │  frontend/               Vue 3 + Vite SPA                │
 │  scripts/                独立脚本 (训练/同步/诊断)       │
-│  MySQL :3306/quant_db    核心数据库                       │
+│  MySQL <DB_PORT>/quant_db    核心数据库                       │
 │                                                          │
 ├──────────────────────────┬───────────────────────────────┤
-│  192.168.10.25 (QMT)     │  192.168.10.39 (训练机)       │
-│  HTTP 桥 :1430           │  ml_train_v11_2.py 全量训练   │
+│  <QMT_HOST> (QMT)     │  <TRAIN_HOST> (训练机)       │
+│  HTTP 桥 <QMT_PORT>           │  ml_train_v11_2.py 全量训练   │
 │  国信 iQuant 策略平台    │  32GB RAM / 16GB VRAM         │
-│  账户 170000758981 实盘  │  .pkl 传回 Mac data/          │
+│  账户 <LIVE_ACCOUNT> 实盘  │  .pkl 传回 Mac data/          │
 └──────────────────────────┴───────────────────────────────┘
 ```
+
+图中的主机、端口和账户均为占位符；实际值仅在部署环境及私有运维配置中维护。
 
 **核心数据流**:
 ```
@@ -117,7 +119,7 @@
 | 文件 | 作用 |
 |---|---|
 | `quant_app/trading/executor.py` | 抽象基类 + 工厂 `create_executor(mode)` |
-| `quant_app/trading/modes/remote_executor.py` | 生产执行器 (HTTP→QMT:1430) |
+| `quant_app/trading/modes/remote_executor.py` | 生产执行器 (HTTP→QMT:<QMT_PORT>) |
 | `quant_app/trading/modes/sim_executor.py` | 模拟执行器 |
 | `quant_app/trading/config.py` | 交易配置单例 (TRADE_MODE/安全开关) |
 | `quant_app/services/qmt_adapter.py` | QMT HTTP 协议适配 |
@@ -221,36 +223,44 @@ python3 scripts/backfill_moneyflow.py
 # Mac 快速重训 (Top500)
 python3 scripts/retrain_v11_fast.py
 
-# Windows 训练机全量训练
-ssh quant@192.168.10.39
-cd C:\Users\quant\quant-system
-python ml_train_v11_2.py
-# 训练完传回 Mac data/
+# 连接训练机（SSH 主机别名保存在本地配置）
+ssh "$QUANT_TRAIN_SSH_ALIAS"
 ```
+
+在 Windows 训练机的命令提示符中运行（`QUANT_PROJECT_DIR` 由训练机配置提供）：
+
+```bat
+cd /d "%QUANT_PROJECT_DIR%"
+python ml_train_v11_2.py
+```
+
+训练完将产物传回 Mac 的 `data/`。
 
 ### 诊断
 
+从仓库根目录运行。`QUANT_DB_HOST` 和 `QUANT_DB_USER` 由本地环境配置提供；`-p` 会交互提示输入密码。请使用只读诊断账号，不在文档或命令行参数中写入密码。
+
 ```bash
 # 检查 daily_price 最新交易日
-mysql -h 127.0.0.1 -u root -proot123 -e \
+mysql -h "$QUANT_DB_HOST" -u "$QUANT_DB_USER" -p -e \
   "SELECT MAX(trade_date) FROM quant_db.daily_price"
 
 # 检查待执行信号
-mysql -h 127.0.0.1 -u root -proot123 -e \
+mysql -h "$QUANT_DB_HOST" -u "$QUANT_DB_USER" -p -e \
   "SELECT * FROM quant_db.sim_signals WHERE status='待执行'"
 
 # 查看持仓
-mysql -h 127.0.0.1 -u root -proot123 -e \
+mysql -h "$QUANT_DB_HOST" -u "$QUANT_DB_USER" -p -e \
   "SELECT * FROM quant_db.sim_positions WHERE status='HOLD'"
 
 # 查看 monitor 日志
-tail -30 /Users/mozengfu/workspace/quant-system/logs/live_trading_monitor.log
+tail -30 ./logs/live_trading_monitor.log
 
 # 查看 scan 日志
-tail -30 /Users/mozengfu/workspace/quant-system/logs/live_trading.log
+tail -30 ./logs/live_trading.log
 
 # 查看心跳
-cat /Users/mozengfu/workspace/quant-system/data/monitor_heartbeat.txt
+cat ./data/monitor_heartbeat.txt
 ```
 
 ---
@@ -272,7 +282,7 @@ cat /Users/mozengfu/workspace/quant-system/data/monitor_heartbeat.txt
 **常见原因**:
 - Mac 夜间睡眠, 09:00 唤醒后 cron 延迟 (正常, 等几分钟)
 - `import datetime` 缺失导致心跳写入 NameError (已修复 2026-06-18)
-- QMT 远程服务不可达 (检查 192.168.10.25:1430)
+- QMT 远程服务不可达 (检查 <QMT_HOST>:<QMT_PORT>)
 
 ### 7.2 Monitor 运行时无买入行为
 
@@ -329,21 +339,9 @@ cat /Users/mozengfu/workspace/quant-system/data/monitor_heartbeat.txt
 
 ## 8. 最近系统状态 (2026-06-18 收盘)
 
-### 当前持仓
+### 持仓与候选快照
 
-| 股票 | 成本 | 现价 | 盈亏 | 状态 |
-|---|---|---|---|---|
-| 002171 楚江新材 | 12.49 | ~15.38 | +23.1% | 正常持有 |
-| 002213 大为股份 | 39.75 | ~40.07 | +0.8% | T+1 (6/18买入) |
-| 002515 金字火腿 | 9.53 | ~9.63 | +1.0% | T+1 (6/18买入) |
-
-### 今日 ML 候选 (待执行, 明早 monitor 评估)
-
-| 股票 | 价格 | 份额 | ML概率 |
-|---|---|---|---|
-| 301511 德福科技 | 160.90 | 100 | 0.998 |
-| 600110 诺德股份 | 17.57 | 1200 | 0.988 |
-| 301366 一博科技 | 55.82 | 300 | 0.985 |
+个股、仓位、成本和预测值仅保留在私有运维记录中。
 
 ### 最近修复清单
 
@@ -462,7 +460,7 @@ except:
 ```python
 # ✅ 好: 解释 "为什么这么写", 附修复日期/原因
 # 修复: 主人 2026-06-17 反馈, 旧版没检查当前价是否高于成本,
-#   导致 600183 在 -0.55% 浮亏位被错误触发卖出。
+#   导致有持仓在浮亏时被错误触发卖出。
 #   加 price > cost_price 后: 仅在浮盈时才允许触发。
 if price <= trigger_price and price >= cost_price:
 
@@ -492,7 +490,7 @@ EXPLAIN SELECT * FROM sim_signals WHERE status='待执行' AND DATE(created_at)=
 - [ ] 修改过的文件能正常 import (`python3 -c "from file import ..."`)
 - [ ] 系统状态正常 (`python3 scripts/live_trading_scheduler.py status`)
 - [ ] 心跳正常 (`cat data/monitor_heartbeat.txt`)
-- [ ] 数据库连接正常 (`mysql -h 127.0.0.1 -u root -proot123 -e "SELECT 1"`)
+- [ ] 数据库连接正常 (`mysql -h "$QUANT_DB_HOST" -u "$QUANT_DB_USER" -p -e "SELECT 1"`)
 - [ ] 模拟验证: 旧场景不再触发 + 正确场景仍然触发
 - [ ] 提交信息描述完整: 为什么改 + 改了什么 + 影响范围
 
@@ -511,7 +509,7 @@ EXPLAIN SELECT * FROM sim_signals WHERE status='待执行' AND DATE(created_at)=
 
 1. **crontab vs launchd**: macOS crontab 在睡眠时不执行。唤醒后缺的会补跑, 但可能有 1-2 个 cycle 的延迟。如需更可靠的定时, 改用 `launchctl`。
 2. **`.env` 被 gitignore**: 环境变量改完 `.env` 后不需要 commit, 但要确认 `app.py` 重启。
-3. **QMT 地址 (192.168.10.25:1430)**: 局域网内, 断连时脚本静默降级 (不抛异常)。重连后自动恢复。
+3. **QMT 地址 (<QMT_HOST>:<QMT_PORT>)**: 局域网内, 断连时脚本静默降级 (不抛异常)。重连后自动恢复。
 4. **`migrations/` 变更**: 数据库 schema 改动后, 在 `migrations/` 写 `NNN_desc.sql` 留档。
 5. **模型文件大 (~160MB)**: `data/ml_stock_model_v11_0.pkl` 不会 push 到 GitHub。训练机传回 .pkl 后本地放 `data/` 即可。
 6. **端午休市 (2026-06-19)**: 候选和数据保留到 6/22(周一)开盘。
